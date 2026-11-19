@@ -1,0 +1,46 @@
+[
+  {
+    "name": "erp.find_customer",
+    "effect": "read",
+    "params": {"name": {"type": "text"}},
+    "returns": {"type": "record", "fields": {
+      "code": {"type": "text"}, "title": {"type": "text"},
+      "balance": {"type": "number"}, "limit": {"type": "number"}}}
+  },
+  {
+    "name": "erp.stock",
+    "effect": "read",
+    "params": {"product": {"type": "text", "required": false}},
+    "returns": {"type": "list", "items": {"type": "record", "fields": {
+      "product": {"type": "text"}, "quantity": {"type": "number"}}}}
+  },
+  {
+    "name": "erp.add_order_line",
+    "effect": "write",
+    "params": {
+      "customer": {"type": "text"},
+      "product": {"type": "text"},
+      "quantity": {"type": "number"},
+      "note": {"type": "text", "required": false, "model_allowed": true}
+    }
+  },
+  {
+    "name": "notify",
+    "effect": "external",
+    "params": {"text": {"type": "text", "model_allowed": true}}
+  },
+  {
+    "name": "pay",
+    "effect": "money",
+    "params": {"to": {"type": "text"}, "amount": {"type": "number"}}
+  },
+  {
+    "name": "erp.post_invoice",
+    "effect": "erp.post",
+    "params": {"customer": {"type": "text"}}
+  },
+  {
+    "name": "unmarked",
+    "params": {"x": {"type": "text"}}
+  }
+]

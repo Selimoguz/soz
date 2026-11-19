@@ -1,0 +1,368 @@
+{
+  "description": "Lexical syntax and structure (SPEC 2 and 4). A syntax error is the only error reported.",
+  "cases": [
+    {
+      "name": "reader macro #. is not allowed",
+      "plan": "(plan \"x\" #.(run))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "quote is not allowed",
+      "plan": "(plan \"x\" '(a))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "backquote is not allowed",
+      "plan": "(plan \"x\" `(a))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "comma is not allowed",
+      "plan": "(plan \"x\" (a ,b))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 1,
+            "column": 14
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "|symbol| is not allowed",
+      "plan": "(plan \"x\" |a|)",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "package prefix is not allowed",
+      "plan": "(plan \"x\" (sb-ext:quit))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 1,
+            "column": 18
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "only \\\" and \\\\ after a backslash",
+      "plan": "(plan \"a\\nb\" 1)",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-escape",
+            "line": 1,
+            "column": 10
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "digits followed by letters",
+      "plan": "(plan \"x\" 12abc)",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-token",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "unclosed list is reported at its (",
+      "plan": "(plan \"x\" (erp.stock)",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unclosed-list",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "unclosed text is reported at its quote",
+      "plan": "(plan \"x",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unclosed-text",
+            "line": 1,
+            "column": 7
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a lone closing parenthesis",
+      "plan": ")",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unexpected-close",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "empty input",
+      "plan": "  ",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unexpected-end",
+            "line": 1,
+            "column": 3
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "content after the plan",
+      "plan": "(plan \"x\" 1) (notify text \"a\")",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "trailing-content",
+            "line": 1,
+            "column": 14
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "content after the plan: extra parenthesis",
+      "plan": "(plan \"x\" 1))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "trailing-content",
+            "line": 1,
+            "column": 13
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "nesting deeper than 32",
+      "plan": "(plan \"x\" ((((((((((((((((((((((((((((((((((((((((stop)))))))))))))))))))))))))))))))))))))))))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "too-deep",
+            "line": 1,
+            "column": 42
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "positions count lines",
+      "plan": [
+        "(plan \"x\"",
+        "  (notify text \"a\")",
+        "  #bad)"
+      ],
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "illegal-character",
+            "line": 3,
+            "column": 3
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "comments and newlines are whitespace",
+      "plan": [
+        "; an order",
+        "(plan \"x\" ; title",
+        "  (stop \"nothing to do\")) ; end"
+      ],
+      "expect": {
+        "valid": true,
+        "may_stop": true,
+        "effects": [],
+        "max_calls": 0
+      }
+    },
+    {
+      "name": "not a plan: an operation",
+      "plan": "(erp.stock)",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "not-a-plan",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "not a plan: no title",
+      "plan": "(plan (erp.stock))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "not-a-plan",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "not a plan: a text",
+      "plan": "\"x\"",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "not-a-plan",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "empty plan",
+      "plan": "(plan \"x\")",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "empty-plan",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "plan inside a plan",
+      "plan": "(plan \"x\" (plan \"y\" 1))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-form",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "empty list",
+      "plan": "(plan \"x\" ())",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "empty-form",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "list starting with a number",
+      "plan": "(plan \"x\" (1 2))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-form",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    }
+  ]
+}

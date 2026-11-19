@@ -1,0 +1,99 @@
+{
+  "description": "Bounds (SPEC 7): loops run over finite lists; the most calls a plan can make is known.",
+  "message": "Yilmaz 20 and 5 tomatoes",
+  "cases": [
+    {
+      "name": "a list of 51 elements",
+      "plan": "(plan \"x\" (list 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "list-too-long",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "two nested loops over tool lists: 1 + 50 + 2500 calls",
+      "plan": "(plan \"x\" (for-each (a (erp.stock)) (for-each (b (erp.stock)) (erp.add_order_line customer (get a product) product (get b product) quantity (get b quantity)))))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "too-many-calls",
+            "line": 1,
+            "column": 1
+          }
+        ],
+        "only": true,
+        "max_calls": 2551
+      }
+    },
+    {
+      "name": "an empty list counts as one",
+      "plan": "(plan \"x\" (for-each (q (list)) (notify text \"hi\")))",
+      "expect": {
+        "valid": true,
+        "max_calls": 1
+      }
+    },
+    {
+      "name": "a list bound with let keeps its length",
+      "plan": "(plan \"x\" (let ((qs (list 20 5))) (for-each (q qs) (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity q))))",
+      "expect": {
+        "valid": true,
+        "max_calls": 2
+      }
+    },
+    {
+      "name": "nested literal lists multiply",
+      "plan": "(plan \"x\" (for-each (a (list 1 2 3)) (for-each (b (list 4 5)) (notify text \"hi\"))))",
+      "expect": {
+        "valid": true,
+        "max_calls": 6
+      }
+    },
+    {
+      "name": "a list from an if has the default length",
+      "plan": "(plan \"x\" (for-each (q (if (> 1 0) (list 20) (list 5))) (notify text \"x\")))",
+      "expect": {
+        "valid": true,
+        "max_calls": 50
+      }
+    },
+    {
+      "name": "for-each over a number",
+      "plan": "(plan \"x\" (for-each (q 20) (notify text \"x\")))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "not-a-list",
+            "line": 1,
+            "column": 24
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "for-each over an operation that returns any",
+      "plan": "(plan \"x\" (for-each (q (unmarked x \"Yilmaz\")) (notify text \"x\")))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "not-a-list",
+            "line": 1,
+            "column": 24
+          }
+        ],
+        "only": true
+      }
+    }
+  ]
+}

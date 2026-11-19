@@ -1,0 +1,106 @@
+{
+  "description": "Conditions (SPEC 5.3): an operation that changes something cannot depend on an invented value.",
+  "message": "Yilmaz 20 tomatoes",
+  "cases": [
+    {
+      "name": "order if the balance is over an invented threshold",
+      "plan": [
+        "(plan \"x\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz\")))",
+        "    (if (> (get c balance) 50000)",
+        "        (stop \"over the limit\")",
+        "        (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20))))"
+      ],
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-condition",
+            "line": 5,
+            "column": 9
+          }
+        ],
+        "only": true,
+        "may_stop": true
+      }
+    },
+    {
+      "name": "order unless the balance is over the customer's limit (both from the tool)",
+      "plan": [
+        "(plan \"x\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit\")",
+        "        (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20))))"
+      ],
+      "expect": {
+        "valid": true,
+        "may_stop": true,
+        "max_calls": 2,
+        "calls": [
+          {
+            "operation": "erp.find_customer",
+            "effect": "read",
+            "line": 2,
+            "max_count": 1,
+            "conditional": false
+          },
+          {
+            "operation": "erp.add_order_line",
+            "effect": "write",
+            "line": 5,
+            "max_count": 1,
+            "conditional": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "stopping on an invented condition is allowed",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (if (> (get c balance) 50000) (stop \"high balance\"))))",
+      "expect": {
+        "valid": true,
+        "may_stop": true
+      }
+    },
+    {
+      "name": "reading on an invented condition is allowed",
+      "plan": "(plan \"x\" (if (> 3 2) (erp.stock)))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "read"
+        ]
+      }
+    },
+    {
+      "name": "the invented value may be in an outer condition",
+      "plan": [
+        "(plan \"x\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz\")))",
+        "    (if (> (get c balance) 99)",
+        "        (if (> (get c balance) (get c limit))",
+        "            (notify text \"check the limit\")))))"
+      ],
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-condition",
+            "line": 5,
+            "column": 13
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a threshold from the message is fine",
+      "message": "if Yilmaz owes less than 50.000, send 20 tomatoes",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (if (< (get c balance) 50000) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20))))",
+      "expect": {
+        "valid": true
+      }
+    }
+  ]
+}

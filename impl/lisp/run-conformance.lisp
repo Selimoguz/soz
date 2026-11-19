@@ -1,0 +1,95 @@
+;;;; run-conformance.lisp — Runs the conformance suite against the Lisp reference checker.
+;;;; sbcl --script impl/lisp/run-conformance.lisp [conformance-folder]
+
+(setf sb-impl::*default-external-format* :utf-8)
+(load (merge-pathnames "json.lisp" *load-truename*))
+(load (merge-pathnames "soz.lisp" *load-truename*))
+
+(defpackage :soz-conformance (:use :cl :soz))
+(in-package :soz-conformance)
+
+(defun read-file (path)
+  (with-open-file (s path :external-format :utf-8)
+    (let ((text (make-string (file-length s))))
+      (subseq text 0 (read-sequence text s)))))
+
+(defun read-json (path) (json:json-oku (read-file path)))
+
+(defun plan-text (p)
+  (if (stringp p) p (format nil "~{~a~^~%~}" (coerce p 'list))))
+
+(defun json-bool (v) (eq v :true))
+
+(defvar *problems*)
+(defun problem (fmt &rest args) (push (apply #'format nil fmt args) *problems*))
+
+(defun error-matches-p (want got)
+  (and (string= (gethash "code" want) (soz-error-code got))
+       (or (null (gethash "line" want))
+           (and (= (gethash "line" want) (soz-error-line got))
+                (= (gethash "column" want) (soz-error-column got))))))
+
+(defun describe-errors (errors)
+  (format nil "~{~a~^, ~}" (mapcar (lambda (e) (format nil "~a@~d:~d" (soz-error-code e) (soz-error-line e) (soz-error-column e)))
+                                    errors)))
+
+(defun compare (expect r)
+  (multiple-value-bind (v present) (gethash "valid" expect)
+    (when (and present (not (eq (json-bool v) (result-valid r))))
+      (problem "valid: expected ~a, got ~a (errors: ~a)" (json-bool v) (result-valid r) (describe-errors (result-errors r)))))
+  (let ((want (coerce (or (gethash "errors" expect) #()) 'list))
+        (got (result-errors r)))
+    (dolist (w want)
+      (unless (find-if (lambda (g) (error-matches-p w g)) got)
+        (problem "missing error ~a~@[ at ~d~]~@[:~d~] (got: ~a)" (gethash "code" w) (gethash "line" w) (gethash "column" w)
+                 (describe-errors got))))
+    (when (and (json-bool (gethash "only" expect)) (/= (length want) (length got)))
+      (problem "expected exactly ~d error(s), got ~d: ~a" (length want) (length got) (describe-errors got))))
+  (multiple-value-bind (v present) (gethash "effects" expect)
+    (when (and present (not (equal (coerce v 'list) (result-effects r))))
+      (problem "effects: expected ~a, got ~a" (coerce v 'list) (result-effects r))))
+  (loop for (key fn) in (list (list "requires_approval" #'result-requires-approval) (list "may_stop" #'result-may-stop))
+        do (multiple-value-bind (v present) (gethash key expect)
+             (when (and present (not (eq (json-bool v) (and (funcall fn r) t))))
+               (problem "~a: expected ~a, got ~a" key (json-bool v) (funcall fn r)))))
+  (multiple-value-bind (v present) (gethash "max_calls" expect)
+    (when (and present (/= v (result-max-calls r)))
+      (problem "max_calls: expected ~d, got ~d" v (result-max-calls r))))
+  (multiple-value-bind (v present) (gethash "calls" expect)
+    (when present
+      (let ((got (gethash "calls" (result-json r))))
+        (if (/= (length v) (length got))
+            (problem "calls: expected ~d, got ~d" (length v) (length got))
+            (loop for w across v for g across got for i from 1
+                  do (maphash (lambda (k wv)
+                                (unless (equal wv (gethash k g))
+                                  (problem "call ~d ~a: expected ~a, got ~a" i k wv (gethash k g))))
+                              w)))))))
+
+(defun run (folder)
+  (let ((total 0) (failed 0))
+    (setf *operations* (make-hash-table :test #'equal))
+    (map nil #'operation-from-json (read-json (merge-pathnames "operations.json" folder)))
+    (dolist (file (sort (directory (merge-pathnames "cases/*.json" folder)) #'string< :key #'namestring))
+      (let* ((suite (read-json file)))
+        (format t "~%~a~%" (file-namestring file))
+        (loop for c across (gethash "cases" suite)
+              do (multiple-value-bind (m present) (gethash "message" c)
+                   (let* ((message (if present m (gethash "message" suite)))
+                          (message (if (stringp message) message nil))
+                          (r (check-plan (plan-text (gethash "plan" c)) :message message))
+                          (*problems* '()))
+                     (compare (gethash "expect" c) r)
+                     (incf total)
+                     (if *problems*
+                         (progn (incf failed)
+                                (format t "  FAIL  ~a~%~{          ~a~%~}" (gethash "name" c) (reverse *problems*)))
+                         (format t "  ok    ~a~%" (gethash "name" c))))))))
+    (format t "~%~d cases, ~d failed~%" total failed)
+    (zerop failed)))
+
+(let* ((arg (second sb-ext:*posix-argv*))
+       (folder (if arg
+                   (pathname (if (find (char arg (1- (length arg))) "/\\") arg (concatenate 'string arg "/")))
+                   (merge-pathnames "../../conformance/" *load-truename*))))
+  (sb-ext:exit :code (if (run folder) 0 1)))

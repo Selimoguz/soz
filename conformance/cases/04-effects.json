@@ -1,0 +1,104 @@
+{
+  "description": "Effects (SPEC 6): what a plan touches is known from its text.",
+  "message": "pay Yilmaz 20",
+  "cases": [
+    {
+      "name": "external",
+      "plan": "(plan \"x\" (notify text \"the order is ready\"))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "external"
+        ],
+        "requires_approval": true
+      }
+    },
+    {
+      "name": "money",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 20))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "money"
+        ],
+        "requires_approval": true
+      }
+    },
+    {
+      "name": "an operation without an effect is a write",
+      "plan": "(plan \"x\" (unmarked x \"Yilmaz\"))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "write"
+        ],
+        "requires_approval": true
+      }
+    },
+    {
+      "name": "a custom effect is a side effect",
+      "plan": "(plan \"x\" (erp.post_invoice customer \"Yilmaz\"))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "erp.post"
+        ],
+        "requires_approval": true
+      }
+    },
+    {
+      "name": "a custom effect is restricted like write",
+      "plan": "(plan \"x\" (erp.post_invoice customer \"Somebody\"))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 38
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "effects are listed read, write, external, money, then custom ones by name",
+      "plan": "(plan \"x\" (erp.post_invoice customer \"Yilmaz\") (pay to \"Yilmaz\" amount 20) (notify text \"paid\") (erp.stock))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "read",
+          "external",
+          "money",
+          "erp.post"
+        ],
+        "max_calls": 4
+      }
+    },
+    {
+      "name": "a plan without calls",
+      "plan": "(plan \"x\" (stop \"nothing to do\"))",
+      "expect": {
+        "valid": true,
+        "effects": [],
+        "requires_approval": false,
+        "max_calls": 0,
+        "may_stop": true,
+        "calls": []
+      }
+    },
+    {
+      "name": "both branches of an if count",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (if (> (get c balance) (get c limit)) (notify text \"over\") (pay to \"Yilmaz\" amount 20))))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "read",
+          "external",
+          "money"
+        ],
+        "max_calls": 3
+      }
+    }
+  ]
+}

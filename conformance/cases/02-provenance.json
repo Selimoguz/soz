@@ -1,0 +1,329 @@
+{
+  "description": "Provenance (SPEC 5): a value the model made up cannot reach an operation that changes something.",
+  "message": "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.",
+  "cases": [
+    {
+      "name": "every value is in the message or comes from a tool",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((customer (erp.find_customer name \"Yilmaz Market\")))",
+        "    (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                          (record product \"peppers\" quantity 5)))",
+        "      (erp.add_order_line customer (get customer code) product (get line product) quantity (get line quantity)))))"
+      ],
+      "expect": {
+        "valid": true,
+        "effects": [
+          "read",
+          "write"
+        ],
+        "requires_approval": true,
+        "max_calls": 3,
+        "may_stop": false,
+        "calls": [
+          {
+            "operation": "erp.find_customer",
+            "effect": "read",
+            "line": 2,
+            "max_count": 1,
+            "conditional": false
+          },
+          {
+            "operation": "erp.add_order_line",
+            "effect": "write",
+            "line": 5,
+            "max_count": 2,
+            "conditional": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "an invented quantity",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((customer (erp.find_customer name \"Yilmaz Market\")))",
+        "    (for-each (line (list (record product \"tomatoes\" quantity 25)",
+        "                          (record product \"peppers\" quantity 5)))",
+        "      (erp.add_order_line customer (get customer code) product (get line product) quantity (get line quantity)))))"
+      ],
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 3,
+            "column": 63
+          }
+        ],
+        "only": true,
+        "max_calls": 3
+      }
+    },
+    {
+      "name": "an invented product",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((customer (erp.find_customer name \"Yilmaz Market\")))",
+        "    (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                          (record product \"eggplant\" quantity 5)))",
+        "      (erp.add_order_line customer (get customer code) product (get line product) quantity (get line quantity)))))"
+      ],
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 4,
+            "column": 43
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "two invented values are two errors",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((customer (erp.find_customer name \"Yilmaz Market\")))",
+        "    (for-each (line (list (record product \"tomatoes\" quantity 25)",
+        "                          (record product \"eggplant\" quantity 5)))",
+        "      (erp.add_order_line customer (get customer code) product (get line product) quantity (get line quantity)))))"
+      ],
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 3,
+            "column": 63
+          },
+          {
+            "code": "invented-value",
+            "line": 4,
+            "column": 43
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "texts are compared after folding: yılmaz = Yilmaz",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"yılmaz market\" product \"TOMATOES\" quantity 20))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "a text may start a longer, inflected word in the message",
+      "message": "Yılmaz Market'e 20 kasa tomatoes gönder",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yılmaz Market\" product \"tomato\" quantity 20))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "a text must start at a word boundary: ali is not in talimat",
+      "message": "talimat: 20 tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"ali\" product \"tomatoes\" quantity 20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 40
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a one-letter text is never in the message",
+      "message": "a Yilmaz: 20 tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"a\" product \"tomatoes\" quantity 20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 40
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "1.250 reads as 1250",
+      "message": "pay Yilmaz 1.250 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 1250))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "1.250 also reads as 1.25",
+      "message": "pay Yilmaz 1.250 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 1.25))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "1.250,50 reads as 1250.5",
+      "message": "pay Yilmaz 1.250,50 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 1250.5))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "1,250.50 reads as 1250.5",
+      "message": "pay Yilmaz 1,250.50 dollars",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 1250.50))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "12,5 reads as 12.5",
+      "message": "pay Yilmaz 12,5 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 12.5))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "125 is not 1.250",
+      "message": "pay Yilmaz 1.250 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 125))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a negative number is never in the message",
+      "message": "Yilmaz 20 tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity -20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 77
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "without a message every literal is invented",
+      "message": null,
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity 20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 40
+          },
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 57
+          },
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 77
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a derived value keeps its sources: 2 in (* 20 2) is invented",
+      "message": "Yilmaz 20 tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity (* 20 2)))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "arithmetic on values from the message",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity (+ 20 5)))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "a model_allowed parameter takes the model's text",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity 20 note \"urgent, deliver before noon\"))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "reads are not restricted",
+      "plan": "(plan \"x\" (erp.stock product \"eggplant\"))",
+      "expect": {
+        "valid": true,
+        "effects": [
+          "read"
+        ],
+        "requires_approval": false,
+        "max_calls": 1
+      }
+    },
+    {
+      "name": "a value from a tool may go to a write",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"anyone\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20)))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "loop over a tool's list",
+      "plan": "(plan \"x\" (for-each (s (erp.stock)) (erp.add_order_line customer \"Yilmaz\" product (get s product) quantity (get s quantity))))",
+      "expect": {
+        "valid": true,
+        "max_calls": 51,
+        "calls": [
+          {
+            "operation": "erp.stock",
+            "effect": "read",
+            "line": 1,
+            "max_count": 1,
+            "conditional": false
+          },
+          {
+            "operation": "erp.add_order_line",
+            "effect": "write",
+            "line": 1,
+            "max_count": 50,
+            "conditional": false
+          }
+        ]
+      }
+    }
+  ]
+}

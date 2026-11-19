@@ -1,0 +1,9 @@
+(plan "Order for Yilmaz Market"
+  (let ((customer (erp.find_customer name "Yilmaz Market")))
+    (if (> (get customer balance) (get customer limit))
+        (stop "Yilmaz Market is over its credit limit")
+        (for-each (line (list (record product "tomatoes" quantity 20)
+                              (record product "peppers" quantity 5)))
+          (erp.add_order_line customer (get customer code)
+                              product (get line product)
+                              quantity (get line quantity))))))

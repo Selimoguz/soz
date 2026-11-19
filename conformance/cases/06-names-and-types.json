@@ -1,0 +1,260 @@
+{
+  "description": "Names, operations, parameters and types (SPEC 4 and 6).",
+  "message": "Yilmaz 20 tomatoes",
+  "cases": [
+    {
+      "name": "names are folded: case, Turkish letters, _ and -",
+      "plan": "(plan \"x\" (ERP.Add-Order_Line Customer \"Yilmaz\" PRODUCT \"tomatoes\" quantıty 20))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "an unknown name",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (erp.add_order_line customer (get customer code) product \"tomatoes\" quantity 20)))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unknown-name",
+            "line": 1,
+            "column": 90
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "an unknown operation",
+      "plan": "(plan \"x\" (erp.delete_everything))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unknown-operation",
+            "line": 1,
+            "column": 12
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a host-language function is just an unknown operation",
+      "plan": "(plan \"x\" (run-program cmd \"rm\"))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unknown-operation",
+            "line": 1,
+            "column": 12
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "an unknown parameter",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity 20 price 5))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unknown-parameter",
+            "line": 1,
+            "column": 80
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a parameter given twice",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" customer \"Yilmaz\" product \"tomatoes\" quantity 20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "duplicate-parameter",
+            "line": 1,
+            "column": 49
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a missing parameter is reported at the call",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\"))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "missing-parameter",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "an odd number of arguments",
+      "plan": "(plan \"x\" (erp.stock product))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-form",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a text where a number is expected",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity \"twenty\"))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "type-mismatch",
+            "line": 1,
+            "column": 77
+          }
+        ],
+        "only": false
+      }
+    },
+    {
+      "name": "an unknown field",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (notify text (get c phone))))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "unknown-field",
+            "line": 1,
+            "column": 76
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "get on a number",
+      "plan": "(plan \"x\" (notify text (get 20 code)))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "not-a-record",
+            "line": 1,
+            "column": 29
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "records in a list need the same fields",
+      "plan": "(plan \"x\" (list (record a 20) (record b 5)))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "mixed-list",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a field written twice",
+      "plan": "(plan \"x\" (record a 20 a 5))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "duplicate-field",
+            "line": 1,
+            "column": 24
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "division by a literal zero",
+      "plan": "(plan \"x\" (notify text \"x\") (/ 20 0))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "division-by-zero",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "an if condition must be a bool",
+      "plan": "(plan \"x\" (if 20 (stop \"x\")))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "type-mismatch",
+            "line": 1,
+            "column": 15
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "let needs a list of bindings",
+      "plan": "(plan \"x\" (let c (stop \"x\")))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-form",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "stop needs a reason",
+      "plan": "(plan \"x\" (stop))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "bad-form",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "get on an operation's any result is any",
+      "plan": "(plan \"x\" (notify text (get (unmarked x \"Yilmaz\") whatever)))",
+      "expect": {
+        "valid": true
+      }
+    }
+  ]
+}
