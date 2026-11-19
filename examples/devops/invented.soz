@@ -1,0 +1,5 @@
+(plan "OPS-512: restart unhealthy staging servers"
+  (for-each (s (infra.list_servers env "production"))
+    (if (not (get s healthy))
+        (infra.restart server (get s name) env (get s env) ticket "OPS-512"
+                       reason "health check failing"))))

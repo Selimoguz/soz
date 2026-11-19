@@ -516,7 +516,7 @@
                        (when (and side-effect (not (pa-model-allowed p)))
                          (dolist (lit (v-invented v))
                            (err lit "invented-value"
-                                "~a is not in the message; a value the model wrote cannot go to parameter ~a of ~a. Use the value from the message or from a read operation; if it is unknown, ask the user with (stop \"...\")."
+                                "~a is not in the message; a value the model wrote cannot go to parameter ~a of ~a, directly or through the result of a read that looked it up. Use the value from the message or from a read operation; if it is unknown, ask the user with (stop \"...\")."
                                 (literal-text lit) (pa-name p) (op-name op)))))))))))
     (dolist (p params)
       (when (and (pa-required p) (not (assoc (name-fold (pa-name p)) given :test #'string=)))
@@ -526,7 +526,23 @@
            "~a depends on a condition with ~{~a~^, ~}, which is not in the message: an operation that changes something cannot depend on a value the model made up"
            (op-name op) (mapcar #'literal-text (v-invented *condition*))))
     (push (make-call :operation op :line (node-line node) :max-count *multiplier* :conditional *conditional*) *calls*)
-    (val-of-type (op-returns op))))
+    ;; SPEC 5.2: what an operation returns depends on what it was asked. Its result carries the
+    ;; invented literals of its arguments (except model_allowed ones): looking up a customer, a
+    ;; server or an invoice the model made up does not turn the answer into trusted data.
+    (let ((inherited (remove-duplicates
+                      (loop for p in params
+                            for v = (cdr (assoc (name-fold (pa-name p)) given :test #'string=))
+                            when (and v (not (pa-model-allowed p))) append (v-invented v)))))
+      (taint (val-of-type (op-returns op)) inherited))))
+
+(defun taint (v literals)
+  "V and every part of it also carry LITERALS (invented) and so the source model."
+  (when literals
+    (setf (v-invented v) (remove-duplicates (append (v-invented v) literals))
+          (v-sources v) (adjoin :model (v-sources v)))
+    (when (v-item v) (taint (v-item v) literals))
+    (dolist (f (v-fields v)) (taint (cdr f) literals)))
+  v)
 
 (defun sort-errors (errors)
   (stable-sort (remove-duplicates (reverse errors)

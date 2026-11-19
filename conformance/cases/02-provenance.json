@@ -295,10 +295,53 @@
       }
     },
     {
-      "name": "a value from a tool may go to a write",
-      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"anyone\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20)))",
+      "name": "a value from a lookup of a value in the message may go to a write",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20)))",
       "expect": {
         "valid": true
+      }
+    },
+    {
+      "name": "a lookup of an invented value: its result cannot go to a write",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"anyone\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20)))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 44
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a lookup of an invented value: a write cannot depend on its result",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"anyone\"))) (if (> (get c balance) (get c limit)) (stop \"over\") (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-condition"
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a lookup of an invented value may still be read and reported",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"anyone\"))) (notify text (get c title))))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "a model_allowed read parameter (free search) does not taint the result",
+      "plan": "(plan \"x\" (for-each (s (erp.search_products query \"tomato-ish\")) (erp.add_order_line customer \"Yilmaz Market\" product (get s product) quantity (get s quantity))))",
+      "expect": {
+        "valid": true,
+        "max_calls": 51
       }
     },
     {

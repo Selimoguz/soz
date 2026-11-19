@@ -84,6 +84,22 @@ demo-audit.jsonl: 9 lines, chain intact
 Someone edits line 3 (a 5 becomes 9): chain broken at line 3
 ```
 
+### Not only orders
+
+The core knows nothing about any domain; each example brings its own operations and a pretend
+system that does whatever it is told.
+
+| Example | What goes wrong without soz | What soz does |
+|---|---|---|
+| [`examples/order`](examples/order) | the model orders 25 crates when 20 were asked, or a product nobody named | refuses the plan; a repeated order is a no-op |
+| [`examples/payments`](examples/payments) (`effect: money`) | the model pays a rounded amount to an IBAN from its memory; the bank pays the same invoice twice; the supplier changes the invoice after you looked | refuses invented amounts and IBANs (they must come from the invoice); the invoice number is the idempotency key; the plan compares the invoice with your request and stops |
+| [`examples/devops`](examples/devops) (custom effect `infra.restart`) | the model looks in production when you said staging, and restarts what it found there; a server fails after you approved | a lookup with a made-up value cannot drive a change; one restart per server per ticket; a server not in the approved preview is never touched |
+
+```sh
+sbcl --script examples/payments/demo.lisp
+sbcl --script examples/devops/demo.lisp
+```
+
 ### Execution, in short
 
 - **Preview.** Reads run; every operation with a side effect becomes a numbered step with its

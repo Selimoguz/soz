@@ -50,6 +50,30 @@
     }
   },
   {
+    "name": "erp.search_products",
+    "effect": "read",
+    "params": {
+      "query": {
+        "type": "text",
+        "model_allowed": true
+      }
+    },
+    "returns": {
+      "type": "list",
+      "items": {
+        "type": "record",
+        "fields": {
+          "product": {
+            "type": "text"
+          },
+          "quantity": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  },
+  {
     "name": "erp.add_order_line",
     "effect": "write",
     "params": {

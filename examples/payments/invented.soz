@@ -1,0 +1,3 @@
+(plan "Pay invoice INV-2026-118"
+  (bank.pay to_iban "TR12 0006 4000 0011 2345 6789 01" amount 12450
+            currency "TRY" reference "INV-2026-118"))

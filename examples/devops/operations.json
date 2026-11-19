@@ -1,0 +1,21 @@
+[
+  {
+    "name": "infra.list_servers",
+    "effect": "read",
+    "params": {"env": {"type": "text"}},
+    "returns": {"type": "list", "items": {"type": "record", "fields": {
+      "name": {"type": "text"}, "env": {"type": "text"},
+      "version": {"type": "text"}, "healthy": {"type": "bool"}}}}
+  },
+  {
+    "name": "infra.restart",
+    "effect": "infra.restart",
+    "params": {
+      "server": {"type": "text"},
+      "env": {"type": "text"},
+      "ticket": {"type": "text"},
+      "reason": {"type": "text", "required": false, "model_allowed": true}
+    },
+    "key": ["server", "ticket"]
+  }
+]

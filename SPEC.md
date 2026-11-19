@@ -156,8 +156,12 @@ never in the message.
 
 Arithmetic, comparisons, logic, `list` and `record` have the union of their parts' sources and
 invented literals. `get` yields the field's own value. A value returned by an operation has source
-`tool` and no invented literals, and so does every part of it. The loop variable of `for-each` has
-the list's element value. An `if` result is the join of its branches.
+`tool`, and so does every part of it. **What an operation returns depends on what it was asked:** if
+an argument of a parameter that does not declare `model_allowed` has invented literals, the result
+and every part of it carry those invented literals too (and source `model`). Looking up a customer,
+a server or an invoice the model made up does not turn the answer into trusted data. A parameter
+meant for free search (`model_allowed`) does not pass its literals on. The loop variable of
+`for-each` has the list's element value. An `if` result is the join of its branches.
 
 ### 5.3 Rules
 
@@ -170,7 +174,8 @@ A **side-effect operation** is one whose effect is not `read`.
   `if` forms is an error `invented-condition` at the call if the union of those conditions has an
   invented literal. `stop` is never an error: stopping is always safe.
 
-Reads are not restricted: a model may look things up with values it chose.
+Reads are not restricted: a model may look things up with values it chose. What it finds that way
+can be shown and reported, but cannot drive a side effect (section 5.2).
 
 Provenance does not catch a model that repeats a line of the message twice; every value of the
 second copy is in the message. Execution (0.2) handles that with idempotency keys.
@@ -444,6 +449,10 @@ servers.
 - **Policy:** rules over (person, effect, operation, values), applied to the plan text before
   running and to each call while running.
 - **JSON syntax:** the same plan as JSON, for models with structured output.
+- **Schema constants:** values an operation declares for a field (an enum such as `"open"`,
+  `"paid"`) should count as known when compared with that field, so that `(= (get invoice status)
+  "paid")` can guard a side effect. Today such a constant is a value the model wrote; the examples use
+  bool fields instead.
 - **Source labels:** operations may label their results (`erp`, `crm`) so that policies can say
   which system a value came from, not just that it came from a tool.
 - **Language profiles:** optional message matching for number words ("twenty", "yirmi") and

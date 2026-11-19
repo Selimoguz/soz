@@ -21,7 +21,9 @@ ikinci kez çalışmaz. Sonucu bilinmeyen bir işlem tekrar denenmez. Her şey S
 **denetim kaydına** yazılır.
 
 ```sh
-sbcl --script examples/order/demo.lisp
+sbcl --script examples/order/demo.lisp      # sipariş
+sbcl --script examples/payments/demo.lisp   # ödeme: uydurma tutar/IBAN, aynı faturayı iki kez ödeme
+sbcl --script examples/devops/demo.lisp     # sunucu: staging yerine production, onaydan sonra değişen durum
 ```
 
 **MCP geçidi** (`impl/lisp/soz-mcp.lisp`) bunu Claude Desktop, Cursor gibi istemcilere kod değiştirmeden
