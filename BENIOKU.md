@@ -20,6 +20,11 @@ onaylanandan farklı bir adıma gelirse durur. **Tekrar anahtarı** iş verisind
 ikinci kez çalışmaz. Sonucu bilinmeyen bir işlem tekrar denenmez. Her şey SHA-256 ile zincirlenmiş bir
 **denetim kaydına** yazılır.
 
+**Politika:** ev sahibi, talebi yapan kişi için kurallar koyar. Kurallar yasaklayabilir ("saha
+elemanı ödeme yapamaz"), rol ile ek onay isteyebilir ("10.000 üstü ödemeyi finanstan biri, talebi
+yapan dışında, onaylar") ve bir değerin nereden gelebileceğini sınırlayabilir ("tutar faturadan
+okunur, yazılmaz").
+
 ```sh
 sbcl --script examples/order/demo.lisp      # sipariş
 sbcl --script examples/payments/demo.lisp   # ödeme: uydurma tutar/IBAN, aynı faturayı iki kez ödeme

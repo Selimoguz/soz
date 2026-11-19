@@ -1,0 +1,11 @@
+{
+  "actor": {"id": "ali", "roles": ["accounts-payable"]},
+  "rules": [
+    {"name": "payments over 10.000 need finance, four eyes",
+     "when": {"operation": "bank.pay", "args": {"amount": {">": 10000}}},
+     "then": {"approve_by": "finance", "four_eyes": true}},
+    {"name": "amounts come from the invoice",
+     "when": {"operation": "bank.pay"},
+     "then": {"args_from": {"amount": ["tool"], "to_iban": ["tool"]}}}
+  ]
+}

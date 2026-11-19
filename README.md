@@ -100,6 +100,29 @@ sbcl --script examples/payments/demo.lisp
 sbcl --script examples/devops/demo.lisp
 ```
 
+### Policy
+
+The host can put rules in force for the person who asked (the model does not say who that is):
+
+```json
+{"actor": {"id": "ali", "roles": ["accounts-payable"]},
+ "rules": [
+   {"name": "payments over 10.000 need finance, four eyes",
+    "when": {"operation": "bank.pay", "args": {"amount": {">": 10000}}},
+    "then": {"approve_by": "finance", "four_eyes": true}},
+   {"name": "amounts come from the invoice",
+    "when": {"operation": "bank.pay"},
+    "then": {"args_from": {"amount": ["tool"], "to_iban": ["tool"]}}},
+   {"name": "field staff do not pay", "when": {"effect": "money", "actor_role": "field"}, "then": "deny"}]}
+```
+
+Rules that do not depend on values are errors in the checker, so the model learns them while
+planning; rules on values apply to the preview (a denied step makes it unapprovable, a required
+approval is shown on the step) and again, with the actual values, before each step runs. With four
+eyes, the person who asked cannot be the approver even if they have the role. In the payments demo,
+Ali's approval alone pays nothing; Ali and Ayşe from finance together pay once. Details:
+[SPEC section 12](SPEC.md#12-policy-03).
+
 ### Execution, in short
 
 - **Preview.** Reads run; every operation with a side effect becomes a numbered step with its
@@ -188,12 +211,13 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 
 | Part | State |
 |---|---|
-| [Specification](SPEC.md) 0.2: syntax, provenance, effects, bounds, preview, approval, execution, journal, audit | draft |
-| [Conformance suite](conformance/): 126 language-neutral cases in JSON (101 checker, 25 preview and execution) | done |
+| [Specification](SPEC.md) 0.3: syntax, provenance, effects, bounds, preview, approval, execution, journal, audit, policy | draft |
+| [Conformance suite](conformance/): 143 language-neutral cases in JSON (109 checker, 34 preview and execution) | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | MCP gateway over stdio, with elicitation approval; end-to-end test | available |
 | Downstream servers over HTTP | next |
-| Policies, JSON syntax, language profiles (number words) | planned |
+| Policy: deny, approval by role with four eyes, sources an argument may come from | available |
+| JSON syntax, language profiles (number words), a way for the gateway to collect a second person's approval | planned |
 
 ## Writing another implementation
 

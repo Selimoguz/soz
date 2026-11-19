@@ -21,13 +21,13 @@
 (defun substitute-string (s old new)
   (let ((i (search old s))) (if i (concatenate 'string (subseq s 0 i) new (subseq s (+ i (length old)))) s)))
 
-(defun write-config (name approval)
+(defun write-config (name approval &optional extra)
   (let ((path (merge-pathnames name *dir*)))
     (with-open-file (s path :direction :output :if-exists :supersede :external-format :utf-8)
       (format s "{\"servers\": {\"erp\": {\"command\": \"sbcl\", \"args\": [\"--script\", ~s]}},
  \"operations\": {\"erp.add_order_line\": {\"key\": [\"customer\", \"product\", \"quantity\"], \"model_allowed\": [\"note\"]}},
- \"approval\": ~s, \"journal\": \"journal.jsonl\", \"audit\": \"audit.jsonl\"}"
-              (substitute #\/ #\\ (namestring (merge-pathnames "../../examples/gateway/fake-erp.lisp" *here*))) approval))
+ ~@[~a,~] \"approval\": ~s, \"journal\": \"journal.jsonl\", \"audit\": \"audit.jsonl\"}"
+              (substitute #\/ #\\ (namestring (merge-pathnames "../../examples/gateway/fake-erp.lisp" *here*))) extra approval))
     path))
 
 ;;; A minimal MCP client
@@ -190,8 +190,39 @@
                (and (error-p r) (search "locked" (text-of r)) (= 2 (orders c)))))))
   (close-client c))
 
+(format t "~%Policy (actor ali, role sales)~%")
+(let* ((code-file (merge-pathnames "code-policy.txt" *dir*))
+       (c (connect (write-config "gateway4.json" "auto"
+                                 "\"actor\": {\"id\": \"ali\", \"roles\": [\"sales\"]},
+ \"policy\": {\"rules\": [
+   {\"name\": \"orders over 10 need a manager\", \"when\": {\"operation\": \"erp.add_order_line\", \"args\": {\"quantity\": {\">\": 10}}}, \"then\": {\"approve_by\": \"manager\"}},
+   {\"name\": \"no order line of 100 or more\", \"when\": {\"operation\": \"erp.add_order_line\", \"args\": {\"quantity\": {\">=\": 100}}}, \"then\": {\"deny\": \"too large\"}}]}")
+                   :elicitation nil :code-file code-file))
+       (msg "Yilmaz Market: 30 tomatoes, 8 peppers, or 200 tomatoes")
+       (line (lambda (product qty)
+               (format nil "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product ~s quantity ~d)))" product qty))))
+  (when (probe-file code-file) (delete-file code-file))
+  (check "the guide lists the policy in force" (search "orders over 10 need a manager" (text-of (call c "soz_guide" (json:json-nesne)))))
+  (let* ((r (call c "soz_preview" (json:json-nesne "plan" (funcall line "tomatoes" 30) "message" msg)))
+         (id (preview-id r)))
+    (check "the preview shows the approval a step needs" (search "needs approval by manager" (text-of r)))
+    (let ((r2 (call c "soz_execute" (json:json-nesne "preview_id" id))))
+      (check "the gateway cannot collect a manager's approval: it says so and nothing runs"
+             (and (error-p r2) (search "needs approval by manager" (text-of r2)) (= 0 (orders c))))
+      (check "no approval code was shown to the user for it" (not (probe-file code-file)))))
+  (let ((r (call c "soz_preview" (json:json-nesne "plan" (funcall line "tomatoes" 200) "message" msg))))
+    (check "a denied value: the preview says the policy does not allow it"
+           (and (error-p r) (search "policy does not allow" (text-of r)) (search "too large" (text-of r)))))
+  (let* ((id (preview-id (call c "soz_preview" (json:json-nesne "plan" (funcall line "peppers" 8) "message" msg))))
+         (r (call c "soz_execute" (json:json-nesne "preview_id" id))))
+    (check "a step the policy asks nothing more for goes through the user's own approval"
+           (and (search "approval code is now shown" (text-of r))
+                (search "Outcome: done" (text-of (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" (read-code code-file)))))
+                (= 1 (orders c)))))
+  (close-client c))
+
 (format t "~%Audit record across restarts~%")
-(check "three gateway sessions wrote one audit record, and its chain is intact"
+(check "four gateway sessions wrote one audit record, and its chain is intact"
        (let ((sessions 0))
          (with-open-file (s (merge-pathnames "audit.jsonl" *dir*) :external-format :utf-8)
            (loop for line = (read-line s nil) while line

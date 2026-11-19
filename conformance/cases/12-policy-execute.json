@@ -1,0 +1,314 @@
+{
+  "description": "Policy with argument values, at preview and execution (SPEC 12): denials, approvals by role, four eyes.",
+  "message": "Pay what Yilmaz Market owes and order 200 tomatoes, or 20 tomatoes.",
+  "actor": {
+    "id": "ali",
+    "roles": [
+      "sales"
+    ]
+  },
+  "policy": {
+    "rules": [
+      {
+        "name": "big payments: finance, four eyes",
+        "when": {
+          "operation": "pay",
+          "args": {
+            "amount": {
+              ">": 1000
+            }
+          }
+        },
+        "then": {
+          "approve_by": "finance",
+          "four_eyes": true
+        }
+      },
+      {
+        "name": "no order line over 100",
+        "when": {
+          "operation": "erp.add_order_line",
+          "args": {
+            "quantity": {
+              ">": 100
+            }
+          }
+        },
+        "then": {
+          "deny": "split it or call the office"
+        }
+      },
+      {
+        "name": "lines on order O-1 are reviewed",
+        "when": {
+          "operation": "erp.add_line",
+          "args": {
+            "order": {
+              "in": [
+                "O-1"
+              ]
+            }
+          }
+        },
+        "then": {
+          "approve_by": "reviewer"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "a big payment needs an approver with the role",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (pay to (get c code) amount (get c balance))))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 5000,
+              "limit": 100000
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": true,
+                "rule": "big payments: finance, four eyes"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a small payment needs nothing more",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (pay to (get c code) amount (get c balance))))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 500,
+              "limit": 100000
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "pay",
+            "requires": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "a denied value: the preview cannot be approved",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 200))",
+      "tools": {},
+      "expect_preview": {
+        "status": "denied",
+        "problems": [
+          "policy-denied"
+        ]
+      }
+    },
+    {
+      "name": "the same rule allows a smaller value",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))",
+      "tools": {},
+      "expect_preview": {
+        "status": "ready"
+      }
+    },
+    {
+      "name": "only the person who asked approved: nothing runs",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (pay to (get c code) amount (get c balance))))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 5000,
+              "limit": 100000
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "not-approved",
+        "calls": []
+      }
+    },
+    {
+      "name": "an approver with the role: it runs",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (pay to (get c code) amount (get c balance))))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 5000,
+              "limit": 100000
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "approvers": [
+        {
+          "id": "ali",
+          "roles": [
+            "sales"
+          ]
+        },
+        {
+          "id": "ayse",
+          "roles": [
+            "finance"
+          ]
+        }
+      ],
+      "expect_execute": {
+        "outcome": "done",
+        "calls": [
+          "erp.find_customer",
+          "pay"
+        ]
+      }
+    },
+    {
+      "name": "four eyes: the person who asked cannot be the approver, even with the role",
+      "actor": {
+        "id": "ali",
+        "roles": [
+          "sales",
+          "finance"
+        ]
+      },
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (pay to (get c code) amount (get c balance))))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 5000,
+              "limit": 100000
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "not-approved",
+        "calls": []
+      }
+    },
+    {
+      "name": "the amount grows after the preview: the requirement is checked again before the step",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (pay to (get c code) amount (get c balance))))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 500,
+              "limit": 100000
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "execute_tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 5000,
+              "limit": 100000
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "changed",
+        "calls": [
+          "erp.find_customer"
+        ]
+      }
+    },
+    {
+      "name": "a value not known at preview (pending) is assumed to match",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\")) (o (erp.create_order customer (get c code)))) (erp.add_line order (get o id) product \"tomatoes\" quantity 20)))",
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 500,
+              "limit": 100000
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "erp.create_order",
+            "requires": []
+          },
+          {
+            "operation": "erp.add_line",
+            "requires": [
+              {
+                "role": "reviewer",
+                "four_eyes": false,
+                "rule": "lines on order O-1 are reviewed"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

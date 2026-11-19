@@ -64,6 +64,13 @@ A case with a `tools` field is an execution case. Instead of `expect` it has:
 - `problems` is the list of problem codes, in order. Arguments are compared as canonical JSON
   (SPEC 10.6), so `{"pending": 1, "path": ["id"]}` stands for a step's pending result.
 
+## Policy (SPEC 12)
+
+A file or a case may set `"policy"` (`{"rules": [...]}`) and `"actor"` (`{"id", "roles"}`); a case's
+own value wins over the file's, and `"actor": null` means no actor. In execution cases,
+`"approvers"` lists who approved (`[{"id", "roles"}]`; by default the actor alone), and a step in
+`expect_preview` may list its `"requires"` (`[{"role", "four_eyes", "rule"}]`).
+
 ## Comparing
 
 Only the fields present in `expect` are compared.

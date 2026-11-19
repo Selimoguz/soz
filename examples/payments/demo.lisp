@@ -34,7 +34,8 @@
                                     (reverse *transfers*))))
 
 (let ((message (setup *here*)))
-  (format t "Message: ~a~%" message)
+  (format t "Message: ~a~%From: ~a (~{~a~^, ~})~%Policy: ~{~a~^; ~}~%" message (actor-id *actor*) (actor-roles *actor*)
+          (mapcar #'soz::rule-name *policy*))
 
   (banner "1. The model pays from memory: a rounded amount and an IBAN nobody gave it")
   (show-check (file-text "invented.soz") message)
@@ -43,8 +44,10 @@
   (let ((p (show-preview (file-text "good.soz") message)))
     (format t "Bank: ~a~%" (transfers))
 
-    (banner "3. The person approves")
+    (banner "3. Approval: the policy asks for someone in finance besides Ali")
     (approve p)
+    (format t "Bank: ~a~%" (transfers))
+    (approve p :approvers (list *actor* (make-actor :id "ayse" :roles '("finance"))))
     (format t "Bank: ~a~%" (transfers)))
 
   (banner "4. The same request arrives again (a forwarded e-mail, a retry)")

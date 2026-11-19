@@ -36,6 +36,12 @@
     (let ((p (merge-pathnames f dir))) (when (probe-file p) (delete-file p))))
   (setf *journal* (open-journal (merge-pathnames "demo-journal.jsonl" dir))
         *audit* (open-audit (merge-pathnames "demo-audit.jsonl" dir)))
+  ;; An optional policy.json: {"actor": {...}, "rules": [...]} (SPEC 12).
+  (let ((pol (merge-pathnames "policy.json" dir)))
+    (if (probe-file pol)
+        (let ((j (json:json-oku (file-text "policy.json"))))
+          (setf *policy* (policy-from-json j) *actor* (actor-from-json (gethash "actor" j))))
+        (setf *policy* '() *actor* nil)))
   (string-trim '(#\Newline #\Return #\Space) (file-text "message.txt")))
 
 (defun banner (text) (format t "~%=== ~a ===~%" text))
@@ -51,9 +57,11 @@
     (format t "~a" (preview-summary p))
     p))
 
-(defun approve (p)
-  "The person approves the preview; prints what happened."
-  (let ((e (execute p (preview-hash p) :journal *journal* :audit *audit* :approved-by "demo user")))
+(defun approve (p &key approvers)
+  "APPROVERS (by default the person who asked) approve the preview; prints what happened."
+  (when approvers (format t "Approved by: ~{~a~^, ~}~%" (mapcar #'actor-id approvers)))
+  (let ((e (execute p (preview-hash p) :journal *journal* :audit *audit* :approved-by "demo user"
+                                       :approvers approvers)))
     (format t "Outcome: ~a~@[ (~a)~]~@[~%The plan stopped: ~a~]~%Steps: ~{~a~^, ~}~%"
             (execution-outcome e) (execution-message e) (execution-stop-reason e)
             (mapcar (lambda (s) (format nil "~d ~a" (step-index s) (step-status s))) (execution-steps e)))

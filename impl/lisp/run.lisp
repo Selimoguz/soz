@@ -7,7 +7,8 @@
           preview-status preview-steps preview-problems preview-stop-reason preview-hash preview-json
           execution-outcome execution-steps execution-message execution-stop-reason execution-json
           make-journal journal-entries make-audit open-audit audit-path audit-lines verify-audit sha256-hex canonical-json
-          step-index step-operation step-args step-key step-already-done step-status preview-summary open-journal))
+          step-index step-operation step-args step-key step-already-done step-status step-requires preview-summary
+          open-journal preview-actor))
 
 ;;; ------------------------------------------------------------------
 ;;; SHA-256 (FIPS 180-4)
@@ -269,7 +270,48 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 ;;; Evaluator
 ;;; ------------------------------------------------------------------
 
-(defstruct (plan-step (:conc-name step-)) index operation args key already-done status result)
+(defstruct (plan-step (:conc-name step-)) index operation args key already-done status result
+  requires)   ; policy: ((role four-eyes rule-name) ...) approvals this step needs besides the person's own
+
+(defvar *approvers* '() "Execution: the people who approved (ACTORs).")
+(defvar *preview-actor* nil "Execution: who asked for the plan.")
+
+(defun policy-args (argv)
+  "Arguments as policy conditions see them: a value not known yet (pending) is :unknown."
+  (mapcar (lambda (a) (cons (car a) (if (pending-p (cdr a)) :unknown (cdr a)))) argv))
+
+(defun step-policy (op argv)
+  "(values denials requires) for a call of OP with ARGV under *POLICY* and *ACTOR*."
+  (let ((denials '()) (requires '()) (args (policy-args argv)))
+    (dolist (r *policy*)
+      (when (and (rule-concerns-p r op) (rule-args-match-p r args))
+        (case (first (rule-decision r))
+          (:deny (push (cons (rule-name r) (second (rule-decision r))) denials))
+          (:approve (when (side-effect-p (op-effect op))
+                      (pushnew (list (second (rule-decision r)) (third (rule-decision r)) (rule-name r))
+                               requires :test #'equal))))))
+    (values (reverse denials) (reverse requires))))
+
+(defun denial-text (op denials)
+  (format nil "~a is not allowed: ~{~a~^; ~}" (op-name op)
+          (mapcar (lambda (d) (format nil "rule \"~a\"~@[ (~a)~]" (car d) (cdr d))) denials)))
+
+(defun unmet-requirements (requires approvers actor)
+  "The requirements no approver satisfies. Four eyes: the approver is not the person who asked."
+  (remove-if (lambda (req)
+               (destructuring-bind (role four-eyes rule) req
+                 (declare (ignore rule))
+                 (some (lambda (a) (and (member role (actor-roles a) :test #'string=)
+                                        (not (and four-eyes actor (equal (actor-id a) (actor-id actor))))))
+                       approvers)))
+             requires))
+
+(defun requirements-text (requires actor)
+  (format nil "~{~a~^; ~}"
+          (mapcar (lambda (r) (destructuring-bind (role four-eyes rule) r
+                                (format nil "approval by ~a~:[~*~; (someone other than ~a)~] (rule \"~a\")"
+                                        role (and four-eyes actor) (and actor (actor-id actor)) rule)))
+                  requires)))
 
 (defvar *mode*)          ; :preview or :execute
 (defvar *steps*)         ; steps reached so far (reverse order)
@@ -390,6 +432,11 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
         ;; read
         (progn
           (dolist (a argv) (no-pending (cdr a) (format nil "~a (a read)" (op-name op))))
+          (let ((denials (step-policy op argv)))
+            (when denials
+              (if (eq *mode* :preview)
+                  (problem "policy-denied" "~a" (denial-text op denials))
+                  (error 'plan-halted :outcome "denied" :message (denial-text op denials)))))
           (handler-case (from-host (call-implementation op argv) (op-returns op) (op-name op))
             (operation-failed (e) (problem "read-failed" "~a failed: ~a" (op-name op) (outcome-message e)))
             (operation-unknown (e) (problem "read-failed" "~a did not answer: ~a" (op-name op) (outcome-message e)))))
@@ -399,6 +446,11 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                (done (journal-get *journal* key))
                (st (make-plan-step :index index :operation op :args (rec argv) :key key :already-done (and done t))))
           (push st *steps*)
+          (when (eq *mode* :preview)
+            (multiple-value-bind (denials requires) (step-policy op argv)
+              (setf (step-requires st) requires)
+              (when denials
+                (problem "policy-denied" "step ~d: ~a" index (denial-text op denials)))))
           (ecase *mode*
             (:preview
              (when (find key (rest *steps*) :key #'step-key :test #'string=)
@@ -415,6 +467,19 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                                           (op-name (step-operation p)) (canonical-json (step-args p))
                                                           (op-name op) (canonical-json (step-args st)))
                                                   (format nil "step ~d (~a) was not in the approved preview" index (op-name op)))))
+               ;; What was approved is unchanged; the policy is applied again with the actual values
+               ;; (a pending value from the preview is known now).
+               (multiple-value-bind (denials requires) (step-policy op argv)
+                 (setf (step-requires st) requires)
+                 (when denials
+                   (setf (step-status st) "not_run")
+                   (error 'plan-halted :outcome "denied" :message (format nil "step ~d: ~a" index (denial-text op denials))))
+                 (let ((unmet (and (not done) (unmet-requirements requires *approvers* *preview-actor*))))
+                   (when unmet
+                     (setf (step-status st) "not_run")
+                     (error 'plan-halted :outcome "not-approved"
+                                         :message (format nil "step ~d (~a) needs ~a" index (op-name op)
+                                                          (requirements-text unmet *preview-actor*))))))
                (cond
                  (done
                   (setf (step-status st) "already_done")
@@ -450,7 +515,8 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 ;;; Preview and execute
 ;;; ------------------------------------------------------------------
 
-(defstruct (preview (:conc-name preview-)) text message check status steps problems stop-reason hash used)
+(defstruct (preview (:conc-name preview-)) text message check status steps problems stop-reason hash used
+  actor policy)
 (defstruct (execution (:conc-name execution-)) outcome steps message stop-reason)
 
 (defun plan-body (text) (cddr (node-value (read-plan text))))
@@ -458,22 +524,29 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 (defun steps-json (steps)
   (map 'vector (lambda (s) (obj "index" (step-index s) "operation" (op-name (step-operation s))
                                 "effect" (op-effect (step-operation s)) "args" (step-args s) "key" (step-key s)
-                                "already_done" (bool (step-already-done s))))
+                                "already_done" (bool (step-already-done s))
+                                "requires" (map 'vector (lambda (r) (obj "role" (first r) "four_eyes" (bool (second r))
+                                                                         "rule" (third r)))
+                                                (step-requires s))))
        steps))
 
-(defun preview (text &key message journal audit)
-  "Dry run (SPEC 10.3): reads run, side effects become steps. Returns a PREVIEW."
-  (let ((check (check-plan text :message message))
+(defun preview (text &key message journal audit (policy *policy*) (actor *actor*))
+  "Dry run (SPEC 10.3): reads run, side effects become steps, POLICY is applied for ACTOR (SPEC 12).
+Returns a PREVIEW."
+  (let ((check (check-plan text :message message :policy policy :actor actor))
+        (*policy* policy) (*actor* actor)
         (*mode* :preview) (*steps* '()) (*journal* journal) (*audit* audit)
         (problems '()) (status nil) (reason nil))
     (if (not (result-valid check))
         (setf status "invalid")
         (handler-case (progn (eval-body (plan-body text) '()) (setf status (if *steps* "ready" "nothing")))
           (plan-stopped (e) (setf status (if *steps* "stopped" "nothing") reason (stop-reason e)))
-          (run-problem (e) (setf status "error") (push (obj "code" (problem-code e) "message" (problem-message e)) problems))))
+          (run-problem (e)
+            (setf status (if (string= (problem-code e) "policy-denied") "denied" "error"))
+            (push (obj "code" (problem-code e) "message" (problem-message e)) problems))))
     (let* ((steps (reverse *steps*))
            (p (make-preview :text text :message message :check check :status status :steps steps
-                            :problems (reverse problems) :stop-reason reason)))
+                            :problems (reverse problems) :stop-reason reason :actor actor :policy policy)))
       (when (member status '("ready" "stopped") :test #'string=)
         (setf (preview-hash p)
               (sha256-hex (canonical-json (obj "plan" text "message" (or message :null)
@@ -481,12 +554,25 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                                                                      "args" (step-args s) "key" (step-key s)))
                                                             steps))))))
       (audit-append audit "preview" (obj "plan" text "message" (or message :null) "valid" (bool (result-valid check))
+                                         "actor" (if actor (obj "id" (actor-id actor) "roles" (coerce (actor-roles actor) 'vector)) :null)
                                          "status" status "steps" (steps-json steps) "hash" (or (preview-hash p) :null)
                                          "stop_reason" (or reason :null)))
       p)))
 
-(defun execute (p approval &key journal audit (approved-by "unknown"))
-  "Runs the approved preview P (SPEC 10.4). APPROVAL must be P's hash. Returns an EXECUTION."
+(defun execute (p approval &key journal audit (approved-by "unknown") approvers)
+  "Runs the approved preview P (SPEC 10.4). APPROVAL must be P's hash. APPROVERS (ACTORs) are the
+people who approved it; by default the person who asked. Returns an EXECUTION."
+  (let* ((approvers (or approvers (and (preview-actor p) (list (preview-actor p)))))
+         (unmet (unmet-requirements (remove-duplicates
+                                     (loop for st in (preview-steps p) unless (step-already-done st) append (step-requires st))
+                                     :test #'equal)
+                                    approvers (preview-actor p))))
+    (when (and unmet (preview-hash p) (equal approval (preview-hash p)) (not (preview-used p)))
+      (audit-append audit "outcome" (obj "outcome" "not-approved" "message" (requirements-text unmet (preview-actor p))))
+      (return-from execute
+        (make-execution :outcome "not-approved" :steps '()
+                        :message (format nil "this plan needs ~a; nothing ran" (requirements-text unmet (preview-actor p))))))
+    (setf *approvers* approvers))
   (when (or (not (preview-hash p)) (not (equal approval (preview-hash p))) (preview-used p))
     (audit-append audit "outcome" (obj "outcome" "not-approved"))
     (return-from execute (make-execution :outcome "not-approved" :steps '()
@@ -494,8 +580,11 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                                       "this preview was already executed; an approval is for one execution"
                                                       "the approval does not match this preview; nothing ran"))))
   (setf (preview-used p) t)
-  (audit-append audit "approval" (obj "hash" approval "by" approved-by))
+  (audit-append audit "approval" (obj "hash" approval "by" approved-by
+                                      "approvers" (map 'vector (lambda (a) (obj "id" (actor-id a) "roles" (coerce (actor-roles a) 'vector)))
+                                                       *approvers*)))
   (let ((*mode* :execute) (*steps* '()) (*journal* (or journal (make-journal))) (*audit* audit) (*previewed* (preview-steps p))
+        (*policy* (preview-policy p)) (*actor* (preview-actor p)) (*preview-actor* (preview-actor p))
         (outcome nil) (message nil) (reason nil))
     (handler-case (progn (eval-body (plan-body (preview-text p)) '())
                          (setf outcome (if (< (length *steps*) (length *previewed*)) "changed" "done"))
@@ -537,7 +626,9 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                (format o "  ~d. ~a~{ ~a~}~:[~; (already done before; will not run again)~]~%"
                        (step-index s) (op-name (step-operation s))
                        (loop for (k . v) in (cdr (step-args s)) collect (format nil "~a=~a" k (value-text v)))
-                       (step-already-done s))))
+                       (step-already-done s))
+               (when (and (step-requires s) (not (step-already-done s)))
+                 (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))))
            (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (preview-stop-reason p)))
            (dolist (pr (preview-problems p)) (format o "Cannot run: ~a~%" (cdr (assoc "message" (cdr pr) :test #'string=))))
            (when (string= (preview-status p) "nothing") (format o "Nothing to do.~%"))

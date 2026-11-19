@@ -1,0 +1,187 @@
+{
+  "description": "Policy decided from the plan's text (SPEC 12): denials and the sources an argument may come from.",
+  "message": "Pay Yilmaz 20 for tomatoes, plus 5.",
+  "policy": {
+    "rules": [
+      {
+        "name": "field staff do not pay",
+        "when": {
+          "effect": "money",
+          "actor_role": "field"
+        },
+        "then": "deny"
+      },
+      {
+        "name": "amounts come from records",
+        "when": {
+          "operation": "pay"
+        },
+        "then": {
+          "args_from": {
+            "amount": [
+              "tool"
+            ]
+          }
+        }
+      },
+      {
+        "name": "nobody here posts invoices",
+        "when": {
+          "operation": "erp.post_invoice"
+        },
+        "then": {
+          "deny": "posting is done by accounting"
+        }
+      },
+      {
+        "name": "guests do not read customers",
+        "when": {
+          "operation": "erp.find_customer",
+          "actor_role": "guest"
+        },
+        "then": "deny"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "a denied effect for the actor's role, and an amount from the message",
+      "actor": {
+        "id": "ali",
+        "roles": [
+          "field"
+        ]
+      },
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "policy-denied",
+            "line": 1,
+            "column": 11
+          },
+          {
+            "code": "policy-source",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "another role may pay, but the amount must still come from a record",
+      "actor": {
+        "id": "ayse",
+        "roles": [
+          "finance"
+        ]
+      },
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 20))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "policy-source",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "the amount read from a record is allowed",
+      "actor": {
+        "id": "ayse",
+        "roles": [
+          "finance"
+        ]
+      },
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (pay to \"Yilmaz\" amount (get c balance))))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "a value derived from a record and the message is not only from a record",
+      "actor": {
+        "id": "ayse",
+        "roles": [
+          "finance"
+        ]
+      },
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (pay to \"Yilmaz\" amount (+ (get c balance) 5))))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "policy-source",
+            "line": 1,
+            "column": 80
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a rule without actor conditions applies to everyone, with or without an actor",
+      "actor": null,
+      "plan": "(plan \"x\" (erp.post_invoice customer \"Yilmaz\"))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "policy-denied",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "a rule for one effect leaves the others alone",
+      "actor": {
+        "id": "ali",
+        "roles": [
+          "field"
+        ]
+      },
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz\" product \"tomatoes\" quantity 20))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "reads can be denied too",
+      "actor": {
+        "id": "misafir",
+        "roles": [
+          "guest"
+        ]
+      },
+      "plan": "(plan \"x\" (erp.find_customer name \"Yilmaz\"))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "policy-denied",
+            "line": 1,
+            "column": 11
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "an actor_role rule does not apply without an actor",
+      "actor": null,
+      "plan": "(plan \"x\" (erp.find_customer name \"Yilmaz\"))",
+      "expect": {
+        "valid": true
+      }
+    }
+  ]
+}

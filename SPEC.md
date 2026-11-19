@@ -1,9 +1,9 @@
-# soz specification, version 0.2 (draft)
+# soz specification, version 0.3 (draft)
 
 This document defines the soz plan language and its **checker**: the program that decides, before
 anything runs, whether a plan written by a language model may run, what it touches and how many
-operations it can call (sections 1 to 9), and how a valid plan is previewed, approved and executed
-(section 10).
+operations it can call (sections 1 to 9), how a valid plan is previewed, approved and executed
+(section 10), the MCP gateway (section 11), and the policies a host may put in force (section 12).
 
 The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. The conformance suite in
 `conformance/` is normative where it is more specific than this text.
@@ -273,7 +273,8 @@ The checker's result (the conformance suite compares these fields):
 `not-a-plan`, `empty-plan`, `empty-form`, `bad-form`, `unknown-name`, `unknown-operation`,
 `unknown-parameter`, `duplicate-parameter`, `missing-parameter`, `duplicate-field`,
 `unknown-field`, `type-mismatch`, `not-a-list`, `not-a-record`, `mixed-list`, `division-by-zero`,
-`invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`.
+`invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`, and with a policy
+`policy-denied`, `policy-source` (section 12).
 
 ## 10. Execution (0.2)
 
@@ -373,8 +374,8 @@ value is `{"pending": N}` or `{"pending": N, "path": ["field", ...]}`.
 ### 10.7 Error and outcome codes
 
 Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, `duplicate-step`, `no-implementation`,
-`read-failed`. Execution outcomes: `done`, `stopped`, `changed`, `failed`, `unknown`,
-`not-approved`.
+`read-failed`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`,
+`changed`, `failed`, `unknown`, `not-approved`, and with a policy `denied`.
 
 ## 11. MCP gateway
 
@@ -458,10 +459,71 @@ gateway where the agent has no shell.
 Relative paths are relative to the configuration file, which is also the working directory of the
 servers.
 
-## 12. Planned
+## 12. Policy (0.3)
 
-- **Policy:** rules over (person, effect, operation, values), applied to the plan text before
-  running and to each call while running.
+A **policy** is a list of rules the host puts in force, for an **actor**: the person who asked for the
+plan, `{"id": "ali", "roles": ["sales"]}` (the host knows who that is; the model does not say). With
+no rules, nothing in this section applies.
+
+### 12.1 Rules
+
+```json
+{"rules": [
+  {"name": "big payments: finance, four eyes",
+   "when": {"operation": "pay", "args": {"amount": {">": 1000}}},
+   "then": {"approve_by": "finance", "four_eyes": true}},
+  {"name": "field staff do not pay",
+   "when": {"effect": "money", "actor_role": "field"},
+   "then": "deny"},
+  {"name": "amounts come from records",
+   "when": {"operation": "pay"},
+   "then": {"args_from": {"amount": ["tool"]}}}
+]}
+```
+
+`when` (every condition present must hold; an absent one always holds):
+
+- `operation`: a name or a list of names (compared by `name-fold`);
+- `effect`: an effect or a list of effects;
+- `actor_role`: the actor has at least one of these roles (never holds without an actor);
+- `actor_not_role`: the actor has none of these roles (always holds without an actor);
+- `args`: conditions on argument values, `{"param": {"OP": VALUE, ...}, ...}` with `OP` one of `=`,
+  `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` (texts compared after `fold`, numbers by value; ordering
+  only between numbers). A parameter that was not given satisfies no condition. A value not known
+  yet (a pending result, section 10.3) satisfies every condition: the rule is assumed to apply.
+
+`then` is one of:
+
+- `"deny"` or `{"deny": "reason"}`: the call is not allowed;
+- `{"approve_by": ROLE, "four_eyes": BOOL}`: the step also needs the approval of someone with ROLE;
+  with `four_eyes`, someone other than the actor. It applies to side-effect operations only;
+- `{"args_from": {"param": [SOURCE, ...]}}`: the argument's sources (section 5) must all be among
+  these (`message`, `tool`, `model`, `schema`). `["tool"]` means: read from a record, never typed,
+  not even from the message. It may not be combined with `args` conditions.
+
+A rule a host cannot read (an unknown comparison, source or `then`) is a configuration error; the
+host MUST NOT start with it.
+
+### 12.2 When rules apply
+
+- **In the checker**, at every call site: a rule without `args` conditions whose other conditions
+  hold is decided from the text. `deny` is the error `policy-denied` at the call; `args_from` is the
+  error `policy-source` at each argument that breaks it. The model learns this before anything runs.
+- **In the preview**, at every call with its argument values: a matching `deny` is the problem
+  `policy-denied` and the preview's status is `denied` (it cannot be approved); a matching
+  `approve_by` is listed in the step's `requires`, `[{"role", "four_eyes", "rule"}]`, and shown to
+  the person.
+- **At execution**: the preview's policy and actor are used. Before anything runs, the
+  requirements of all steps not already done must be met by the **approvers** (the people who
+  approved; by default the actor alone), or the outcome is `not-approved` and nothing runs; the
+  preview is not used up, so the missing approval may be collected. For every step, after the check
+  that it is unchanged (section 10.4), the rules are applied again with the actual values; a
+  `deny` stops with the outcome `denied`, an unmet requirement with `not-approved`, before the step.
+
+The approval record (section 10.5) lists the approvers.
+
+## 13. Planned
+
 - **JSON syntax:** the same plan as JSON, for models with structured output.
 - **Source labels:** operations may label their results (`erp`, `crm`) so that policies can say
   which system a value came from, not just that it came from a tool.

@@ -1,4 +1,4 @@
-;;;; soz.lisp — Reference checker for the soz plan language, version 0.1 (see ../../SPEC.md).
+;;;; soz.lisp — Reference checker for the soz plan language (see ../../SPEC.md).
 ;;;; SBCL, no dependencies besides json.lisp in this folder. Nothing in a plan is ever evaluated:
 ;;;; the reader below is not the Lisp reader and never creates symbols.
 
@@ -9,7 +9,8 @@
            #:result-max-calls #:result-may-stop #:result-calls #:result-json
            #:soz-error-code #:soz-error-line #:soz-error-column #:soz-error-message
            #:error-report #:plan-summary #:fold #:name-fold #:message-numbers
-           #:*max-length* #:*max-depth* #:*max-tokens* #:*max-list* #:*max-calls*))
+           #:*max-length* #:*max-depth* #:*max-tokens* #:*max-list* #:*max-calls*
+           #:policy-from-json #:actor-from-json #:make-actor #:actor-id #:actor-roles #:*policy* #:*actor*))
 
 (in-package :soz)
 
@@ -213,6 +214,124 @@
                                                      `(make-param :name ,(string-downcase (string pn)) :type (lisp-type ',ty)
                                                                   :required ,required :model-allowed ,model-allowed)))
                                                  params)))))
+
+;;; ------------------------------------------------------------------
+;;; Policy (SPEC 12)
+;;; ------------------------------------------------------------------
+
+(defstruct (actor (:conc-name actor-)) id roles)
+
+(defstruct (rule (:conc-name rule-))
+  name operations effects actor-roles actor-not-roles
+  args        ; ((param op value) ...)  — conditions on argument values
+  decision)   ; (:deny reason) | (:approve role four-eyes) | (:args-from ((param . (source ...)) ...))
+
+(defvar *policy* '() "The rules in force (a list of RULE).")
+(defvar *actor* nil "Who asked for the plan (an ACTOR), or NIL.")
+
+(defparameter *condition-ops* '("=" "!=" "<" "<=" ">" ">=" "in" "not_in"))
+(defparameter *source-names* '(("message" . :message) ("tool" . :tool) ("model" . :model) ("schema" . :schema)))
+
+(defun as-list (x)
+  (cond ((null x) nil) ((stringp x) (list x)) ((vectorp x) (coerce x 'list)) (t x)))
+
+(defun policy-error (fmt &rest args) (error "policy: ~?" fmt args))
+
+(defun actor-from-json (j)
+  (and (hash-table-p j) (make-actor :id (gethash "id" j) :roles (as-list (gethash "roles" j)))))
+
+(defun policy-from-json (j)
+  "Rules from {\"rules\": [...]} or a bare array. Signals an error on anything it does not understand."
+  (let ((rules (if (hash-table-p j) (gethash "rules" j) j)))
+    (loop for r across (or rules #())
+          collect
+          (let* ((w (or (gethash "when" r) (make-hash-table :test #'equal)))
+                 (then (gethash "then" r))
+                 (name (or (gethash "name" r) "unnamed rule"))
+                 (args (let ((a (gethash "args" w)) (out '()))
+                         (when a
+                           (maphash (lambda (param conds)
+                                      (maphash (lambda (cop value)
+                                                 (unless (member cop *condition-ops* :test #'string=)
+                                                   (policy-error "~a: unknown comparison ~s" name cop))
+                                                 (push (list param cop (if (vectorp value) (coerce value 'list) value)) out))
+                                               conds))
+                                    a))
+                         out))
+                 (decision
+                   (cond ((equal then "deny") (list :deny nil))
+                         ((and (hash-table-p then) (gethash "deny" then)) (list :deny (gethash "deny" then)))
+                         ((and (hash-table-p then) (gethash "approve_by" then))
+                          (list :approve (gethash "approve_by" then) (eq (gethash "four_eyes" then) :true)))
+                         ((and (hash-table-p then) (gethash "args_from" then))
+                          (when args (policy-error "~a: args_from is decided from the plan's text; it cannot depend on argument values" name))
+                          (list :args-from
+                                (loop for param being the hash-keys of (gethash "args_from" then) using (hash-value srcs)
+                                      collect (cons param (mapcar (lambda (x) (or (cdr (assoc x *source-names* :test #'string=))
+                                                                                 (policy-error "~a: unknown source ~s" name x)))
+                                                                  (as-list srcs))))))
+                         (t (policy-error "~a: then must be \"deny\", {\"deny\": ...}, {\"approve_by\": ...} or {\"args_from\": ...}" name)))))
+            (make-rule :name name
+                       :operations (mapcar #'name-fold (as-list (gethash "operation" w)))
+                       :effects (as-list (gethash "effect" w))
+                       :actor-roles (as-list (gethash "actor_role" w))
+                       :actor-not-roles (as-list (gethash "actor_not_role" w))
+                       :args args :decision decision)))))
+
+(defun has-any-role-p (roles)
+  (and *actor* (intersection roles (actor-roles *actor*) :test #'string=) t))
+
+(defun rule-concerns-p (rule op)
+  "The rule's operation, effect and actor conditions hold (argument conditions aside)."
+  (and (or (null (rule-operations rule)) (member (name-fold (op-name op)) (rule-operations rule) :test #'string=))
+       (or (null (rule-effects rule)) (member (op-effect op) (rule-effects rule) :test #'string=))
+       (or (null (rule-actor-roles rule)) (has-any-role-p (rule-actor-roles rule)))
+       (or (null (rule-actor-not-roles rule)) (not (has-any-role-p (rule-actor-not-roles rule))))))
+
+(defun policy-equal-p (a b)
+  (cond ((and (stringp a) (stringp b)) (string= (fold a) (fold b)))
+        ((and (rationalp a) (rationalp b)) (= a b))
+        (t (equal a b))))
+
+(defun condition-holds-p (cop actual expected)
+  "ACTUAL :unknown (a value not known yet) satisfies every condition: the rule is assumed to apply."
+  (cond ((eq actual :unknown) t)
+        ((eq actual :absent) nil)
+        ((string= cop "=") (policy-equal-p actual expected))
+        ((string= cop "!=") (not (policy-equal-p actual expected)))
+        ((string= cop "in") (and (member actual (as-list expected) :test #'policy-equal-p) t))
+        ((string= cop "not_in") (not (member actual (as-list expected) :test #'policy-equal-p)))
+        ((and (rationalp actual) (rationalp expected))
+         (funcall (cdr (assoc cop '(("<" . <) ("<=" . <=) (">" . >) (">=" . >=)) :test #'string=)) actual expected))
+        (t nil)))
+
+(defun rule-args-match-p (rule args)
+  "ARGS: ((param . value) ...); a parameter not given is :absent."
+  (every (lambda (c)
+           (destructuring-bind (param cop expected) c
+             (let ((a (assoc (name-fold param) args :key #'name-fold :test #'string=)))
+               (condition-holds-p cop (if a (cdr a) :absent) expected))))
+         (rule-args rule)))
+
+(defun source-names (sources)
+  (mapcar (lambda (k) (car (rassoc k *source-names*))) sources))
+
+(defun check-policy (node op given given-nodes)
+  "Rules that do not depend on argument values are decided here, from the plan's text."
+  (dolist (r *policy*)
+    (when (and (null (rule-args r)) (rule-concerns-p r op))
+      (case (first (rule-decision r))
+        (:deny (err node "policy-denied" "~a is not allowed here (rule \"~a\")~@[: ~a~]"
+                    (op-name op) (rule-name r) (second (rule-decision r))))
+        (:args-from
+         (loop for (param . allowed) in (second (rule-decision r))
+               for k = (name-fold param)
+               for v = (cdr (assoc k given :test #'string=))
+               for bad = (and v (set-difference (v-sources v) allowed))
+               when bad
+                 do (err (cdr (assoc k given-nodes :test #'string=)) "policy-source"
+                         "parameter ~a of ~a must come from ~{~a~^ or ~} (rule \"~a\"); this value comes from ~{~a~^ and ~}"
+                         param (op-name op) (source-names allowed) (rule-name r) (source-names (v-sources v)))))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Provenance helpers (SPEC 5.1)
@@ -518,7 +637,7 @@
       (t (err (first args) "not-a-record" "get takes a field of a record; this is ~a" (type-name (v-type r)))))))
 
 (defun check-call (node op args env)
-  (let ((given '())
+  (let ((given '()) (given-nodes '())
         (side-effect (side-effect-p (op-effect op)))
         (params (op-params op)))
     (unless (evenp (length args))
@@ -536,6 +655,7 @@
                     (pv
                      (let ((v (check-expr pv env)))
                        (push (cons k v) given)
+                       (push (cons k pv) given-nodes)
                        (want pv v (pa-type p))
                        (when (and side-effect (not (pa-model-allowed p)))
                          (dolist (lit (v-invented v))
@@ -549,6 +669,7 @@
       (err node "invented-condition"
            "~a depends on a condition with ~{~a~^, ~}, which is not in the message: an operation that changes something cannot depend on a value the model made up"
            (op-name op) (mapcar #'literal-text (v-invented *condition*))))
+    (check-policy node op given given-nodes)
     (push (make-call :operation op :line (node-line node) :max-count *multiplier* :conditional *conditional*) *calls*)
     ;; SPEC 5.2: what an operation returns depends on what it was asked. Its result carries the
     ;; invented literals of its arguments (except model_allowed ones): looking up a customer, a
@@ -578,9 +699,10 @@
                                  (and (= (soz-error-line a) (soz-error-line b))
                                       (< (soz-error-column a) (soz-error-column b)))))))
 
-(defun check-plan (text &key message)
-  "Checks the plan in TEXT against MESSAGE (what the user wrote, or NIL). Runs nothing. Returns a RESULT."
-  (let ((*errors* '()) (*message* message) (*multiplier* 1) (*condition* nil)
+(defun check-plan (text &key message (policy *policy*) (actor *actor*))
+  "Checks the plan in TEXT against MESSAGE (what the user wrote, or NIL), under POLICY for ACTOR.
+Runs nothing. Returns a RESULT."
+  (let ((*errors* '()) (*message* message) (*multiplier* 1) (*condition* nil) (*policy* policy) (*actor* actor)
         (*conditional* nil) (*calls* '()) (*may-stop* nil) (title nil) (root nil))
     (handler-case
         (setf root (read-plan text))

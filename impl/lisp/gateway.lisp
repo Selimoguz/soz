@@ -172,7 +172,7 @@
 ;;; ------------------------------------------------------------------
 
 (defstruct gateway servers passthrough journal audit (approval "auto") (previews (make-hash-table :test #'equal))
-  (codes (make-hash-table :test #'equal)))
+  (codes (make-hash-table :test #'equal)) policy actor)
 
 (defun resolve (path base) (and path (namestring (merge-pathnames path base))))
 
@@ -185,6 +185,14 @@
                           :journal (open-journal (resolve (or (gethash "journal" config) "soz-journal.jsonl") base))
                           :audit (open-audit (resolve (or (gethash "audit" config) "soz-audit.jsonl") base))))
          (expose-reads (not (eq (gethash "expose_reads" config) :false))))
+    (setf (gateway-actor g) (actor-from-json (gethash "actor" config))
+          (gateway-policy g) (let ((pol (gethash "policy" config)))
+                               (cond ((stringp pol)   ; a file next to the config
+                                      (with-open-file (s (resolve pol base) :external-format :utf-8)
+                                        (let ((text (make-string (file-length s))))
+                                          (policy-from-json (json:json-oku (subseq text 0 (read-sequence text s)))))))
+                                     (pol (policy-from-json pol))
+                                     (t '()))))
     (unless (member (gateway-approval g) '("auto" "elicitation" "code" "client") :test #'string=)
       (error "approval must be \"auto\", \"elicitation\", \"code\" or \"client\", not ~s" (gateway-approval g)))
     (setf *operations* (make-hash-table :test #'equal) *implementations* (make-hash-table :test #'equal))
@@ -457,18 +465,38 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
                                 (- *code-attempts* (pending-code-wrong pending)))
                         :error t))))))
 
+(defun unmet-here (g p)
+  "Requirements of P's steps that the gateway's own user cannot meet alone."
+  (soz::unmet-requirements
+   (remove-duplicates (loop for st in (preview-steps p) unless (step-already-done st) append (step-requires st))
+                      :test #'equal)
+   (if (gateway-actor g) (list (gateway-actor g)) '())
+   (gateway-actor g)))
+
+(defun policy-text (g)
+  (if (null (gateway-policy g))
+      ""
+      (format nil "~%Policy in force~@[ for ~a~]:~%~{- ~a~%~}"
+              (and (gateway-actor g) (format nil "~a (~{~a~^, ~})" (actor-id (gateway-actor g)) (actor-roles (gateway-actor g))))
+              (mapcar (lambda (r) (soz::rule-name r)) (gateway-policy g)))))
+
 (defun call-soz-tool (g name args)
   (cond
-    ((string= name "soz_guide") (text-result (guide-text)))
+    ((string= name "soz_guide") (text-result (concatenate 'string (guide-text) (policy-text g))))
     ((string= name "soz_preview")
      (let* ((plan (gethash "plan" args)) (message (gethash "message" args)))
        (if (not (stringp plan))
            (text-result "plan is required" :error t)
            (let ((p (preview plan :message (and (stringp message) message)
-                                  :journal (gateway-journal g) :audit (gateway-audit g))))
+                                  :journal (gateway-journal g) :audit (gateway-audit g)
+                                  :policy (gateway-policy g) :actor (gateway-actor g))))
              (when (preview-hash p) (setf (gethash (preview-hash p) (gateway-previews g)) p))
              (cond ((string= (preview-status p) "invalid")
                     (text-result (error-report (soz::preview-check p)) :error t))
+                   ((string= (preview-status p) "denied")
+                    (text-result (format nil "~a~%The policy does not allow this plan. Tell the user why; do not try to get around it."
+                                         (preview-summary p))
+                                 :error t))
                    ((preview-hash p)
                     (text-result (format nil "~a~%preview_id: ~a~%~%Show the user these steps. Call soz_execute with this preview_id only after they agree; ~a"
                                          (preview-summary p) (preview-hash p)
@@ -481,6 +509,11 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
        (cond
          ((null p) (text-result "No preview with that preview_id. Call soz_preview first and use the preview_id it returns." :error t))
          ((soz::preview-used p) (text-result "This preview was already executed. To run the plan again, preview it again; the user approves again." :error t))
+         ((unmet-here g p)
+          (text-result (format nil "This plan needs ~a. This gateway can only collect the approval of ~a. Nothing ran."
+                               (soz::requirements-text (unmet-here g p) (gateway-actor g))
+                               (if (gateway-actor g) (actor-id (gateway-actor g)) "the user"))
+                       :error t))
          ((code-mode-p g) (execute-with-code g p (gethash "approval_code" args)))
          ((member (gateway-approval g) '("elicitation" "auto") :test #'string=)
           (if (not (client-elicits-p))
