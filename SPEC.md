@@ -337,6 +337,8 @@ per line:
 
 `type` is `preview`, `approval`, `call` or `outcome`. `prev` is the SHA-256 of the previous line's
 exact text (64 zeros for the first line), so that removing or changing a line breaks the chain.
+A host that restarts continues the chain from the last line of the existing record (its `seq` and
+its hash); it never starts a second chain in the same file.
 `data` for a preview holds the plan, message, check result and steps; for an approval, the hash and
 who approved; for a call, the step, arguments and result or failure; for an outcome, the outcome and
 the steps' statuses.
@@ -396,15 +398,29 @@ else the text.
 
 `approval` in the configuration is one of:
 
-- `elicitation` (default): before executing, the gateway asks the user through MCP elicitation
+- `auto` (default): `elicitation` if the client declared the elicitation capability, otherwise
+  `code`.
+- `elicitation`: before executing, the gateway asks the user through MCP elicitation
   (`elicitation/create`) with the preview and the message it was based on; it executes only if the
   user accepts and sets `approve` to true. The model cannot answer an elicitation. If the client
   does not support elicitation, `soz_execute` refuses and nothing runs.
+- `code`: `soz_execute` with only a `preview_id` runs nothing; it shows the user, in a window of its
+  own outside the chat (a message box on Windows, a dialog on macOS), the steps, the message they
+  were based on and a one-time **approval code** (six characters, such as `K7V-XYN`). The model is
+  told only that a code was shown. If the user agrees, they tell the model the code, and
+  `soz_execute` with `preview_id` and `approval_code` runs the preview. Codes are compared ignoring
+  case, spaces and dashes; a code works once and expires after 10 minutes; three wrong codes lock
+  the preview. If no window can be shown, nothing runs.
 - `client`: the gateway executes when `soz_execute` is called and relies on the client asking the
   user before that tool call. Use it only with clients set to ask every time for `soz_execute`.
 
-The message that provenance is checked against is passed by the agent. In `elicitation` mode the user
-sees that message next to the steps before approving.
+The message that provenance is checked against is passed by the agent. In `elicitation` and `code`
+mode the user sees that message next to the steps before approving.
+
+What approval protects against: a model that acts without asking, or that was talked into acting by
+content it read. It does not protect against an agent that can run arbitrary programs on the same
+machine and deliberately reads the user's screen or another process's memory; for that, run the
+gateway where the agent has no shell.
 
 ### 11.4 Configuration
 
@@ -413,7 +429,7 @@ sees that message next to the steps before approving.
   "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"], "env": {}}},
   "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"],
                                         "model_allowed": ["note"]}},
-  "approval": "elicitation",
+  "approval": "auto",
   "expose_reads": true,
   "journal": "soz-journal.jsonl",
   "audit": "soz-audit.jsonl"

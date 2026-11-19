@@ -33,9 +33,11 @@
 ;;; A minimal MCP client
 (defstruct client process in out (id 0))
 
-(defun connect (config &key (elicitation t))
+(defun connect (config &key (elicitation t) code-file)
   (let* ((p (sb-ext:run-program "sbcl" (list "--script" (namestring (merge-pathnames "soz-mcp.lisp" *here*)) (namestring config))
-                                :search t :wait nil :input :stream :output :stream :error nil :external-format :utf-8))
+                                :search t :wait nil :input :stream :output :stream :error nil :external-format :utf-8
+                                :environment (append (when code-file (list (format nil "SOZ_TEST_CODE_FILE=~a" (namestring code-file))))
+                                                     (sb-ext:posix-environ))))
          (c (make-client :process p :in (sb-ext:process-input p) :out (sb-ext:process-output p))))
     (request c "initialize" (json:json-nesne "protocolVersion" "2025-06-18"
                                              "capabilities" (if elicitation (json:json-nesne "elicitation" (json:json-nesne)) (json:json-nesne))
@@ -143,6 +145,58 @@
            (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id))))
              (and (error-p r) (search "cannot ask the user" (text-of r))))))
   (close-client c))
+
+(format t "~%Approval code (approval=auto, client without elicitation)~%")
+(defun read-code (file)
+  (with-open-file (s file :external-format :utf-8)
+    (let* ((line (read-line s)) (i (search "Approval code: " line)))
+      (and i (subseq line (+ i 15) (+ i 22))))))
+(defun orders (c) (length (json:json-oku (text-of (call c "erp_list_orders" (json:json-nesne))))))
+
+(let* ((code-file (merge-pathnames "code.txt" *dir*))
+       (c (connect (write-config "gateway3.json" "auto") :elicitation nil :code-file code-file))
+       (msg "Yilmaz Market: 7 tomatoes and 3 peppers")
+       (plan (substitute-string (substitute-string *good* "quantity 20" "quantity 7") "quantity 5" "quantity 3"))
+       (id (preview-id (call c "soz_preview" (json:json-nesne "plan" plan "message" msg)))))
+  (check "the preview tells the model the user will be shown a code"
+         (search "approval code outside this chat" (text-of (call c "soz_preview" (json:json-nesne "plan" plan "message" msg)))))
+  (check "a code without one being issued is refused"
+         (error-p (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" "AAA-AAA"))))
+  (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id))))
+    (check "execute without a code shows the user a code and runs nothing"
+           (and (search "approval code is now shown" (text-of r)) (= 0 (orders c)))))
+  (let ((code (read-code code-file)))
+    (check "the user's window has the code, the steps and the message"
+           (and code (with-open-file (s code-file :external-format :utf-8)
+                       (let ((text (make-string (file-length s))))
+                         (setf text (subseq text 0 (read-sequence text s)))
+                         (and (search "quantity=7" text) (search msg text))))))
+    (check "the model never saw the code" (not (search code (text-of (call c "soz_preview" (json:json-nesne "plan" plan "message" msg))))))
+    (check "a wrong code runs nothing"
+           (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" "XXX-XXX"))))
+             (and (error-p r) (search "Wrong approval code" (text-of r)) (= 0 (orders c)))))
+    (check "the user's code, typed loosely (lower case, no dash), runs the plan"
+           (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" (string-downcase (remove #\- code))))))
+             (and (search "Outcome: done" (text-of r)) (= 2 (orders c)))))
+    (check "the same code cannot be used twice"
+           (error-p (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" code)))))
+  (let* ((plan2 (substitute-string plan "quantity 7" "quantity 3"))
+         (id2 (preview-id (call c "soz_preview" (json:json-nesne "plan" plan2 "message" msg)))))
+    (call c "soz_execute" (json:json-nesne "preview_id" id2))
+    (let ((code (read-code code-file)))
+      (dotimes (i 3) (call c "soz_execute" (json:json-nesne "preview_id" id2 "approval_code" "WRONG1")))
+      (check "three wrong codes lock the preview, even for the right code"
+             (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id2 "approval_code" code))))
+               (and (error-p r) (search "locked" (text-of r)) (= 2 (orders c)))))))
+  (close-client c))
+
+(format t "~%Audit record across restarts~%")
+(check "three gateway sessions wrote one audit record, and its chain is intact"
+       (let ((sessions 0))
+         (with-open-file (s (merge-pathnames "audit.jsonl" *dir*) :external-format :utf-8)
+           (loop for line = (read-line s nil) while line
+                 when (= 1 (gethash "seq" (json:json-oku line))) do (incf sessions)))
+         (and (= sessions 1) (soz:verify-audit (merge-pathnames "audit.jsonl" *dir*)))))
 
 (format t "~%~:[~d FAILED~;All gateway tests passed~]~%" (zerop *failed*) *failed*)
 (sb-ext:exit :code (if (zerop *failed*) 0 1))

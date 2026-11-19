@@ -6,7 +6,7 @@
 (export '(preview execute define-implementation *implementations* operation-failed operation-unknown
           preview-status preview-steps preview-problems preview-stop-reason preview-hash preview-json
           execution-outcome execution-steps execution-message execution-stop-reason execution-json
-          make-journal journal-entries make-audit audit-path audit-lines verify-audit sha256-hex canonical-json
+          make-journal journal-entries make-audit open-audit audit-path audit-lines verify-audit sha256-hex canonical-json
           step-index step-operation step-args step-key step-already-done step-status preview-summary open-journal))
 
 ;;; ------------------------------------------------------------------
@@ -220,6 +220,20 @@
         (write-line line s)))))
 
 (defstruct audit path (seq 0) (prev (make-string 64 :initial-element #\0)) (lines '()))
+
+(defun open-audit (path)
+  "An audit record kept in PATH. If the file exists, the chain continues from its last line (its seq,
+and the SHA-256 of that line as prev), so that restarting the host never starts a second chain."
+  (let ((a (make-audit :path path)))
+    (when (probe-file path)
+      (with-open-file (s path :external-format :utf-8)
+        (let ((last nil))
+          (loop for line = (read-line s nil) while line
+                when (plusp (length line)) do (setf last line))
+          (when last
+            (setf (audit-seq a) (gethash "seq" (json:json-oku last))
+                  (audit-prev a) (sha256-hex last))))))
+    a))
 
 (defun iso-time ()
   (multiple-value-bind (s mi h d mo y) (decode-universal-time (get-universal-time) 0)
@@ -521,5 +535,5 @@
            (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (preview-stop-reason p)))
            (dolist (pr (preview-problems p)) (format o "Cannot run: ~a~%" (cdr (assoc "message" (cdr pr) :test #'string=))))
            (when (string= (preview-status p) "nothing") (format o "Nothing to do.~%"))
-           (when (preview-hash p) (format o "Approval code: ~a~%" (subseq (preview-hash p) 0 12)))))))
+           (when (preview-hash p) (format o "Preview: ~a~%" (subseq (preview-hash p) 0 12)))))))
 

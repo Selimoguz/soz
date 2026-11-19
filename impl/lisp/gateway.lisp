@@ -169,7 +169,8 @@
 ;;; Configuration
 ;;; ------------------------------------------------------------------
 
-(defstruct gateway servers passthrough journal audit (approval "elicitation") (previews (make-hash-table :test #'equal)))
+(defstruct gateway servers passthrough journal audit (approval "auto") (previews (make-hash-table :test #'equal))
+  (codes (make-hash-table :test #'equal)))
 
 (defun resolve (path base) (and path (namestring (merge-pathnames path base))))
 
@@ -178,12 +179,12 @@
   (let* ((base (make-pathname :name nil :type nil :defaults (truename path)))
          (config (with-open-file (s path :external-format :utf-8)
                    (let ((text (make-string (file-length s)))) (json:json-oku (subseq text 0 (read-sequence text s))))))
-         (g (make-gateway :approval (or (gethash "approval" config) "elicitation")
+         (g (make-gateway :approval (or (gethash "approval" config) "auto")
                           :journal (open-journal (resolve (or (gethash "journal" config) "soz-journal.jsonl") base))
-                          :audit (make-audit :path (resolve (or (gethash "audit" config) "soz-audit.jsonl") base))))
+                          :audit (open-audit (resolve (or (gethash "audit" config) "soz-audit.jsonl") base))))
          (expose-reads (not (eq (gethash "expose_reads" config) :false))))
-    (unless (member (gateway-approval g) '("elicitation" "client") :test #'string=)
-      (error "approval must be \"elicitation\" or \"client\", not ~s" (gateway-approval g)))
+    (unless (member (gateway-approval g) '("auto" "elicitation" "code" "client") :test #'string=)
+      (error "approval must be \"auto\", \"elicitation\", \"code\" or \"client\", not ~s" (gateway-approval g)))
     (setf *operations* (make-hash-table :test #'equal) *implementations* (make-hash-table :test #'equal))
     (maphash (lambda (name spec)
                (let ((s (start-server name spec base)))
@@ -281,8 +282,11 @@ Example:
                                            '("message" "The user's request, exactly as they wrote it."))
                "annotations" (obj "readOnlyHint" :true))
           (obj "name" "soz_execute"
-               "description" "Run a previewed plan. The user is asked to approve the preview first; nothing runs without that approval."
-               "inputSchema" (input-schema '("preview_id" "The preview_id returned by soz_preview."))
+               "description" "Run a previewed plan. The user approves it first: in their client, or by telling you the approval code shown to them outside the chat. Nothing runs without that approval."
+               "inputSchema" (obj "type" "object"
+                                  "properties" (obj "preview_id" (obj "type" "string" "description" "The preview_id returned by soz_preview.")
+                                                    "approval_code" (obj "type" "string" "description" "Only the code the user told you. Never guess it."))
+                                  "required" (vector "preview_id"))
                "annotations" (obj "readOnlyHint" :false "destructiveHint" :true)))
     (loop for (name nil tool) in (reverse (gateway-passthrough g))
           collect (obj "name" name "description" (or (gethash "description" tool) "")
@@ -348,6 +352,108 @@ Example:
   (format nil "~a~%The assistant based this on your message:~%  ~a~%~%Approve these steps?"
           (preview-summary p) (or (soz::preview-message p) "(no message)")))
 
+;;; --- Approval codes: shown to the user outside the chat, typed back by the user
+
+(defparameter *code-alphabet* "ACDEFHJKLMNPRTUVWXY3479")
+(defparameter *code-lifetime* 600 "Seconds an approval code stays valid.")
+(defparameter *code-attempts* 3 "Wrong codes allowed before the preview is locked.")
+(defvar *code-random* (make-random-state t))
+
+(defstruct pending-code code expires (wrong 0))
+
+(defun client-elicits-p () (and *client-capabilities* (gethash "elicitation" *client-capabilities*) t))
+
+(defun code-mode-p (g)
+  (or (string= (gateway-approval g) "code")
+      (and (string= (gateway-approval g) "auto") (not (client-elicits-p)))))
+
+(defun new-code ()
+  (let ((c (coerce (loop repeat 6 collect (char *code-alphabet* (random (length *code-alphabet*) *code-random*))) 'string)))
+    (format nil "~a-~a" (subseq c 0 3) (subseq c 3))))
+
+(defun normalize-code (s)
+  (string-upcase (remove-if-not #'alphanumericp (or s ""))))
+
+(defun base64 (text)
+  (let* ((bytes (sb-ext:string-to-octets text :external-format :utf-8))
+         (n (length bytes))
+         (abc "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"))
+    (with-output-to-string (o)
+      (loop for i from 0 below n by 3
+            do (let* ((b0 (aref bytes i))
+                      (b1 (if (< (+ i 1) n) (aref bytes (+ i 1)) 0))
+                      (b2 (if (< (+ i 2) n) (aref bytes (+ i 2)) 0))
+                      (v (logior (ash b0 16) (ash b1 8) b2)))
+                 (write-char (char abc (ldb (byte 6 18) v)) o)
+                 (write-char (char abc (ldb (byte 6 12) v)) o)
+                 (write-char (if (< (+ i 1) n) (char abc (ldb (byte 6 6) v)) (code-char 61)) o)
+                 (write-char (if (< (+ i 2) n) (char abc (ldb (byte 6 0) v)) (code-char 61)) o))))))
+
+(defun show-to-user (title text)
+  "Shows TEXT in a window of its own, on the user's screen, outside the chat. The text reaches the
+window through the program's standard input, never on a command line. T if a window was opened.
+SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
+  (let ((test-file (sb-ext:posix-getenv "SOZ_TEST_CODE_FILE")))
+    (when (and test-file (plusp (length test-file)))
+      (with-open-file (s test-file :direction :output :if-exists :supersede :external-format :utf-8)
+        (write-string text s))
+      (return-from show-to-user t)))
+  (flet ((run (program args script)
+           (handler-case
+               (let ((p (sb-ext:run-program program args :search t :wait nil :input :stream :output nil :error nil
+                                                         :external-format :utf-8)))
+                 (write-string script (sb-ext:process-input p))
+                 (close (sb-ext:process-input p))
+                 t)
+             (error (e) (log-line "could not show the approval window: ~a" e) nil))))
+    (cond
+      ((member :win32 *features*)
+       (run "powershell" '("-NoProfile" "-NonInteractive" "-Sta" "-Command" "-")
+            (format nil "$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('~a'))~%$h=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('~a'))~%Add-Type -AssemblyName System.Windows.Forms~%[void][System.Windows.Forms.MessageBox]::Show($t,$h,'OK','Information','Button1','DefaultDesktopOnly')~%"
+                    (base64 text) (base64 title))))
+      ((member :darwin *features*)
+       (let ((q (code-char 34)) (sq (code-char 39)))
+         (run "osascript" '()
+              (format nil "display dialog ~a~a~a with title ~a~a~a buttons {~aOK~a} default button 1~%"
+                      q (substitute sq q text) q q (substitute sq q title) q q q))))
+      (t nil))))
+
+(defun code-window-text (p code)
+  (format nil "Approval code: ~a~%~%~a~%~%The assistant based this on your message:~%  ~a~%~%If you agree, type this code in the chat. If not, ignore it.~%The code works once and expires in ~d minutes."
+          code (preview-summary p) (or (soz::preview-message p) "(no message)") (floor *code-lifetime* 60)))
+
+(defun execute-with-code (g p given)
+  (let ((pending (gethash (preview-hash p) (gateway-codes g)))
+        (now (get-universal-time)))
+    (cond
+      ((and pending (eq (pending-code-code pending) :locked))
+       (text-result "Too many wrong approval codes for this preview; it is locked. Preview the plan again." :error t))
+      ((zerop (length (normalize-code given)))
+       (let ((code (new-code)))
+         (if (show-to-user "soz: approve these steps?" (code-window-text p code))
+             (progn
+               (setf (gethash (preview-hash p) (gateway-codes g))
+                     (make-pending-code :code code :expires (+ now *code-lifetime*)))
+               (text-result "An approval code is now shown to the user in a window outside this chat. Ask them to read the steps there and, if they agree, to tell you the code. Then call soz_execute again with preview_id and approval_code. Nothing has run."))
+             (text-result "Could not show the approval code to the user on this system. Nothing ran." :error t))))
+      ((null pending)
+       (text-result "No approval code was issued for this preview. Call soz_execute with only the preview_id first; the user is then shown a code." :error t))
+      ((> now (pending-code-expires pending))
+       (remhash (preview-hash p) (gateway-codes g))
+       (text-result "The approval code expired. Call soz_execute with only the preview_id to show the user a new one. Nothing ran." :error t))
+      ((string= (normalize-code given) (normalize-code (pending-code-code pending)))
+       (remhash (preview-hash p) (gateway-codes g))
+       (text-result (execution-text (execute p (preview-hash p) :journal (gateway-journal g) :audit (gateway-audit g)
+                                                                :approved-by "user (approval code)"))))
+      (t
+       (incf (pending-code-wrong pending))
+       (if (>= (pending-code-wrong pending) *code-attempts*)
+           (progn (setf (pending-code-code pending) :locked)
+                  (text-result "Wrong approval code, too many times; this preview is locked. Nothing ran." :error t))
+           (text-result (format nil "Wrong approval code. Nothing ran. Ask the user to check the code in their window (~d tries left)."
+                                (- *code-attempts* (pending-code-wrong pending)))
+                        :error t))))))
+
 (defun call-soz-tool (g name args)
   (cond
     ((string= name "soz_guide") (text-result (guide-text)))
@@ -361,18 +467,20 @@ Example:
              (cond ((string= (preview-status p) "invalid")
                     (text-result (error-report (soz::preview-check p)) :error t))
                    ((preview-hash p)
-                    (text-result (format nil "~a~%preview_id: ~a~%~%Show the user these steps. Call soz_execute with this preview_id only after they agree; they will be asked to approve in their client."
-                                         (preview-summary p) (preview-hash p))
-                                 :structured (preview-json p)))
-                   (t (text-result (preview-summary p) :error (string= (preview-status p) "error")
-                                                       :structured (preview-json p))))))))
+                    (text-result (format nil "~a~%preview_id: ~a~%~%Show the user these steps. Call soz_execute with this preview_id only after they agree; ~a"
+                                         (preview-summary p) (preview-hash p)
+                                         (if (code-mode-p g)
+                                             "the user is then shown an approval code outside this chat, and you ask them for it."
+                                             "they will be asked to approve in their client."))))
+                   (t (text-result (preview-summary p) :error (string= (preview-status p) "error"))))))))
     ((string= name "soz_execute")
      (let ((p (find-preview g (gethash "preview_id" args))))
        (cond
          ((null p) (text-result "No preview with that preview_id. Call soz_preview first and use the preview_id it returns." :error t))
          ((soz::preview-used p) (text-result "This preview was already executed. To run the plan again, preview it again; the user approves again." :error t))
-         ((string= (gateway-approval g) "elicitation")
-          (if (not (and *client-capabilities* (gethash "elicitation" *client-capabilities*)))
+         ((code-mode-p g) (execute-with-code g p (gethash "approval_code" args)))
+         ((member (gateway-approval g) '("elicitation" "auto") :test #'string=)
+          (if (not (client-elicits-p))
               (text-result "This client cannot ask the user for approval (MCP elicitation), and this gateway requires it. Nothing ran." :error t)
               (if (elicit (approval-message p))
                   (text-result (execution-text (execute p (preview-hash p) :journal (gateway-journal g) :audit (gateway-audit g)

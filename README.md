@@ -75,7 +75,7 @@ breaks when someone edits a line:
 If you approve, these will happen:
   1. erp.add_order_line customer=C-1042 product=tomatoes quantity=20
   2. erp.add_order_line customer=C-1042 product=peppers quantity=5
-Approval code: 49481a3da04a
+Preview: 49481a3da04a
 ...
 Outcome: done; steps: already_done, already_done
 Order lines in the ERP: 2 (nothing twice)
@@ -139,14 +139,18 @@ whatever it is told, which is the point:
 {
   "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"]}},
   "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"], "model_allowed": ["note"]}},
-  "approval": "elicitation"
+  "approval": "auto"
 }
 ```
 
 A tool is treated as read-only only when its server annotates it `readOnlyHint: true` (or the config
-says so); everything else is a write. If your client does not support elicitation, the gateway
-refuses to execute; `"approval": "client"` relies on the client asking before every `soz_execute`
-instead, so use it only with that setting on. Details: [SPEC section 11](SPEC.md#11-mcp-gateway).
+says so); everything else is a write.
+
+**Approval.** If the client supports MCP elicitation, the user approves in the client. If it does not
+(Claude's desktop app, for one, did not when we tried it), the gateway shows the steps and a one-time
+code such as `K7V-XYN` in a window of its own, outside the chat; the user tells the model the code if
+they agree. The model never sees the code, a code works once, and three wrong codes lock the
+preview. Details: [SPEC section 11](SPEC.md#11-mcp-gateway).
 
 ```sh
 sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, the gateway and the ERP as real processes

@@ -5,7 +5,7 @@
   "operations": {
     "erp.add_order_line": {"key": ["customer", "product", "quantity"], "model_allowed": ["note"]}
   },
-  "approval": "elicitation",
+  "approval": "auto",
   "journal": "soz-journal.jsonl",
   "audit": "soz-audit.jsonl"
 }
