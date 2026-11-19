@@ -33,6 +33,37 @@ specification when it passes every case here.
 }
 ```
 
+## Execution cases (SPEC 10)
+
+A case with a `tools` field is an execution case. Instead of `expect` it has:
+
+```json
+{
+  "tools": {"erp.find_customer": [{"result": {"code": "C1"}}], "erp.add_order_line": [{"result": null}]},
+  "execute_tools": {"...": "optional; the scripts for the execution pass (default: tools again)"},
+  "journal": [{"operation": "erp.add_order_line", "args": {"customer": "C1", "product": "tomatoes", "quantity": 20}}],
+  "approve": false,
+  "expect_preview": {"status": "ready", "hash": "...", "stop_reason": null, "problems": ["duplicate-step"],
+                     "steps": [{"operation": "...", "args": {}, "already_done": false}]},
+  "expect_execute": {"outcome": "done", "stop_reason": null,
+                     "steps": [{"index": 1, "status": "done"}],
+                     "calls": ["erp.find_customer", {"operation": "erp.add_order_line", "args": {}}]},
+  "expect_execute_again": {"outcome": "not-approved"}
+}
+```
+
+- Each operation in `tools` answers its calls in order from its script: `{"result": X}`,
+  `{"failed": "why"}` or `{"unknown": "why"}`; when the script runs out, the last answer repeats.
+  An operation without a script has no implementation.
+- `journal` entries are keys already done before the case starts.
+- The preview runs with `tools`; then, if `expect_execute` is present, execution runs with
+  `execute_tools` (or fresh copies of `tools`) and the preview's hash as the approval, or a wrong
+  approval when `"approve": false`. `expect_execute_again` executes the same preview once more.
+- `calls` lists every implementation called during execution, in order (reads too): a name, or an
+  object with the exact arguments.
+- `problems` is the list of problem codes, in order. Arguments are compared as canonical JSON
+  (SPEC 10.6), so `{"pending": 1, "path": ["id"]}` stands for a step's pending result.
+
 ## Comparing
 
 Only the fields present in `expect` are compared.

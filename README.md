@@ -60,6 +60,60 @@ The plan did not run. Fix these and send it again:
 The error text is written for the model: it says where, why, and what to do instead. Add `--json`
 for the machine-readable result.
 
+### The whole loop
+
+```sh
+sbcl --script examples/order/demo.lisp
+```
+
+On a pretend ERP, the demo shows the plan with invented values refused; the corrected plan
+previewed (reads run, nothing is written); the person's approval and an execution that does exactly
+that; the same plan run again, where nothing happens twice; and the audit record, whose hash chain
+breaks when someone edits a line:
+
+```
+If you approve, these will happen:
+  1. erp.add_order_line customer=C-1042 product=tomatoes quantity=20
+  2. erp.add_order_line customer=C-1042 product=peppers quantity=5
+Approval code: 49481a3da04a
+...
+Outcome: done; steps: already_done, already_done
+Order lines in the ERP: 2 (nothing twice)
+...
+demo-audit.jsonl: 9 lines, chain intact
+Someone edits line 3 (a 5 becomes 9): chain broken at line 3
+```
+
+### Execution, in short
+
+- **Preview.** Reads run; every operation with a side effect becomes a numbered step with its
+  arguments, and nothing is written. A step's result is *pending* and can feed later steps (create
+  an order, then add lines to it).
+- **One approval** for the whole preview, bound to it by a SHA-256 hash, and good for one execution.
+- **Execution** evaluates the plan again with live reads and stops before any step whose operation or
+  arguments differ from what was approved (the balance moved, the customer changed).
+- **Idempotency keys** come from business data (the parameters an operation names as its key), are
+  kept in a journal, and make a step that was already done a no-op: a retry, a double click or a
+  message the model copied twice does not order twice.
+- **Unknown outcomes** (a timeout) stop the plan, are recorded, and are never retried by themselves.
+- **Audit record**: preview, approval, every call and the outcome, one JSON line each, chained by
+  SHA-256.
+
+## How a model uses soz
+
+The model never declares where its values come from; that would let it lie. It writes plain values,
+and the checker works out their provenance by comparing them with the message and following them
+through the plan. What the model needs is a short description of the language, the operations it
+may call, and a few example plans; the checker's errors teach it the rest.
+
+soz is built in layers:
+
+| Layer | For | State |
+|---|---|---|
+| **Core library**: checker, preview, execution, journal, audit | embedding in your own agent | Lisp reference, 0.2 |
+| **CLI**: `soz-check`, conformance runner, demo | terminals, CI, porting | available |
+| **MCP gateway**: tools `soz_spec`, `soz_preview`, `soz_execute` in front of your MCP servers | Claude Desktop, Cursor, any MCP client, without code changes | next |
+
 ## What soz is not
 
 - **Not a general-purpose language.** It has no functions, no recursion, no strings library and no
@@ -76,15 +130,11 @@ for the machine-readable result.
 
 | Part | State |
 |---|---|
-| [Specification](SPEC.md) 0.1: syntax, provenance, effects, bounds, checker result | draft |
-| [Conformance suite](conformance/): 86 language-neutral cases in JSON | done |
-| Reference checker in Common Lisp (`impl/lisp/`) | passes the suite |
-| 0.2: dry run, one approval for the whole preview, idempotency keys from business data, audit record | planned |
-| Policies, JSON syntax, language profiles (number words), MCP gateway | planned |
-
-The **MCP gateway** is where this is headed: a server between an agent and its MCP servers that
-takes plans instead of single tool calls, so any agent (Claude Desktop, Cursor, your own) gets these
-guarantees without changing its code.
+| [Specification](SPEC.md) 0.2: syntax, provenance, effects, bounds, preview, approval, execution, journal, audit | draft |
+| [Conformance suite](conformance/): 109 language-neutral cases in JSON (86 checker, 23 preview and execution) | done |
+| Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
+| MCP gateway | next |
+| Policies, JSON syntax, language profiles (number words) | planned |
 
 ## Writing another implementation
 

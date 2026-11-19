@@ -136,7 +136,7 @@
 ;;; Operations (SPEC 6). Types: :text :number :bool :any (:list T) (:record (name . T) ...)
 ;;; ------------------------------------------------------------------
 
-(defstruct (operation (:conc-name op-)) name effect params returns)
+(defstruct (operation (:conc-name op-)) name effect params returns key)
 (defstruct (param (:conc-name pa-)) name type required model-allowed)
 
 (defvar *operations* (make-hash-table :test #'equal) "name-fold -> OPERATION")
@@ -187,7 +187,8 @@
                  ps)))
     (setf (gethash (name-fold name) *operations*)
           (make-operation :name name :effect effect :params (nreverse params)
-                          :returns (type-from-json (gethash "returns" j))))))
+                          :returns (type-from-json (gethash "returns" j))
+                          :key (and (gethash "key" j) (coerce (gethash "key" j) 'list))))))
 
 (defun lisp-type (spec)
   (cond ((member spec '(:text :number :bool :any)) spec)
@@ -199,10 +200,11 @@
                              #'string< :key #'car)))
         (t (error "unknown type ~s" spec))))
 
-(defmacro define-operation (name (&key (effect "write") (returns :any)) &rest params)
+(defmacro define-operation (name (&key (effect "write") (returns :any) key) &rest params)
   "Lisp-side declaration: (define-operation erp.stock (:effect :read :returns (:list ...)) (product :text :required nil))"
   `(setf (gethash (name-fold ,(string-downcase (string name))) *operations*)
          (make-operation :name ,(string-downcase (string name)) :effect ,(string-downcase (string effect)) :returns (lisp-type ',returns)
+                         :key ',(mapcar (lambda (k) (string-downcase (string k))) key)
                          :params (list ,@(mapcar (lambda (p)
                                                    (destructuring-bind (pn ty &key (required t) model-allowed) p
                                                      `(make-param :name ,(string-downcase (string pn)) :type (lisp-type ',ty)

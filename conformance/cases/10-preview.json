@@ -1,0 +1,577 @@
+{
+  "description": "Preview (SPEC 10.3): reads run, side effects become steps, nothing changes.",
+  "message": "Yilmaz Market: 20 tomatoes and 5 peppers",
+  "cases": [
+    {
+      "name": "a plan that can be approved",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "tomatoes",
+              "quantity": 20
+            },
+            "already_done": false
+          },
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "peppers",
+              "quantity": 5
+            },
+            "already_done": false
+          }
+        ],
+        "problems": []
+      }
+    },
+    {
+      "name": "the preview hash is SHA-256 of canonical JSON",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))",
+      "tools": {},
+      "expect_preview": {
+        "status": "ready",
+        "hash": "760c6287566de9bf5581c5f01bc5602498bc8169a84c454c44f733b56e59e298"
+      }
+    },
+    {
+      "name": "a stop before any step: nothing to approve",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 1500,
+              "limit": 1000
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "nothing",
+        "steps": [],
+        "stop_reason": "over the limit, balance 1500"
+      }
+    },
+    {
+      "name": "the model wrote the same line twice",
+      "plan": [
+        "(plan \"x\" (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                                (record product \"tomatoes\" quantity 20)))",
+        "  (erp.add_order_line customer \"Yilmaz Market\" product (get line product) quantity (get line quantity))))"
+      ],
+      "tools": {},
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "duplicate-step"
+        ]
+      }
+    },
+    {
+      "name": "the key ignores parameters outside it (note)",
+      "plan": [
+        "(plan \"x\"",
+        "  (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20 note \"first\")",
+        "  (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20 note \"again\"))"
+      ],
+      "tools": {},
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "duplicate-step"
+        ]
+      }
+    },
+    {
+      "name": "a step already in the journal is marked",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "journal": [
+        {
+          "operation": "erp.add_order_line",
+          "args": {
+            "customer": "C1",
+            "product": "tomatoes",
+            "quantity": 20
+          }
+        }
+      ],
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "tomatoes",
+              "quantity": 20
+            },
+            "already_done": true
+          },
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "peppers",
+              "quantity": 5
+            },
+            "already_done": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "a step's result is pending in the preview",
+      "plan": [
+        "(plan \"Order with a header\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\"))",
+        "        (o (erp.create_order customer (get c code))))",
+        "    (erp.add_line order (get o id) product \"tomatoes\" quantity 20)))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "erp.create_order",
+            "args": {
+              "customer": "C1"
+            }
+          },
+          {
+            "operation": "erp.add_line",
+            "args": {
+              "order": {
+                "pending": 1,
+                "path": [
+                  "id"
+                ]
+              },
+              "product": "tomatoes",
+              "quantity": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a condition on a step's result cannot be previewed",
+      "plan": [
+        "(plan \"x\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\"))",
+        "        (o (erp.create_order customer (get c code))))",
+        "    (if (= (get o id) (get c code)) (notify text \"same\"))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "depends-on-write"
+        ]
+      }
+    },
+    {
+      "name": "a read whose result does not match its declared type",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": "100"
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "bad-result"
+        ]
+      }
+    },
+    {
+      "name": "a tool list longer than 50",
+      "plan": [
+        "(plan \"x\" (for-each (s (erp.stock)) (erp.add_order_line customer \"Yilmaz Market\" product (get s product) quantity (get s quantity))))"
+      ],
+      "tools": {
+        "erp.stock": [
+          {
+            "result": [
+              {
+                "product": "p0",
+                "quantity": 0
+              },
+              {
+                "product": "p1",
+                "quantity": 1
+              },
+              {
+                "product": "p2",
+                "quantity": 2
+              },
+              {
+                "product": "p3",
+                "quantity": 3
+              },
+              {
+                "product": "p4",
+                "quantity": 4
+              },
+              {
+                "product": "p5",
+                "quantity": 5
+              },
+              {
+                "product": "p6",
+                "quantity": 6
+              },
+              {
+                "product": "p7",
+                "quantity": 7
+              },
+              {
+                "product": "p8",
+                "quantity": 8
+              },
+              {
+                "product": "p9",
+                "quantity": 9
+              },
+              {
+                "product": "p10",
+                "quantity": 10
+              },
+              {
+                "product": "p11",
+                "quantity": 11
+              },
+              {
+                "product": "p12",
+                "quantity": 12
+              },
+              {
+                "product": "p13",
+                "quantity": 13
+              },
+              {
+                "product": "p14",
+                "quantity": 14
+              },
+              {
+                "product": "p15",
+                "quantity": 15
+              },
+              {
+                "product": "p16",
+                "quantity": 16
+              },
+              {
+                "product": "p17",
+                "quantity": 17
+              },
+              {
+                "product": "p18",
+                "quantity": 18
+              },
+              {
+                "product": "p19",
+                "quantity": 19
+              },
+              {
+                "product": "p20",
+                "quantity": 20
+              },
+              {
+                "product": "p21",
+                "quantity": 21
+              },
+              {
+                "product": "p22",
+                "quantity": 22
+              },
+              {
+                "product": "p23",
+                "quantity": 23
+              },
+              {
+                "product": "p24",
+                "quantity": 24
+              },
+              {
+                "product": "p25",
+                "quantity": 25
+              },
+              {
+                "product": "p26",
+                "quantity": 26
+              },
+              {
+                "product": "p27",
+                "quantity": 27
+              },
+              {
+                "product": "p28",
+                "quantity": 28
+              },
+              {
+                "product": "p29",
+                "quantity": 29
+              },
+              {
+                "product": "p30",
+                "quantity": 30
+              },
+              {
+                "product": "p31",
+                "quantity": 31
+              },
+              {
+                "product": "p32",
+                "quantity": 32
+              },
+              {
+                "product": "p33",
+                "quantity": 33
+              },
+              {
+                "product": "p34",
+                "quantity": 34
+              },
+              {
+                "product": "p35",
+                "quantity": 35
+              },
+              {
+                "product": "p36",
+                "quantity": 36
+              },
+              {
+                "product": "p37",
+                "quantity": 37
+              },
+              {
+                "product": "p38",
+                "quantity": 38
+              },
+              {
+                "product": "p39",
+                "quantity": 39
+              },
+              {
+                "product": "p40",
+                "quantity": 40
+              },
+              {
+                "product": "p41",
+                "quantity": 41
+              },
+              {
+                "product": "p42",
+                "quantity": 42
+              },
+              {
+                "product": "p43",
+                "quantity": 43
+              },
+              {
+                "product": "p44",
+                "quantity": 44
+              },
+              {
+                "product": "p45",
+                "quantity": 45
+              },
+              {
+                "product": "p46",
+                "quantity": 46
+              },
+              {
+                "product": "p47",
+                "quantity": 47
+              },
+              {
+                "product": "p48",
+                "quantity": 48
+              },
+              {
+                "product": "p49",
+                "quantity": 49
+              },
+              {
+                "product": "p50",
+                "quantity": 50
+              }
+            ]
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "list-too-long"
+        ]
+      }
+    },
+    {
+      "name": "a read that fails",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "failed": "no such customer"
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "read-failed"
+        ]
+      }
+    },
+    {
+      "name": "an invalid plan has no preview",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 25))",
+      "tools": {},
+      "expect_preview": {
+        "status": "invalid"
+      }
+    },
+    {
+      "name": "exact decimals from tools",
+      "plan": [
+        "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "  (if (> (+ (get c balance) (get c balance) (get c balance)) (get c limit)) (stop \"over\") (notify text \"fine\"))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 0.1,
+              "limit": 0.3
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "notify",
+            "args": {
+              "text": "fine"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

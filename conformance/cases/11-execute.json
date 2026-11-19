@@ -1,0 +1,526 @@
+{
+  "description": "Approval and execution (SPEC 10.4): exactly what was approved, or stop.",
+  "message": "Yilmaz Market: 20 tomatoes and 5 peppers",
+  "cases": [
+    {
+      "name": "approved and done",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "done",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "done"
+          }
+        ],
+        "calls": [
+          "erp.find_customer",
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "tomatoes",
+              "quantity": 20
+            }
+          },
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "peppers",
+              "quantity": 5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an approval is for one execution",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "done"
+      },
+      "expect_execute_again": {
+        "outcome": "not-approved",
+        "calls": []
+      }
+    },
+    {
+      "name": "a wrong approval runs nothing",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "approve": false,
+      "expect_execute": {
+        "outcome": "not-approved",
+        "calls": []
+      }
+    },
+    {
+      "name": "the customer changed after the preview: stop before the first write",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "execute_tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C2",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "changed",
+        "steps": [
+          {
+            "index": 1,
+            "status": "not_run"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.find_customer"
+        ]
+      }
+    },
+    {
+      "name": "the balance went over the limit after the preview",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "execute_tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 1500,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "stopped",
+        "stop_reason": "over the limit, balance 1500",
+        "steps": [
+          {
+            "index": 1,
+            "status": "not_run"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.find_customer"
+        ]
+      }
+    },
+    {
+      "name": "the second write fails",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          },
+          {
+            "failed": "closed for the day"
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "failed",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "failed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an unknown outcome stops without retrying",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "unknown": "timeout"
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "unknown",
+        "steps": [
+          {
+            "index": 1,
+            "status": "unknown"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.find_customer",
+          "erp.add_order_line"
+        ]
+      }
+    },
+    {
+      "name": "a step in the journal is not run again",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "journal": [
+        {
+          "operation": "erp.add_order_line",
+          "args": {
+            "customer": "C1",
+            "product": "tomatoes",
+            "quantity": 20
+          }
+        }
+      ],
+      "expect_execute": {
+        "outcome": "done",
+        "steps": [
+          {
+            "index": 1,
+            "status": "already_done"
+          },
+          {
+            "index": 2,
+            "status": "done"
+          }
+        ],
+        "calls": [
+          "erp.find_customer",
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "peppers",
+              "quantity": 5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a pending value is filled in at execution",
+      "plan": [
+        "(plan \"Order with a header\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\"))",
+        "        (o (erp.create_order customer (get c code))))",
+        "    (erp.add_line order (get o id) product \"tomatoes\" quantity 20)))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.create_order": [
+          {
+            "result": {
+              "id": "O-77"
+            }
+          }
+        ],
+        "erp.add_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "done",
+        "calls": [
+          "erp.find_customer",
+          {
+            "operation": "erp.create_order",
+            "args": {
+              "customer": "C1"
+            }
+          },
+          {
+            "operation": "erp.add_line",
+            "args": {
+              "order": "O-77",
+              "product": "tomatoes",
+              "quantity": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "fewer items at execution than in the preview",
+      "plan": [
+        "(plan \"x\" (for-each (s (erp.stock)) (erp.add_order_line customer \"Yilmaz Market\" product (get s product) quantity (get s quantity))))"
+      ],
+      "tools": {
+        "erp.stock": [
+          {
+            "result": [
+              {
+                "product": "tomatoes",
+                "quantity": 20
+              },
+              {
+                "product": "peppers",
+                "quantity": 5
+              }
+            ]
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "execute_tools": {
+        "erp.stock": [
+          {
+            "result": [
+              {
+                "product": "tomatoes",
+                "quantity": 20
+              }
+            ]
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "changed",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ]
+      }
+    }
+  ]
+}

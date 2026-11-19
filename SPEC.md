@@ -1,9 +1,9 @@
-# soz specification, version 0.1 (draft)
+# soz specification, version 0.2 (draft)
 
 This document defines the soz plan language and its **checker**: the program that decides, before
 anything runs, whether a plan written by a language model may run, what it touches and how many
-operations it can call. Execution (dry run, approval, idempotency keys, audit record) is out of
-scope for 0.1 and will be specified in 0.2.
+operations it can call (sections 1 to 9), and how a valid plan is previewed, approved and executed
+(section 10).
 
 The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. The conformance suite in
 `conformance/` is normative where it is more specific than this text.
@@ -200,6 +200,8 @@ The host declares the operations a plan may call. Declaration (JSON):
 - **An operation without `effect` is `write`**: one that someone forgot to mark stays on the safe
   side.
 - `required` defaults to true, `model_allowed` to false, `returns` to `{"type": "any"}`.
+- `key` (0.2) lists the parameters that make up the operation's idempotency key (section 10.3);
+  default: all of them.
 - Types: `{"type": "text" | "number" | "bool" | "any"}`, `{"type": "list", "items": T}`,
   `{"type": "record", "fields": {"name": T, ...}}`.
 
@@ -255,12 +257,106 @@ The checker's result (the conformance suite compares these fields):
 `unknown-field`, `type-mismatch`, `not-a-list`, `not-a-record`, `mixed-list`, `division-by-zero`,
 `invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`.
 
-## 10. Planned (not in 0.1)
+## 10. Execution (0.2)
 
-- **0.2 Execution:** dry run (reads run, writes produce a preview), one approval for the whole
-  preview, re-checking read values at execution (stop on any difference), idempotency keys derived
-  from business data, stop on an unknown outcome without retrying, and an append-only audit record
-  of plan, check result, preview, approval and outcome.
+A valid plan runs in two passes over the same text: a **preview** (dry run) that the person
+approves, and an **execution** that does exactly what was approved or stops.
+
+### 10.1 Implementations of operations
+
+The host gives every operation an implementation: a function from the arguments (a record of
+parameter name to value) to one of
+
+- a **result**, a value of the declared `returns` type;
+- **failed**: the operation did not happen (a validation error, a refusal);
+- **unknown**: it is not known whether it happened (a timeout, a lost connection).
+
+A result that does not match the declared type is `bad-result`. A list result longer than 50 is
+`list-too-long` (the checker assumed at most 50).
+
+### 10.2 Evaluation
+
+Expressions evaluate as their names say: numbers are exact (division that does not terminate stays
+an exact fraction), `=` compares texts after `fold`, numbers by value, bools, lists and records
+structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the body stops at the first
+`stop` reached; its arguments, rendered as text and joined with spaces, are the **stop reason**.
+
+### 10.3 Preview
+
+1. The plan is checked; an invalid plan has no preview.
+2. The body is evaluated. A `read` operation is called. A side-effect operation is **not** called:
+   it becomes a **step** `{index, operation, effect, args, key}`, numbered from 1 in the order
+   reached, with its arguments evaluated.
+3. The value of a step is not known yet. It is a **pending** value: it may be passed to a later
+   step (or a field of it, with `get`), and is shown as `(result of step N)` or
+   `(result of step N).field`. Using a pending value in anything else (arithmetic, a comparison, an
+   `if` condition, a `for-each` list, an argument of a `read`) is `depends-on-write`: such a plan
+   cannot be previewed.
+4. Each step has an **idempotency key**: the operation's name (`name-fold`) and the values of its
+   **key parameters**. An operation declares them with `"key": ["customer", "product", "date"]`;
+   without `key`, all its parameters are key parameters. A step whose key equals an earlier step's
+   key in the same preview is a `duplicate-step` (the model wrote the same thing twice); a preview
+   with a duplicate step cannot be approved. A step whose key is already in the host's **journal**
+   (a previous plan did it) is marked `already_done` and will not run again.
+5. The preview's status is `ready` (it may be approved), `stopped` (a `stop` was reached; the steps
+   before it are listed and may still be approved), `nothing` (no steps) or `error` (a run-time
+   error, `depends-on-write`, `duplicate-step`, or a failed read).
+6. The **preview hash** is the SHA-256, in lower-case hex, of the canonical JSON (10.6) of
+   `{"plan": PLAN-TEXT, "message": MESSAGE-OR-NULL, "steps": [{"operation", "args", "key"}...]}`.
+
+### 10.4 Approval and execution
+
+Execution takes the preview and an **approval**: the preview hash, as approved by a person. A
+different hash is `not-approved` and nothing runs. **An approval is for one execution:** executing
+the same preview a second time is `not-approved` (a double click, a replayed request); running the
+plan again needs a new preview and a new approval. Then the body is evaluated again, from scratch,
+with live reads. For every step reached, in order:
+
+1. If the preview has no step with that index, or its operation or arguments differ, execution stops
+   with `changed` **before** calling it, and says what differs. A pending argument in the preview
+   matches any value. (The balance moved, the stock ran out: the person approved something else.)
+2. If its key is in the journal, it is not called again; its status is `already_done`.
+3. Otherwise it is called:
+   - result: the key goes into the journal with the result; status `done`;
+   - failed: status `failed`; execution stops with `failed`;
+   - unknown: the key goes into the journal as **unknown**, so that nothing runs it again by
+     itself; status `unknown`; execution stops with `unknown`. There is no retry.
+
+If evaluation ends with fewer steps than the preview had, the outcome is `changed`, unless a `stop`
+was reached, which gives `stopped`. Otherwise the outcome is `done`. Every step has a status:
+`done`, `already_done`, `failed`, `unknown` or `not_run`.
+
+### 10.5 Audit record
+
+Every check, preview, approval, call and outcome is appended to an **audit record**, one JSON object
+per line:
+
+```json
+{"seq": 3, "type": "call", "time": "2026-11-19T10:15:02Z", "prev": "9f2c...", "data": {...}}
+```
+
+`type` is `preview`, `approval`, `call` or `outcome`. `prev` is the SHA-256 of the previous line's
+exact text (64 zeros for the first line), so that removing or changing a line breaks the chain.
+`data` for a preview holds the plan, message, check result and steps; for an approval, the hash and
+who approved; for a call, the step, arguments and result or failure; for an outcome, the outcome and
+the steps' statuses.
+
+### 10.6 Canonical JSON
+
+Objects with keys sorted by code point, no whitespace, strings with only `"` `\` and control
+characters escaped (`\u00XX`, lower-case hex), `true`, `false`, `null`. A number is written as an
+exact decimal without exponent or trailing zeros (`20`, `12.5`, `-0.25`); a number that has no finite
+decimal is written as a string `"n/d"` (`"1/3"`). Records are objects; lists are arrays; a pending
+value is `{"pending": N}` or `{"pending": N, "path": ["field", ...]}`.
+
+### 10.7 Error and outcome codes
+
+Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, `duplicate-step`, `no-implementation`,
+`read-failed`. Execution outcomes: `done`, `stopped`, `changed`, `failed`, `unknown`,
+`not-approved`.
+
+## 11. Planned
+
 - **Policy:** rules over (person, effect, operation, values), applied to the plan text before
   running and to each call while running.
 - **JSON syntax:** the same plan as JSON, for models with structured output.
