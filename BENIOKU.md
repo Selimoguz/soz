@@ -36,5 +36,8 @@ getirir. Okuma araçları doğrudan kullanılır. Değişiklik yapan araçlar mo
 plan yazar, kullanıcı önizlemeyi kendi istemcisinde (MCP elicitation) onaylar, geçit tam olarak onu
 çalıştırır.
 
+**İki uygulama:** Common Lisp referans uygulaması ve bağımlılıksız TypeScript uygulaması
+(`impl/ts/`) aynı 143 uyumluluk vakasını geçer.
+
 Ayrıntılar için [README.md](README.md) (İngilizce), dilin tanımı için [SPEC.md](SPEC.md), başka
 dillerde yazılacak uygulamalar için [conformance/](conformance/README.md).
