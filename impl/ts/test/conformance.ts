@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Rational, type Json, isObject, newObject, canonicalJson, nameFold, parseJson } from "../src/exact.ts";
+import { Rational, type Json, isObject, canonicalJson, nameFold, parseJson } from "../src/exact.ts";
 import {
   type CheckResult, type Operations, type Rule, type Actor,
   checkPlan, operationsFromJson, policyFromJson, actorFromJson,
@@ -60,7 +60,7 @@ const stepField: Record<string, (s: Step) => unknown> = {
 };
 
 function compareSteps(want: Json[], got: Step[]) {
-  if (want.length !== got.length) return problem(`steps: expected ${want.length}, got ${got.length}`);
+  if (want.length !== got.length) { problem(`steps: expected ${want.length}, got ${got.length}`); return; }
   want.forEach((w, i) => { for (const [k, v] of Object.entries(w as object)) {
     const g = stepField[k](got[i]);
     if (canonicalJson(v) !== canonicalJson(g)) problem(`step ${i + 1} ${k}: expected ${canonicalJson(v)}, got ${canonicalJson(g)}`);
@@ -91,7 +91,7 @@ function compareExecution(expect: Json, e: Execution, log: Log) {
   if (has(expect, "steps")) compareSteps(get(expect, "steps") as Json[], e.steps);
   if (has(expect, "calls")) {
     const want = get(expect, "calls") as Json[];
-    if (want.length !== log.length) return problem(`calls: expected ${want.length}, got ${log.length}: ${log.map(l => l[0]).join(", ")}`);
+    if (want.length !== log.length) { problem(`calls: expected ${want.length}, got ${log.length}: ${log.map(l => l[0]).join(", ")}`); return; }
     want.forEach((w, i) => {
       const name = typeof w === "string" ? w : get(w, "operation");
       if (name !== log[i][0]) problem(`call ${i + 1}: expected ${name}, got ${log[i][0]}`);

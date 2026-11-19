@@ -8,8 +8,11 @@ Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly 
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm run conformance
+npm test          # type check (tsc, strict), the 143 conformance cases, and the example below
 ```
+
+The only development dependency is the TypeScript compiler, for type checking; nothing is needed
+at run time. The few Node APIs used are typed in `types/node.d.ts` instead of `@types/node`.
 
 ## Use
 

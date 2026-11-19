@@ -4,9 +4,17 @@
   "description": "A plan language a language model writes and a checker proves before anything runs (TypeScript implementation).",
   "license": "Apache-2.0",
   "type": "module",
-  "engines": { "node": ">=22.6" },
+  "engines": {
+    "node": ">=22.6"
+  },
   "main": "src/index.ts",
   "scripts": {
-    "conformance": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/conformance.ts"
+    "typecheck": "tsc -p .",
+    "conformance": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/conformance.ts",
+    "example": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/example.ts",
+    "test": "npm run typecheck && npm run conformance && npm run example"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   }
 }

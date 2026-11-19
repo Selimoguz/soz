@@ -1,7 +1,7 @@
 // example.ts — The README's example, run end to end against a pretend ERP.
 // node --experimental-strip-types test/example.ts
 
-import { operationsFromJson, preview, execute, previewSummary, Journal, parseJson } from "../src/index.ts";
+import { operationsFromJson, preview, execute, previewSummary, Journal, parseJson, type Implementation } from "../src/index.ts";
 
 const operations = operationsFromJson(parseJson(`[
   {"name": "erp.find_customer", "effect": "read", "params": {"name": {"type": "text"}},
@@ -12,9 +12,9 @@ const operations = operationsFromJson(parseJson(`[
 ]`));
 
 const orders: unknown[] = [];
-const implementations = new Map([
+const implementations = new Map<string, Implementation>([
   ["erp.find-customer", async () => ({ code: "C-1042", balance: 4200n, limit: 0.5e4 })],
-  ["erp.add-order-line", async (args: Record<string, unknown>) => { orders.push(args); return null; }],
+  ["erp.add-order-line", async args => { orders.push(args); return null; }],
 ]);
 
 const message = "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.";

@@ -3,7 +3,7 @@
 
 import { readFileSync, appendFileSync, existsSync } from "node:fs";
 import {
-  Rational, type Json, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson,
+  Rational, type Json, type HostValue, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson,
 } from "./exact.ts";
 import {
   type Node, type Operation, type Operations, type Type, type Rule, type Actor, type CheckResult,
@@ -52,7 +52,7 @@ export class OperationFailed extends Error {}
 export class OperationUnknown extends Error {}
 
 /** An implementation gets the arguments as a JSON object and returns JSON (or throws one of the above). */
-export type Implementation = (args: { [k: string]: Json }) => Json | Promise<Json>;
+export type Implementation = (args: { [k: string]: Json }) => HostValue | Promise<HostValue>;
 export type Implementations = Map<string, Implementation>;
 
 class RunProblem extends Error { code: string; constructor(code: string, m: string) { super(m); this.code = code; } }
@@ -69,13 +69,13 @@ export function toHost(v: Value): Json {
 }
 
 /** Numbers from a host may be bigint or JS numbers; they become exact (0.1 as written, 1/10). */
-function exactHost(x: unknown): Json {
+function exactHost(x: HostValue): Json {
   if (typeof x === "bigint") return Rational.of(x);
   if (typeof x === "number") return Number.isInteger(x) ? Rational.of(BigInt(x)) : Rational.parse(String(x)) ?? (x as never);
   return x as Json;
 }
 
-export function fromHost(x0: Json, t: Type, where: string): Value {
+export function fromHost(x0: HostValue, t: Type, where: string): Value {
   const x = exactHost(x0);
   const bad = (): never => problem("bad-result", `${where} returned ${canonicalJson(x)} where ${typeName(t)} was declared`);
   if (t === "any") {
@@ -311,13 +311,13 @@ function argsMatch(previewed: Value, actual: Value): boolean {
   return canonicalJson(previewed) === canonicalJson(actual);
 }
 
-async function callImplementation(c: Ctx, op: Operation, argv: [string, Value][]): Promise<Json> {
+async function callImplementation(c: Ctx, op: Operation, argv: [string, Value][]): Promise<HostValue> {
   const impl = c.impls.get(nameFold(op.name));
   if (!impl) problem("no-implementation", `the host has no implementation of ${op.name}`);
   return await impl!(toHost(new RecordV(argv)) as { [k: string]: Json });
 }
 
-const fromHostOrAny = (x: Json, op: Operation): Value => {
+const fromHostOrAny = (x: HostValue, op: Operation): Value => {
   try { return fromHost(x, op.returns, op.name); } catch (e) { if (e instanceof RunProblem) return fromHost(x, "any", op.name); throw e; }
 };
 
@@ -336,7 +336,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env): Promise<
       if (c.mode === "preview") problem("policy-denied", denialText(op, denials));
       throw new PlanHalted("denied", denialText(op, denials));
     }
-    let raw: Json;
+    let raw: HostValue;
     try { raw = await callImplementation(c, op, argv); }
     catch (e) {
       if (e instanceof OperationFailed) problem("read-failed", `${op.name} failed: ${e.message}`);
@@ -377,7 +377,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env): Promise<
     throw new PlanHalted("not-approved", `step ${index} (${op.name}) needs ${requirementsText(unmet, c.actor)}`);
   }
   if (done) { st.status = "already_done"; return fromHostOrAny(done.result, op); }
-  let raw: Json;
+  let raw: HostValue;
   try { raw = await callImplementation(c, op, argv); }
   catch (e) {
     if (e instanceof OperationFailed) {

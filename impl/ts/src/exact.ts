@@ -69,6 +69,9 @@ export class Rational {
 
 export type Json = null | boolean | string | Rational | Json[] | { [key: string]: Json };
 
+/** What an implementation may return: JSON, with numbers also as bigint or JS numbers (made exact). */
+export type HostValue = null | boolean | string | number | bigint | Rational | HostValue[] | { [key: string]: HostValue };
+
 export function isObject(x: unknown): x is { [key: string]: Json } {
   return typeof x === "object" && x !== null && !Array.isArray(x) && !(x instanceof Rational);
 }
