@@ -24,5 +24,10 @@ ikinci kez çalışmaz. Sonucu bilinmeyen bir işlem tekrar denenmez. Her şey S
 sbcl --script examples/order/demo.lisp
 ```
 
+**MCP geçidi** (`impl/lisp/soz-mcp.lisp`) bunu Claude Desktop, Cursor gibi istemcilere kod değiştirmeden
+getirir. Okuma araçları doğrudan kullanılır. Değişiklik yapan araçlar modele hiç gösterilmez; model
+plan yazar, kullanıcı önizlemeyi kendi istemcisinde (MCP elicitation) onaylar, geçit tam olarak onu
+çalıştırır.
+
 Ayrıntılar için [README.md](README.md) (İngilizce), dilin tanımı için [SPEC.md](SPEC.md), başka
 dillerde yazılacak uygulamalar için [conformance/](conformance/README.md).

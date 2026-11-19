@@ -1,2 +1,3 @@
 *.fasl
 examples/order/demo-*.jsonl
+examples/gateway/soz-*.jsonl

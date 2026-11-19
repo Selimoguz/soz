@@ -355,7 +355,75 @@ Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, 
 `read-failed`. Execution outcomes: `done`, `stopped`, `changed`, `failed`, `unknown`,
 `not-approved`.
 
-## 11. Planned
+## 11. MCP gateway
+
+The gateway is an MCP server (protocol 2025-06-18, stdio) that sits between an agent and the MCP
+servers it would otherwise use. It is an adapter: everything it guarantees comes from sections 1 to
+10.
+
+### 11.1 Operations from tools
+
+Every tool of every configured server becomes the operation `SERVER.TOOL`:
+
+- **parameters** from the tool's `inputSchema`: `string` is `text`, `number` and `integer` are
+  `number`, `boolean` is `bool`, anything else `any`; `required` as declared;
+- **returns** from its `outputSchema` (objects with `required` properties become records, arrays
+  lists), else `any`;
+- **effect** `read` only if the tool is annotated `readOnlyHint: true`, otherwise `write`.
+  Annotations are hints from the server; the configuration may override them, and a tool without
+  annotations is a write.
+
+The configuration may override, per operation, `effect`, `returns`, `key` and `model_allowed` (a
+list of parameter names).
+
+A tool call that returns `isError` is **failed**; a server that does not answer in time gives
+**unknown**. The value of a result is its `structuredContent`, else its text content parsed as JSON,
+else the text.
+
+### 11.2 Tools the gateway offers
+
+- `soz_guide`: the language in brief, the rules the checker enforces, and every operation with its
+  parameters and effect.
+- `soz_preview {plan, message}`: check and preview (section 10.3). On success the result names the
+  steps and a `preview_id` (the preview hash). An invalid plan returns the error report with
+  `isError: true`.
+- `soz_execute {preview_id}`: execute that preview (section 10.4); a unique prefix of at least 12
+  characters is accepted.
+- Every `read` operation is also offered directly, as `SERVER_TOOL`, so the agent can look things up
+  before it plans. Tools that change something are **never** offered directly.
+
+### 11.3 Approval
+
+`approval` in the configuration is one of:
+
+- `elicitation` (default): before executing, the gateway asks the user through MCP elicitation
+  (`elicitation/create`) with the preview and the message it was based on; it executes only if the
+  user accepts and sets `approve` to true. The model cannot answer an elicitation. If the client
+  does not support elicitation, `soz_execute` refuses and nothing runs.
+- `client`: the gateway executes when `soz_execute` is called and relies on the client asking the
+  user before that tool call. Use it only with clients set to ask every time for `soz_execute`.
+
+The message that provenance is checked against is passed by the agent. In `elicitation` mode the user
+sees that message next to the steps before approving.
+
+### 11.4 Configuration
+
+```json
+{
+  "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"], "env": {}}},
+  "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"],
+                                        "model_allowed": ["note"]}},
+  "approval": "elicitation",
+  "expose_reads": true,
+  "journal": "soz-journal.jsonl",
+  "audit": "soz-audit.jsonl"
+}
+```
+
+Relative paths are relative to the configuration file, which is also the working directory of the
+servers.
+
+## 12. Planned
 
 - **Policy:** rules over (person, effect, operation, values), applied to the plan text before
   running and to each call while running.
@@ -364,5 +432,5 @@ Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, 
   which system a value came from, not just that it came from a tool.
 - **Language profiles:** optional message matching for number words ("twenty", "yirmi") and
   inflected words.
-- **MCP gateway:** a server between an agent and its MCP servers that takes plans instead of single
-  tool calls; operation declarations as an extension of MCP tool schemas.
+- **Remote servers:** MCP over streamable HTTP, for downstream servers on another machine (an ERP
+  host).

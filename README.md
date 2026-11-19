@@ -112,7 +112,45 @@ soz is built in layers:
 |---|---|---|
 | **Core library**: checker, preview, execution, journal, audit | embedding in your own agent | Lisp reference, 0.2 |
 | **CLI**: `soz-check`, conformance runner, demo | terminals, CI, porting | available |
-| **MCP gateway**: tools `soz_spec`, `soz_preview`, `soz_execute` in front of your MCP servers | Claude Desktop, Cursor, any MCP client, without code changes | next |
+| **MCP gateway**: tools `soz_guide`, `soz_preview`, `soz_execute` in front of your MCP servers | Claude Desktop, Cursor, any MCP client, without code changes | available (stdio) |
+
+## The MCP gateway
+
+Put the gateway between your agent and your MCP servers. Read-only tools pass through; tools that
+change something are no longer offered to the model at all. To change anything, the model writes a
+plan, `soz_preview` checks and previews it, the **user** approves it in their client (MCP
+elicitation: a question the model cannot answer), and `soz_execute` runs exactly that.
+
+```json
+{
+  "mcpServers": {
+    "soz": {
+      "command": "sbcl",
+      "args": ["--script", "/path/to/soz/impl/lisp/soz-mcp.lisp", "/path/to/gateway.json"]
+    }
+  }
+}
+```
+
+`gateway.json` names the servers behind it; `examples/gateway/` has one with a pretend ERP that does
+whatever it is told, which is the point:
+
+```json
+{
+  "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"]}},
+  "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"], "model_allowed": ["note"]}},
+  "approval": "elicitation"
+}
+```
+
+A tool is treated as read-only only when its server annotates it `readOnlyHint: true` (or the config
+says so); everything else is a write. If your client does not support elicitation, the gateway
+refuses to execute; `"approval": "client"` relies on the client asking before every `soz_execute`
+instead, so use it only with that setting on. Details: [SPEC section 11](SPEC.md#11-mcp-gateway).
+
+```sh
+sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, the gateway and the ERP as real processes
+```
 
 ## What soz is not
 
@@ -133,7 +171,8 @@ soz is built in layers:
 | [Specification](SPEC.md) 0.2: syntax, provenance, effects, bounds, preview, approval, execution, journal, audit | draft |
 | [Conformance suite](conformance/): 109 language-neutral cases in JSON (86 checker, 23 preview and execution) | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
-| MCP gateway | next |
+| MCP gateway over stdio, with elicitation approval; end-to-end test | available |
+| Downstream servers over HTTP | next |
 | Policies, JSON syntax, language profiles (number words) | planned |
 
 ## Writing another implementation
