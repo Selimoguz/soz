@@ -189,7 +189,7 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | Part | State |
 |---|---|
 | [Specification](SPEC.md) 0.2: syntax, provenance, effects, bounds, preview, approval, execution, journal, audit | draft |
-| [Conformance suite](conformance/): 109 language-neutral cases in JSON (86 checker, 23 preview and execution) | done |
+| [Conformance suite](conformance/): 126 language-neutral cases in JSON (101 checker, 25 preview and execution) | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | MCP gateway over stdio, with elicitation approval; end-to-end test | available |
 | Downstream servers over HTTP | next |

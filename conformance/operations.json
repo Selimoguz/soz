@@ -131,6 +131,51 @@
     }
   },
   {
+    "name": "erp.get_order",
+    "effect": "read",
+    "params": {
+      "id": {
+        "type": "text"
+      }
+    },
+    "returns": {
+      "type": "record",
+      "fields": {
+        "id": {
+          "type": "text"
+        },
+        "customer": {
+          "type": "text"
+        },
+        "status": {
+          "type": "text",
+          "enum": [
+            "open",
+            "shipped",
+            "cancelled"
+          ]
+        },
+        "priority": {
+          "type": "number",
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "erp.cancel_order",
+    "effect": "write",
+    "params": {
+      "order": {
+        "type": "text"
+      }
+    }
+  },
+  {
     "name": "notify",
     "effect": "external",
     "params": {

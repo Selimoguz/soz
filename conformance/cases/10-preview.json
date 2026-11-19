@@ -572,6 +572,57 @@
           }
         ]
       }
+    },
+    {
+      "name": "a declared value from the tool: the preview runs",
+      "message": "Please cancel order SO-7.",
+      "plan": "(plan \"x\" (let ((o (erp.get_order id \"SO-7\"))) (if (= (get o status) \"open\") (erp.cancel_order order (get o id)) (stop \"SO-7 is\" (get o status)))))",
+      "tools": {
+        "erp.get_order": [
+          {
+            "result": {
+              "id": "SO-7",
+              "customer": "C1",
+              "status": "Open",
+              "priority": 2
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "erp.cancel_order",
+            "args": {
+              "order": "SO-7"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a tool value outside the declared ones is a bad result",
+      "message": "Please cancel order SO-7.",
+      "plan": "(plan \"x\" (let ((o (erp.get_order id \"SO-7\"))) (if (= (get o status) \"open\") (erp.cancel_order order (get o id)) (stop \"SO-7 is\" (get o status)))))",
+      "tools": {
+        "erp.get_order": [
+          {
+            "result": {
+              "id": "SO-7",
+              "customer": "C1",
+              "status": "on hold",
+              "priority": 2
+            }
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "bad-result"
+        ]
+      }
     }
   ]
 }

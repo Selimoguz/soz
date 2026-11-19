@@ -2,26 +2,74 @@
   {
     "name": "bank.find_invoice",
     "effect": "read",
-    "params": {"number": {"type": "text"}},
-    "returns": {"type": "record", "fields": {
-      "number": {"type": "text"}, "supplier": {"type": "text"},
-      "amount": {"type": "number"}, "currency": {"type": "text"}, "iban": {"type": "text"}}}
+    "params": {
+      "number": {
+        "type": "text"
+      }
+    },
+    "returns": {
+      "type": "record",
+      "fields": {
+        "number": {
+          "type": "text"
+        },
+        "supplier": {
+          "type": "text"
+        },
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "text"
+        },
+        "iban": {
+          "type": "text"
+        },
+        "status": {
+          "type": "text",
+          "enum": [
+            "open",
+            "paid"
+          ]
+        }
+      }
+    }
   },
   {
     "name": "bank.balance",
     "effect": "read",
     "params": {},
-    "returns": {"type": "record", "fields": {"available": {"type": "number"}, "currency": {"type": "text"}}}
+    "returns": {
+      "type": "record",
+      "fields": {
+        "available": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "text"
+        }
+      }
+    }
   },
   {
     "name": "bank.pay",
     "effect": "money",
     "params": {
-      "to_iban": {"type": "text"},
-      "amount": {"type": "number"},
-      "currency": {"type": "text"},
-      "reference": {"type": "text"}
+      "to_iban": {
+        "type": "text"
+      },
+      "amount": {
+        "type": "number"
+      },
+      "currency": {
+        "type": "text"
+      },
+      "reference": {
+        "type": "text"
+      }
     },
-    "key": ["reference"]
+    "key": [
+      "reference"
+    ]
   }
 ]

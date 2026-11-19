@@ -174,6 +174,12 @@
                     ((member x '(:null nil)) :none)
                     ((floatp x) (rational x))
                     (t x)))
+        (:enum (let ((v (from-host x (second type) where)))
+                 (if (member v (third type) :test (lambda (a b) (if (and (stringp a) (stringp b))
+                                                                    (string= (fold a) (fold b))
+                                                                    (and (rationalp a) (rationalp b) (= a b)))))
+                     v
+                     (bad))))
         (:text (if (stringp x) x (bad)))
         (:number (cond ((rationalp x) x) ((floatp x) (rational x)) (t (bad))))
         (:bool (if (member x '(:true :false)) x (bad)))

@@ -104,7 +104,9 @@
 (defun schema-type (s &key output)
   "JSON Schema -> soz type. Inputs stay flat (text/number/bool/any); outputs may be records and lists."
   (let ((ty (and (hash-table-p s) (gethash "type" s))))
-    (cond ((equal ty "string") :text)
+    (cond ((and output (gethash "enum" s) (member ty '("string" "number" "integer") :test #'equal))
+           (list :enum (if (equal ty "string") :text :number) (coerce (gethash "enum" s) 'list)))
+          ((equal ty "string") :text)
           ((member ty '("number" "integer") :test #'equal) :number)
           ((equal ty "boolean") :bool)
           ((and output (equal ty "array")) (list :list (schema-type (gethash "items" s) :output t)))
@@ -210,6 +212,7 @@
 
 (defun type-label (type)
   (cond ((keywordp type) (string-downcase (symbol-name type)))
+        ((eq (first type) :enum) (soz::type-name type))
         ((eq (first type) :list) (format nil "list of ~a" (type-label (second type))))
         (t (format nil "record {~{~a~^, ~}}" (mapcar (lambda (f) (format nil "~a: ~a" (car f) (type-label (cdr f)))) (rest type))))))
 

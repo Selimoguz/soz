@@ -116,7 +116,8 @@ form, an **operation** (section 6), else `unknown-operation` at the name.
 
 `text`, `number`, `bool`, `list` (of one element type), `record` (named fields), `none`, and
 `any`. A value of type `any` (from an operation that returns `any`) is accepted wherever a type is
-expected; `get` on it yields `any`, and `for-each` over it is `not-a-list`.
+expected; `get` on it yields `any`, and `for-each` over it is `not-a-list`. A `text` or `number`
+declared with `enum` (section 6) is that type, with the list of its values attached.
 
 An argument whose type does not match is `type-mismatch` at the argument. Arithmetic and ordering
 comparisons need numbers, `and`/`or`/`not`/`if` conditions need bools, `for-each` needs a list
@@ -126,7 +127,7 @@ be joined the result is `any` (no error).
 
 ## 5. Provenance
 
-Every value has a **source set**, a subset of `{message, tool, model}`, and a set of **invented
+Every value has a **source set**, a subset of `{message, tool, model, schema}`, and a set of **invented
 literals**: the literal tokens it was made from that are not in the message.
 
 ### 5.1 Literals
@@ -151,6 +152,15 @@ valid decimal:
 
 So `1.250` gives {1.25, 1250}, `12,5` gives {12.5, 125} and `20` gives {20}. A negative literal is
 never in the message.
+
+**Schema constants.** In `(= A B)` or `(!= A B)`, if one side is a literal and the other a value
+returned by an operation for a field declared with `enum`, and the literal is one of the declared
+values (texts compared after `fold`, numbers by value), the literal has source `schema` and is not
+invented. Asking whether an order is `"open"` makes nothing up; it asks a question about the tool's
+data. This applies only to `=` and `!=`, only when the other side still carries the declared values
+(a value from `get` or a name bound to it, not one derived by arithmetic or joined by `if`), and
+never to a literal used anywhere else: writing `"cancelled"` as an argument of an operation that
+changes something is still a value the model chose.
 
 ### 5.2 Derived values
 
@@ -208,7 +218,10 @@ The host declares the operations a plan may call. Declaration (JSON):
 - `key` (0.2) lists the parameters that make up the operation's idempotency key (section 10.3);
   default: all of them.
 - Types: `{"type": "text" | "number" | "bool" | "any"}`, `{"type": "list", "items": T}`,
-  `{"type": "record", "fields": {"name": T, ...}}`.
+  `{"type": "record", "fields": {"name": T, ...}}`. A `text` or `number` type may list the only
+  values it takes: `{"type": "text", "enum": ["open", "shipped", "cancelled"]}`. For a value an
+  operation returns, this is a promise the host checks (section 10.1) and that plans may rely on
+  (schema constants, section 5.1).
 
 A call is `(OPERATION PARAM EXPR PARAM EXPR ...)`; parameter names are compared by `name-fold`.
 Errors: an odd number of arguments or a parameter that is not a name is `bad-form`;
@@ -276,7 +289,8 @@ parameter name to value) to one of
 - **failed**: the operation did not happen (a validation error, a refusal);
 - **unknown**: it is not known whether it happened (a timeout, a lost connection).
 
-A result that does not match the declared type is `bad-result`. A list result longer than 50 is
+A result that does not match the declared type is `bad-result`; so is a value outside a declared
+`enum` (texts compared after `fold`). A list result longer than 50 is
 `list-too-long` (the checker assumed at most 50).
 
 ### 10.2 Evaluation
@@ -449,10 +463,6 @@ servers.
 - **Policy:** rules over (person, effect, operation, values), applied to the plan text before
   running and to each call while running.
 - **JSON syntax:** the same plan as JSON, for models with structured output.
-- **Schema constants:** values an operation declares for a field (an enum such as `"open"`,
-  `"paid"`) should count as known when compared with that field, so that `(= (get invoice status)
-  "paid")` can guard a side effect. Today such a constant is a value the model wrote; the examples use
-  bool fields instead.
 - **Source labels:** operations may label their results (`erp`, `crm`) so that policies can say
   which system a value came from, not just that it came from a tool.
 - **Language profiles:** optional message matching for number words ("twenty", "yirmi") and

@@ -161,6 +161,8 @@
 (defun type-from-json (j)
   (let ((ty (and (hash-table-p j) (gethash "type" j))))
     (cond ((null j) :any)
+          ((and (member ty '("text" "number") :test #'equal) (gethash "enum" j))
+           (list :enum (intern (string-upcase ty) :keyword) (coerce (gethash "enum" j) 'list)))
           ((member ty '("text" "number" "bool" "any") :test #'equal) (intern (string-upcase ty) :keyword))
           ((equal ty "list") (list :list (type-from-json (gethash "items" j))))
           ((equal ty "record")
@@ -192,6 +194,7 @@
 
 (defun lisp-type (spec)
   (cond ((member spec '(:text :number :bool :any)) spec)
+        ((eq (first spec) :enum) (list :enum (second spec) (third spec)))
         ((eq (first spec) :list) (list :list (lisp-type (second spec))))
         ((eq (first spec) :record)
          (cons :record (sort (mapcar (lambda (f) (cons (name-fold (string-downcase (string (first f))))
@@ -255,8 +258,9 @@
   item          ; :list -> element VAL
   fields        ; :record -> ((name . VAL) ...)
   length        ; known list length
-  sources       ; (:message :tool :model)
-  invented)     ; literal NODEs not in the message
+  sources       ; (:message :tool :model :schema)
+  invented      ; literal NODEs not in the message
+  allowed)      ; a tool's field declared with an enum: its values (schema constants)
 
 (defstruct (call (:conc-name call-)) operation line max-count conditional)
 (defstruct (soz-error (:conc-name soz-error-)) code line column message)
@@ -308,6 +312,7 @@
   "Value returned by an operation: everything in it comes from the tool."
   (let ((s (list :tool)))
     (cond ((keywordp type) (make-val :type type :sources s))
+          ((eq (first type) :enum) (make-val :type (second type) :sources s :allowed (third type)))
           ((eq (first type) :list) (make-val :type :list :sources s :item (val-of-type (second type))))
           (t (make-val :type :record :sources s
                        :fields (mapcar (lambda (f) (cons (car f) (val-of-type (cdr f)))) (rest type)))))))
@@ -319,6 +324,7 @@
         (if (keywordp type)
             (eq g type)
             (case (first type)
+              (:enum (fits-p (second type) v))
               (:list (and (eq g :list) (or (null (v-item v)) (fits-p (second type) (v-item v)))))
               (:record (and (eq g :record)
                             (every (lambda (f) (let ((x (assoc (car f) (v-fields v) :test #'string=)))
@@ -327,8 +333,19 @@
 
 (defun type-name (type)
   (cond ((keywordp type) (string-downcase (symbol-name type)))
+        ((eq (first type) :enum) (format nil "~a, one of ~{~a~^, ~}" (type-name (second type))
+                                         (mapcar (lambda (x) (if (stringp x) (format nil "~s" x) x)) (third type))))
         ((eq (first type) :list) (format nil "list of ~a" (type-name (second type))))
         (t (format nil "record (~{~a~^, ~})" (mapcar #'car (rest type))))))
+
+(defun constant-allowed-p (node v)
+  "SPEC 5.1: the literal NODE is one of the values declared for V, a tool's enum field."
+  (and (member (node-kind node) '(:text :number))
+       (v-allowed v)
+       (member (node-value node) (v-allowed v)
+               :test (lambda (x y) (if (and (stringp x) (stringp y))
+                                       (string= (fold x) (fold y))
+                                       (and (rationalp x) (rationalp y) (= x y)))))))
 
 (defun literal (node)
   (let* ((type (if (eq (node-kind node) :number) :number :text))
@@ -401,6 +418,13 @@
             (let ((vs (mapcar (lambda (a) (check-expr a env)) args)))
               (unless (form-is k "=" "!=")
                 (loop for a in args for v in vs do (want a v :number)))
+              ;; Schema constants: comparing a declared field with one of its declared values asks a
+              ;; question about the tool's data; it does not make anything up.
+              (when (and (form-is k "=" "!=") (= (length args) 2))
+                (loop for i from 0 to 1
+                      for a = (nth i args) and other = (nth (- 1 i) vs)
+                      when (and (v-invented (nth i vs)) (constant-allowed-p a other))
+                        do (setf (nth i vs) (make-val :type (v-type (nth i vs)) :sources (list :schema)))))
               (derived :bool vs)))
            ((form-is k "and" "or" "not")
             (when (or (null args) (and (form-is k "not") (/= (length args) 1)))
