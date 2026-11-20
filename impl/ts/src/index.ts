@@ -2,10 +2,12 @@
 
 export { Rational, parseJson, canonicalJson, sha256Hex, fold, nameFold, type Json, type HostValue } from "./exact.ts";
 export {
-  checkPlan, readPlan, errorReport, operationFromJson, operationsFromJson, policyFromJson, actorFromJson, limits,
+  checkPlan, readPlan, errorReport, operationFromJson, operationsFromJson, operationToJson, typeToJson, policyFromJson, actorFromJson, limits,
   type CheckResult, type CheckOptions, type Operation, type Operations, type Rule, type Actor, type SozError,
 } from "./checker.ts";
 export {
   preview, execute, previewSummary, stepsJson, Journal, Audit, verifyAudit, OperationFailed, OperationUnknown,
   type Preview, type Execution, type Step, type Implementation, type Implementations, type RunOptions, type ExecuteOptions,
 } from "./run.ts";
+export { t, defineOperation, defineOperations, Schema, type Args, type HostOut, type OperationSpec, type Defined } from "./define.ts";
+export { main as runGateway, loadGateway, GatewayServer } from "./gateway.ts";

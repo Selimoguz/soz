@@ -11,7 +11,7 @@ import { randomInt } from "node:crypto";
 import { Rational, type Json, type HostValue, isObject, newObject, canonicalJson, parseJson, nameFold } from "./exact.ts";
 import {
   type Operation, type Operations, type Param, type Type, type Rule, type Actor,
-  typeFromJson, typeName, isSideEffect, policyFromJson, actorFromJson, errorReport,
+  typeFromJson, typeName, typeToJson, isSideEffect, policyFromJson, actorFromJson, errorReport,
 } from "./checker.ts";
 import {
   type Implementations, type Preview, type Execution, type Requirement,
@@ -274,14 +274,6 @@ Example (the operation names here may differ from this gateway's):
                                 quantity (get line quantity))))))`;
 }
 
-/** A type in the declaration format of SPEC 6, so a model sees record fields and enum values. */
-function typeJson(t: Type): unknown {
-  if (typeof t === "string") return { type: t };
-  if (t.kind === "enum") return { type: t.base, enum: t.values };
-  if (t.kind === "list") return { type: "list", items: typeJson(t.item) };
-  return { type: "record", fields: Object.fromEntries(t.fields.map(([k, ft]) => [k, typeJson(ft)])) };
-}
-
 const stringProp = (description: string) => ({ type: "string", description });
 
 function toolList(g: Gateway) {
@@ -399,8 +391,8 @@ export class GatewayServer {
   private resource(uri: string): { mimeType: string; text: string } {
     if (uri === "soz://guide") return { mimeType: "text/plain", text: guideText(this.g) };
     if (uri === "soz://operations") return { mimeType: "application/json", text: canonicalJson([...this.g.operations.values()].map(op => ({
-      name: op.name, effect: op.effect, returns: typeJson(op.returns), key: op.key,
-      params: op.params.map(p => ({ name: p.name, type: typeJson(p.type), required: p.required, model_allowed: p.modelAllowed })) }))) };
+      name: op.name, effect: op.effect, returns: typeToJson(op.returns), key: op.key,
+      params: op.params.map(p => ({ name: p.name, type: typeToJson(p.type), required: p.required, model_allowed: p.modelAllowed })) }))) };
     if (uri === "soz://policy") return { mimeType: "application/json", text: canonicalJson({ actor: this.g.actor,
       rules: this.g.policy.map(r => ({ name: r.name, operations: r.operations, effects: r.effects, actor_role: r.actorRoles,
         actor_not_role: r.actorNotRoles, args: r.args, then: r.decision })) }) };

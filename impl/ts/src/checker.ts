@@ -156,6 +156,22 @@ export function operationsFromJson(list: Json): Operations {
   return ops;
 }
 
+/** A type in the declaration format of SPEC 6 (the inverse of typeFromJson). */
+export function typeToJson(t: Type): { [k: string]: unknown } {
+  if (typeof t === "string") return { type: t };
+  if (t.kind === "enum") return { type: t.base, enum: t.values };
+  if (t.kind === "list") return { type: "list", items: typeToJson(t.item) };
+  return { type: "record", fields: Object.fromEntries(t.fields.map(([k, ft]) => [k, typeToJson(ft)])) };
+}
+
+/** An operation in the declaration format of SPEC 6 (the inverse of operationFromJson). */
+export function operationToJson(op: Operation): { [k: string]: unknown } {
+  const params = Object.fromEntries(op.params.map(p => [p.name, {
+    ...typeToJson(p.type), ...(p.required ? {} : { required: false }), ...(p.modelAllowed ? { model_allowed: true } : {}),
+  }]));
+  return { name: op.name, effect: op.effect, params, returns: typeToJson(op.returns), ...(op.key ? { key: op.key } : {}) };
+}
+
 export function typeName(t: Type): string {
   if (typeof t === "string") return t;
   if (t.kind === "enum") return `${t.base}, one of ${t.values.map(v => typeof v === "string" ? JSON.stringify(v) : v.toString()).join(", ")}`;

@@ -8,7 +8,7 @@ Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly 
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 143 conformance cases, the example, the gateway end to end
+npm test          # type check (tsc, strict), the 143 conformance cases, the example, defineOperation, the gateway end to end
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -43,6 +43,46 @@ const e = await execute(p, p.hash!, { implementations, journal, audit });
 console.log(e.outcome);                    // done, stopped, changed, failed, unknown, not-approved, denied
 ```
 
+### Declaring operations in TypeScript
+
+Instead of JSON declarations and a separate map of implementations, `defineOperation` puts both in
+one place, and TypeScript checks them against each other:
+
+```ts
+import { t, defineOperation, defineOperations, OperationFailed } from "./src/index.ts";
+
+const findCustomer = defineOperation({
+  name: "erp.find_customer",
+  effect: "read",
+  params: { name: t.text() },
+  returns: t.record({ code: t.text(), balance: t.number(), status: t.enum("open", "blocked") }),
+  run: async ({ name }) => erp.customers.find(name) ?? (() => { throw new OperationFailed("no such customer"); })(),
+});
+
+const addLine = defineOperation({
+  name: "erp.add_order_line",
+  effect: "write",
+  params: { customer: t.text(), product: t.text(), quantity: t.number(),
+            note: t.text().optional().modelAllowed() },
+  key: ["customer", "product", "quantity"],
+  run: async ({ customer, product, quantity, note }) => erp.orders.addLine(customer, product, quantity, note),
+});
+
+const { operations, implementations } = defineOperations(findCustomer, addLine);
+```
+
+- `run` receives typed arguments: `quantity` is an exact `Rational`, `note` is `string | undefined`.
+- These do not compile: a `key` that names no parameter, a `run` that returns a text where a number
+  was declared, an enum value that was not declared, an argument that does not exist, using an
+  optional argument as if it were always there.
+- At run time the result is still checked against the declaration (a value outside an enum is a
+  `bad-result`): the type checker can be talked past with a cast, the checker cannot.
+- `operationToJson(op)` gives the SPEC 6 JSON declaration, so a definition can be published,
+  inspected, or read back with `operationFromJson`.
+
+Types: `t.text()`, `t.number()`, `t.bool()`, `t.any()`, `t.list(item)`, `t.record({...})`,
+`t.enum("a", "b")`; for parameters, `.optional()` and `.modelAllowed()`.
+
 Implementation keys are operation names after `nameFold` (`_` becomes `-`). Numbers are exact:
 implementations receive and may return `Rational` values (or `bigint`), never floats.
 
@@ -75,5 +115,6 @@ the gateway and a pretend ERP as real processes (36 checks).
 | `src/exact.ts` | exact numbers (`bigint` fractions), a JSON reader that keeps numbers exact, canonical JSON, SHA-256, folding |
 | `src/checker.ts` | reader, checker, operations, the policy decided from the text |
 | `src/run.ts` | preview, execution, journal, audit record, the policy with values |
+| `src/define.ts` | `defineOperation`: operations and implementations, typed together |
 | `src/gateway.ts`, `src/soz-mcp.ts` | the MCP gateway |
 | `test/conformance.ts` | the conformance runner |
