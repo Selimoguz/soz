@@ -7,7 +7,7 @@ import {
   Rational, type Json, type HostValue, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson, visible,
 } from "./exact.ts";
 import {
-  type Node, type Operation, type Operations, type Type, type Rule, type Actor, type CheckResult,
+  type Node, type Operation, type Operations, type Type, type Rule, type Actor, type CheckResult, type Call,
   readPlan, checkPlan, typeName, isSideEffect, ruleConcerns, ruleArgsMatch, UNKNOWN, limits,
 } from "./checker.ts";
 
@@ -288,13 +288,18 @@ export function requirementsText(requires: Requirement[], actor: Actor | null): 
 // --- Evaluation -----------------------------------------------------------------------------------------
 
 export type Step = {
-  index: number; operation: Operation; args: RecordV; key: string; alreadyDone: boolean;
+  index: number; operation: Operation; args: RecordV; key: string;
+  /** Its key is in the journal, with any status: it will not be called. journalStatus says which. */
+  alreadyDone: boolean; journalStatus: JournalStatus | null;
   status?: string; result?: Value; requires: Requirement[];
+  /** Where each argument comes from, as the checker proved it (SPEC 5): parameter -> sources. */
+  sources: [string, string[]][];
 };
 
 type Ctx = {
   mode: "preview" | "execute"; steps: Step[]; ops: Operations; impls: Implementations;
   journal: JournalStore; audit: AuditSink | null; previewed: Step[]; policy: Rule[]; actor: Actor | null; approvers: Actor[];
+  calls: Call[];
 };
 
 type Env = [string, Value][];
@@ -383,7 +388,7 @@ async function evalForm(c: Ctx, node: Node & { kind: "list" }, env: Env): Promis
     case "or": return (await vals()).some(truthy);
     case "not": return !truthy((await vals())[0]);
   }
-  return evalCall(c, c.ops.get(k)!, args, env);
+  return evalCall(c, c.ops.get(k)!, args, env, node);
 }
 
 export function stepKeyText(op: Operation, argv: [string, Value][]): string {
@@ -413,7 +418,7 @@ const fromHostOrAny = (x: HostValue, op: Operation): Value => {
   try { return fromHost(x, op.returns, op.name); } catch (e) { if (e instanceof RunProblem) return fromHost(x, "any", op.name); throw e; }
 };
 
-async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env): Promise<Value> {
+async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Node): Promise<Value> {
   const argv: [string, Value][] = [];
   for (let i = 0; i < args.length; i += 2) {
     const p = op.params.find(x => nameFold(x.name) === nameFold((args[i] as { value: string }).value))!;
@@ -441,7 +446,8 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env): Promise<
   const index = c.steps.length + 1;
   const key = stepKeyText(op, argv);
   const done = await c.journal.get(key);
-  const st: Step = { index, operation: op, args: new RecordV(argv), key, alreadyDone: !!done, requires: [] };
+  const sources = c.calls.find(x => x.line === node.line && x.column === node.column)?.sources ?? [];
+  const st: Step = { index, operation: op, args: new RecordV(argv), key, alreadyDone: !!done, journalStatus: done?.status ?? null, requires: [], sources };
   c.steps.push(st);
 
   if (c.mode === "preview") {
@@ -532,15 +538,37 @@ const planBody = (text: string): Node[] => (readPlan(text) as { items: Node[] })
 const requiresJson = (rs: Requirement[]) => rs.map(r => ({ role: r.role, four_eyes: r.fourEyes, rule: r.rule }));
 export const stepsJson = (steps: Step[]) => steps.map(s => ({
   index: Rational.of(s.index), operation: s.operation.name, effect: s.operation.effect, args: s.args, key: s.key,
-  already_done: s.alreadyDone, requires: requiresJson(s.requires),
+  already_done: s.alreadyDone, journal_status: s.journalStatus, requires: requiresJson(s.requires),
+  sources: Object.fromEntries(s.sources),
 }));
+
+/** A step already in the journal, for a person: done, or unresolved (it may or may not have happened). */
+export function journalNote(s: Step): string {
+  if (!s.alreadyDone) return "";
+  return s.journalStatus === "done" ? " (already done before; will not run again)"
+    : " (an earlier run may or may not have happened; it will not run until a person resolves it)";
+}
+
+/** Where a value comes from, for a person: "from the message", "from erp", "written by the assistant". */
+export function sourceText(sources: string[]): string {
+  const word = (s: string) => s === "message" ? "the message" : s === "tool" ? "a tool" : s.startsWith("tool:") ? s.slice(5)
+    : s === "schema" ? "a declared value" : s === "model" ? "the assistant" : s;
+  const from = sources.filter(s => s !== "model").map(word);
+  const parts = [...(from.length ? [`from ${from.join(" and ")}`] : []), ...(sources.includes("model") ? ["written by the assistant"] : [])];
+  return parts.join(", ");
+}
+
+const argWithSource = (s: Step, k: string, v: Value) => {
+  const src = s.sources.find(x => x[0] === k)?.[1] ?? [];
+  return `${k}=${visible(valueText(v))}${src.length ? ` (${sourceText(src)})` : ""}`;
+};
 
 /** Dry run (SPEC 10.3): reads run, side effects become steps, the policy applies (SPEC 12). */
 export async function preview(text: string, o: RunOptions): Promise<Preview> {
   const message = o.message ?? null, policy = o.policy ?? [], actor = o.actor ?? null, journal = o.journal ?? new Journal();
   const check = checkPlan(text, { message, operations: o.operations, policy, actor, profile: o.profile ?? null });
   const c: Ctx = { mode: "preview", steps: [], ops: o.operations, impls: o.implementations, journal, audit: o.audit ?? null,
-                   previewed: [], policy, actor, approvers: [] };
+                   previewed: [], policy, actor, approvers: [], calls: check.calls };
   const problems: { code: string; message: string }[] = [];
   let status: string, reason: string | null = null;
   if (!check.valid) status = "invalid";
@@ -587,7 +615,7 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
   await audit?.append("approval", { hash: approval, by: o.approvedBy ?? "unknown", approvers: approvers.map(a => ({ id: a.id, roles: a.roles })),
                                     ...(o.signatures?.length ? { signatures: o.signatures } : {}) });
   const c: Ctx = { mode: "execute", steps: [], ops: p.operations, impls: o.implementations, journal, audit,
-                   previewed: p.steps, policy: p.policy, actor: p.actor, approvers };
+                   previewed: p.steps, policy: p.policy, actor: p.actor, approvers, calls: p.check.calls };
   let outcome: string, message: string | null = null, reason: string | null = null;
   try {
     await evalBody(c, planBody(p.text), []);
@@ -616,8 +644,8 @@ export function previewSummary(p: Preview): string {
   if (p.steps.length) {
     o += "If you approve, these will happen:\n";
     for (const s of p.steps) {
-      o += `  ${s.index}. ${s.operation.name}` + s.args.fields.map(([k, v]) => ` ${k}=${visible(valueText(v))}`).join("")
-        + (s.alreadyDone ? " (already done before; will not run again)" : "") + "\n";
+      o += `  ${s.index}. ${s.operation.name}` + s.args.fields.map(([k, v]) => ` ${argWithSource(s, k, v)}`).join("")
+        + journalNote(s) + "\n";
       if (s.requires.length && !s.alreadyDone) o += `     needs ${requirementsText(s.requires, p.actor)}\n`;
     }
   }

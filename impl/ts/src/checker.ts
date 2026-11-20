@@ -307,7 +307,11 @@ type Val = {
 };
 
 export type SozError = { code: string; line: number; column: number; message: string };
-export type Call = { operation: Operation; line: number; maxCount: number; conditional: boolean };
+export type Call = {
+  operation: Operation; line: number; column: number; maxCount: number; conditional: boolean;
+  /** Where each argument comes from (SPEC 5), by parameter name, for the preview to show. */
+  sources: [string, Source[]][];
+};
 export type CheckResult = {
   valid: boolean; errors: SozError[]; effects: string[]; requiresApproval: boolean;
   maxCalls: number; mayStop: boolean; calls: Call[]; title: string | null;
@@ -658,7 +662,8 @@ class Checker {
     if (sideEffect && this.condition && this.condition.invented.length)
       this.err(node, "invented-condition", `${op.name} depends on a condition with ${this.condition.invented.map(literalText).join(", ")}, which is not in the message: an operation that changes something cannot depend on a value the model made up`);
     this.checkPolicy(node, op, given, givenNodes);
-    this.calls.push({ operation: op, line: node.line, maxCount: this.multiplier, conditional: this.conditional });
+    this.calls.push({ operation: op, line: node.line, column: node.column, maxCount: this.multiplier, conditional: this.conditional,
+                      sources: given.map(([k, v]) => [op.params.find(p => nameFold(p.name) === k)!.name, uniq(v.sources).sort()] as [string, Source[]]) });
     // SPEC 5.2: what an operation returns depends on what it was asked.
     const inherited = uniq(op.params.flatMap(p => {
       const g = given.find(x => x[0] === nameFold(p.name));

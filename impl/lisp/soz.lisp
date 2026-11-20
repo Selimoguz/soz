@@ -772,7 +772,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
   invented      ; literal NODEs not in the message
   allowed)      ; a tool's field declared with an enum: its values (schema constants)
 
-(defstruct (call (:conc-name call-)) operation line max-count conditional)
+(defstruct (call (:conc-name call-)) operation line column max-count conditional
+  sources)   ; ((param . (source-name ...)) ...): where each argument comes from, for the preview
 (defstruct (soz-error (:conc-name soz-error-)) code line column message)
 (defstruct (result (:conc-name result-)) valid errors effects requires-approval max-calls may-stop calls title)
 
@@ -1061,7 +1062,11 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
            "~a depends on a condition with ~{~a~^, ~}, which is not in the message: an operation that changes something cannot depend on a value the model made up"
            (op-name op) (mapcar #'literal-text (v-invented *condition*))))
     (check-policy node op given given-nodes)
-    (push (make-call :operation op :line (node-line node) :max-count *multiplier* :conditional *conditional*) *calls*)
+    (push (make-call :operation op :line (node-line node) :column (node-column node) :max-count *multiplier* :conditional *conditional*
+                     :sources (loop for (k . v) in given
+                                    collect (cons (pa-name (find k params :key (lambda (x) (name-fold (pa-name x))) :test #'string=))
+                                                  (sort (remove-duplicates (source-names (v-sources v)) :test #'string=) #'string<))))
+          *calls*)
     ;; SPEC 5.2: what an operation returns depends on what it was asked. Its result carries the
     ;; invented literals of its arguments (except model_allowed ones): looking up a customer, a
     ;; server or an invoice the model made up does not turn the answer into trusted data.

@@ -105,7 +105,9 @@
   (let* ((r (call c "soz_preview" (json:json-nesne "plan" *good* "message" *message*)))
          (id (preview-id r)))
     (check "the good plan is previewed with its steps and a preview_id"
-           (and (not (error-p r)) id (search "product=tomatoes quantity=20" (text-of r))))
+           (and (not (error-p r)) id (search "product=tomatoes (from the message) quantity=20 (from the message)" (text-of r))))
+    (check "the preview says where each value comes from: the customer code from the erp server"
+           (search "customer=C-1042 (from erp)" (text-of r)))
     (check "the preview changed nothing"
            (string= "[]" (text-of (call c "erp_list_orders" (json:json-nesne)))))
     (let ((r2 (call c "soz_execute" (json:json-nesne "preview_id" id)

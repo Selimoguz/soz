@@ -393,7 +393,10 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
 1. The plan is checked; an invalid plan has no preview.
 2. The body is evaluated. A `read` operation is called. A side-effect operation is **not** called:
    it becomes a **step** `{index, operation, effect, args, key}`, numbered from 1 in the order
-   reached, with its arguments evaluated.
+   reached, with its arguments evaluated. A step also carries the **sources** of its arguments, as
+   the checker proved them for that call (section 5: `message`, `tool`, `tool:LABEL`, `model`,
+   `schema`), and the preview shows them to the person next to each value ("from the message",
+   "from erp", "written by the assistant"). Sources are not part of the hash.
 3. The value of a step is not known yet. It is a **pending** value: it may be passed to a later
    step (or a field of it, with `get`), and is shown as `(result of step N)` or
    `(result of step N).field`. Using a pending value in anything else (arithmetic, a comparison, an
@@ -401,10 +404,16 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
    cannot be previewed.
 4. Each step has an **idempotency key**: the operation's name (`name-fold`) and the values of its
    **key parameters**. An operation declares them with `"key": ["customer", "product", "date"]`;
-   without `key`, all its parameters are key parameters. A step whose key equals an earlier step's
-   key in the same preview is a `duplicate-step` (the model wrote the same thing twice); a preview
-   with a duplicate step cannot be approved. A step whose key is already in the host's **journal**
-   (a previous plan did it) is marked `already_done` and will not run again.
+   without `key`, all its parameters are key parameters. Exactly, the key is the canonical JSON
+   (10.6) of `[NAME-FOLD(operation), {PARAM: VALUE, ...}]` with each key parameter that was given,
+   under its declared name; an optional parameter that was not given is left out (not `null`).
+   Implementations sharing a journal therefore produce the same key. A step whose key equals an
+   earlier step's key in the same preview is a `duplicate-step` (the model wrote the same thing
+   twice); a preview with a duplicate step cannot be approved. A step whose key is already in the
+   host's **journal**, with any status, is marked `already_done`: it will not be called. Its
+   `journal_status` says why, and the preview says it to the person: `done` (a previous plan did
+   it) or `pending` / `unknown` (an earlier run may or may not have happened; execution stops there
+   with `unresolved` until a person resolves it, 10.4 and 10.8).
 5. The preview's status is `ready` (it may be approved), `stopped` (a `stop` was reached; the steps
    before it are listed and may still be approved), `nothing` (no steps) or `error` (a run-time
    error, `depends-on-write`, `duplicate-step`, or a failed read).
@@ -439,8 +448,10 @@ with live reads. For every step reached, in order:
 
 If evaluation ends with fewer steps than the preview had, the outcome is `changed`, unless a `stop`
 was reached, which gives `stopped`. Otherwise the outcome is `done`. Every step has a status:
-`done`, `already_done`, `failed`, `unknown`, `unresolved` or `not_run`. In a preview, a step whose key
-is in the journal with any status has `already_done` set.
+`done`, `already_done`, `failed`, `unknown`, `unresolved` or `not_run`. Two flags of two moments:
+in a preview, `already_done` means "in the journal, it will not be called", whatever the entry's
+status (10.3, with `journal_status`); in an execution, the step status `already_done` is for a
+`done` entry only, and a `pending` or `unknown` entry gives `unresolved`.
 
 ### 10.5 Audit record
 
@@ -608,13 +619,17 @@ request):
   `[::1]`) or with `"allow_http": true`.
 - `${NAME}` in a header value is the environment variable `NAME`, so tokens stay out of the
   configuration file; a variable that is not set leaves the server out.
-- A server that answers 404 to a session it gave forgot it: the gateway initializes again and
-  sends the request once more (it was not processed). Requests the server makes of the gateway are
-  declined.
+- A server that answers 404 to a session it gave forgot it: the gateway initializes a new session.
+  MCP says such a request was not processed, but behind a proxy that is not certain, so the gateway
+  sends it again only if it is safe to: initialization, listing tools, and calls of `read`
+  operations. A call of a side-effect operation is **not** sent again; its outcome is **unknown**
+  (the step becomes `unresolved` for a person to resolve), and the new session serves what follows.
+  Requests the server makes of the gateway are declined.
 - A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
   when the request certainly did not reach the server: the connection was refused, the host was not
-  found, its certificate was not trusted, or it answered 4xx. A timeout, a broken connection after
-  sending or a 5xx makes the outcome **unknown**: the operation may have happened.
+  found, its certificate was not trusted, or it answered 4xx other than that 404. A timeout, a
+  broken connection after sending, a 5xx or a lost session during a write makes the outcome
+  **unknown**: the operation may have happened.
 - A server that cannot be reached or initialized at start is left out, with a message on standard
   error; the gateway runs with the others.
 
@@ -698,7 +713,11 @@ no rules, nothing in this section applies.
   these (`message`, `tool`, `model`, `schema`, or `tool:LABEL`). `["tool"]` means: read from a
   record, never typed, not even from the message; `tool` admits every tool, labelled or not.
   `["tool:erp"]` means: read from the ERP, not from the CRM or any other system (section 5.2). It
-  may not be combined with `args` conditions.
+  may not be combined with `args` conditions. Provenance (section 5) and policy are separate checks
+  and both apply: `model_allowed` only lifts `invented-value` for the parameter; a text the model
+  wrote still has source `model`, so `args_from` without `model` refuses it (`policy-source`). A
+  parameter can be free for the model's own words and still be held to a source by a policy, or the
+  other way round.
 
 A rule a host cannot read (an unknown comparison, source or `then`) is a configuration error; the
 host MUST NOT start with it.

@@ -121,6 +121,16 @@ HTML parse mode):
 await slack.chat.postMessage({ channel, text: renderPreview(p, "slack") });
 ```
 
+Every value says where it comes from, as the checker proved it, so the person approves the source too:
+
+```
+1. bank.transfer
+     amount: 12450.75   (from the message)
+     iban: TR33 0006 1005 1978 6457 8413 26   (from erp)
+```
+
+A step whose earlier run may or may not have happened is shown as such, never as "already done".
+
 What the model or a tool wrote (the title, the message, argument values, the stop reason) is untrusted
 text on an approval screen, so both functions pass it through `visible()`: a newline in a value is
 written as `\n` and cannot pose as an extra step, and control, invisible and bidirectional characters
@@ -184,7 +194,7 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (70 checks, an HTTP server among them).
+the gateway and a pretend ERP as real processes (73 checks, an HTTP server among them).
 
 Every value a server returns is labelled with the server's name (SPEC 5.2), so a policy can say which
 system an argument must come from: `{"args_from": {"iban": ["tool:erp"]}}` takes an IBAN from the

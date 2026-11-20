@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
-  Journal, verifyAudit, preview, execute, operationsFromJson, parseJson, OperationFailed, stepKeyText, Rational,
+  Journal, verifyAudit, preview, execute, previewSummary, operationsFromJson, parseJson, OperationFailed, stepKeyText, Rational,
   type Implementations,
 } from "../src/index.ts";
 
@@ -75,6 +75,9 @@ console.log("\nA host that dies during the call");
   const e = await run(Journal.open(path));
   check("the next execution does not call it again: unresolved", e.outcome === "unresolved" && calls === 0 && e.steps[0].status === "unresolved");
   check("... and says why", (e.message ?? "").includes("stopped during the call"));
+  const shown = previewSummary(await preview(plan, { message, operations, implementations, journal: Journal.open(path) }));
+  check("the preview does not call the left claim 'already done': it may or may not have happened",
+        shown.includes("may or may not have happened") && !shown.includes("already done"));
 }
 
 console.log("\nA failed step, and a person resolving one");

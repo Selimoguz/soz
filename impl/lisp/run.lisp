@@ -289,7 +289,9 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 ;;; ------------------------------------------------------------------
 
 (defstruct (plan-step (:conc-name step-)) index operation args key already-done status result
-  requires)   ; policy: ((role four-eyes rule-name) ...) approvals this step needs besides the person's own
+  requires        ; policy: ((role four-eyes rule-name) ...) approvals this step needs besides the person's own
+  sources         ; ((param . (source-name ...)) ...): where each argument comes from (SPEC 5)
+  journal-status) ; already-done: its key is in the journal; this says done, pending or unknown
 
 (defvar *approvers* '() "Execution: the people who approved (ACTORs).")
 (defvar *preview-actor* nil "Execution: who asked for the plan.")
@@ -335,6 +337,7 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 (defvar *steps*)         ; steps reached so far (reverse order)
 (defvar *journal*)
 (defvar *audit*)
+(defvar *checked-calls* nil)   ; the checker's calls, with where each argument comes from
 (defvar *previewed*)     ; execute: the preview's steps
 
 (define-condition plan-stopped (error) ((reason :initarg :reason :reader stop-reason)))
@@ -440,7 +443,6 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
     (funcall impl (to-host (rec args)))))
 
 (defun eval-call (node op args env)
-  (declare (ignore node))
   (let ((argv (loop for (p v) on args by #'cddr
                     collect (cons (pa-name (find (name-fold (node-value p)) (op-params op)
                                                  :key (lambda (x) (name-fold (pa-name x))) :test #'string=))
@@ -462,7 +464,11 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
         (let* ((index (1+ (length *steps*)))
                (key (step-key-text op argv))
                (done (journal-get *journal* key))
-               (st (make-plan-step :index index :operation op :args (rec argv) :key key :already-done (and done t))))
+               (st (make-plan-step :index index :operation op :args (rec argv) :key key :already-done (and done t) :journal-status (and done (gethash "status" done))
+                                   :sources (let ((c (find-if (lambda (c) (and (= (call-line c) (node-line node))
+                                                                               (eql (call-column c) (node-column node))))
+                                                              *checked-calls*)))
+                                              (and c (call-sources c))))))
           (push st *steps*)
           (when (eq *mode* :preview)
             (multiple-value-bind (denials requires) (step-policy op argv)
@@ -568,19 +574,41 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 (defun steps-json (steps)
   (map 'vector (lambda (s) (obj "index" (step-index s) "operation" (op-name (step-operation s))
                                 "effect" (op-effect (step-operation s)) "args" (step-args s) "key" (step-key s)
-                                "already_done" (bool (step-already-done s))
+                                "already_done" (bool (step-already-done s)) "journal_status" (or (step-journal-status s) :null)
                                 "requires" (map 'vector (lambda (r) (obj "role" (first r) "four_eyes" (bool (second r))
                                                                          "rule" (third r)))
-                                                (step-requires s))))
+                                                (step-requires s))
+                                "sources" (apply #'obj (loop for (k . srcs) in (step-sources s) append (list k (coerce srcs 'vector))))))
        steps))
+
+(defun journal-note (s)
+  "A step already in the journal, for a person: done, or unresolved (it may or may not have happened)."
+  (cond ((not (step-already-done s)) "")
+        ((equal (step-journal-status s) "done") " (already done before; will not run again)")
+        (t " (an earlier run may or may not have happened; it will not run until a person resolves it)")))
+
+(defun source-text (sources)
+  "Where a value comes from, for a person: from the message, from erp, written by the assistant."
+  (flet ((word (s) (cond ((string= s "message") "the message") ((string= s "tool") "a tool")
+                         ((and (> (length s) 5) (string= "tool:" s :end2 5)) (subseq s 5))
+                         ((string= s "schema") "a declared value") (t s))))
+    (let ((from (mapcar #'word (remove "model" sources :test #'string=))))
+      (format nil "~{~a~^, ~}"
+              (append (and from (list (format nil "from ~{~a~^ and ~}" from)))
+                      (and (member "model" sources :test #'string=) (list "written by the assistant")))))))
+
+(defun arg-with-source (s k v)
+  (let ((src (cdr (assoc k (step-sources s) :test #'string=))))
+    (format nil "~a=~a~@[ (~a)~]" k (visible (value-text v)) (and src (source-text src)))))
 
 (defun preview (text &key message journal audit (policy *policy*) (actor *actor*) (profile *profile*))
   "Dry run (SPEC 10.3): reads run, side effects become steps, POLICY is applied for ACTOR (SPEC 12);
 PROFILE is the language profile for the message (SPEC 5.4). Returns a PREVIEW."
   (let ((check (check-plan text :message message :policy policy :actor actor :profile profile))
         (*policy* policy) (*actor* actor)
-        (*mode* :preview) (*steps* '()) (*journal* journal) (*audit* audit)
+        (*mode* :preview) (*steps* '()) (*journal* journal) (*audit* audit) (*checked-calls* nil)
         (problems '()) (status nil) (reason nil))
+    (setf *checked-calls* (result-calls check))
     (if (not (result-valid check))
         (setf status "invalid")
         (handler-case (progn (eval-body (plan-body text) '()) (setf status (if *steps* "ready" "nothing")))
@@ -631,6 +659,7 @@ people who approved it; by default the person who asked. Returns an EXECUTION."
                                         (and signatures (list "signatures" (coerce signatures 'vector)))))
   (let ((*mode* :execute) (*steps* '()) (*journal* (or journal (make-journal))) (*audit* audit) (*previewed* (preview-steps p))
         (*policy* (preview-policy p)) (*actor* (preview-actor p)) (*preview-actor* (preview-actor p))
+        (*checked-calls* (result-calls (preview-check p)))
         (outcome nil) (message nil) (reason nil))
     (handler-case (progn (eval-body (plan-body (preview-text p)) '())
                          (setf outcome (if (< (length *steps*) (length *previewed*)) "changed" "done"))
@@ -690,10 +719,10 @@ an IBAN read differently). Everything else stays as it is."
            (when (preview-steps p)
              (format o "If you approve, these will happen:~%")
              (dolist (s (preview-steps p))
-               (format o "  ~d. ~a~{ ~a~}~:[~; (already done before; will not run again)~]~%"
+               (format o "  ~d. ~a~{ ~a~}~a~%"
                        (step-index s) (op-name (step-operation s))
-                       (loop for (k . v) in (cdr (step-args s)) collect (format nil "~a=~a" k (visible (value-text v))))
-                       (step-already-done s))
+                       (loop for (k . v) in (cdr (step-args s)) collect (arg-with-source s k v))
+                       (journal-note s))
                (when (and (step-requires s) (not (step-already-done s)))
                  (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))))
            (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (visible (preview-stop-reason p))))

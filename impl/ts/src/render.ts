@@ -8,7 +8,7 @@
 // becomes formatting or a link.
 
 import { visible } from "./exact.ts";
-import { type Preview, valueText, requirementsText } from "./run.ts";
+import { type Preview, valueText, requirementsText, sourceText, journalNote } from "./run.ts";
 
 export type RenderFormat = "text" | "markdown" | "slack" | "telegram";
 
@@ -25,8 +25,11 @@ const STATUS: Record<string, string> = {
 function doc(p: Preview): Doc {
   const steps: string[] = [], notes: string[] = [];
   for (const s of p.steps) {
-    steps.push(`${s.index}. ${s.operation.name}${s.alreadyDone ? "   (already done; will not run again)" : ""}`);
-    for (const [k, v] of s.args.fields) steps.push(`     ${k}: ${visible(valueText(v))}`);
+    steps.push(`${s.index}. ${s.operation.name}${journalNote(s)}`);
+    for (const [k, v] of s.args.fields) {
+      const src = s.sources.find(x => x[0] === k)?.[1] ?? [];
+      steps.push(`     ${k}: ${visible(valueText(v))}${src.length ? `   (${sourceText(src)})` : ""}`);
+    }
     if (s.requires.length && !s.alreadyDone) notes.push(`Step ${s.index} needs ${requirementsText(s.requires, p.actor)}.`);
   }
   return {

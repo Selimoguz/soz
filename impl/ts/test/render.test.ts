@@ -47,6 +47,8 @@ for (const format of ["text", "markdown", "slack", "telegram"] as RenderFormat[]
   check("U+202E is shown, not applied", noRawRLO(out));
   check("the amount is exact", out.includes("12450.75"));
   check("the policy's requirement is shown", out.includes("needs approval by finance"));
+  check("each value says where it comes from: the amount from the message, the note written by the assistant",
+        out.includes("from the message") && out.includes("written by the assistant"));
   if (format === "markdown") {
     check("the title's link is escaped, not a link", out.includes("\\[click\\]\\(https://evil\\.example\\)"));
     check("the message's *today* is not bold", out.includes("\\*today\\*"));

@@ -80,7 +80,8 @@ type Tool = { name: string; description?: string; inputSchema?: Json; outputSche
 
 /** How the gateway talks to a server: a process over stdio, or HTTP. */
 interface Link {
-  request(method: string, params: unknown, timeoutMs?: number): Promise<Message>;
+  /** opts.resend: a tool call that only reads may be sent again after a lost session (HTTP). */
+  request(method: string, params: unknown, timeoutMs?: number, opts?: { resend?: boolean }): Promise<Message>;
   notify(method: string, params?: unknown): Promise<void>;
   close(): void;
 }
@@ -115,9 +116,11 @@ class HttpLink implements Link {
   initParams: unknown = null; timeout = 60000;
   constructor(name: string, url: string, headers: Record<string, string>) { this.name = name; this.url = url; this.headers = headers; }
 
-  request(method: string, params: unknown, timeoutMs = this.timeout): Promise<Message> {
+  request(method: string, params: unknown, timeoutMs = this.timeout, opts: { resend?: boolean } = {}): Promise<Message> {
     if (method === "initialize") this.initParams = params;
-    return this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method, params: params ?? newObject() }, timeoutMs) as Promise<Message>;
+    // a tool call is sent again after a lost session only when it reads: a write is never sent twice
+    const resend = method !== "tools/call" || opts.resend === true;
+    return this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method, params: params ?? newObject() }, timeoutMs, false, resend) as Promise<Message>;
   }
   async notify(method: string, params?: unknown) {
     await this.post(params ? { jsonrpc: "2.0", method, params } : { jsonrpc: "2.0", method }, 10000);
@@ -131,7 +134,7 @@ class HttpLink implements Link {
              ...(this.session ? { "Mcp-Session-Id": this.session } : {}), ...(this.protocol ? { "MCP-Protocol-Version": this.protocol } : {}) };
   }
 
-  private async post(m: { [k: string]: unknown }, timeoutMs: number, again = false): Promise<Message | null> {
+  private async post(m: { [k: string]: unknown }, timeoutMs: number, again = false, resend = true): Promise<Message | null> {
     let res: FetchResponse;
     try { res = await fetch(this.url, { method: "POST", headers: this.head(), body: canonicalJson(m), signal: AbortSignal.timeout(timeoutMs) }); }
     catch (e) {
@@ -139,12 +142,15 @@ class HttpLink implements Link {
       if (NOT_SENT_CODES.includes(code)) throw new NotSent(`${this.name}: ${code}`);
       throw new Timeout(`${this.name}: ${(e as Error).name === "TimeoutError" ? `no answer in ${timeoutMs / 1000}s` : (e as Error).message}`);
     }
-    // the server forgot the session: start a new one and send again (the request was not processed)
+    // The server forgot the session: start a new one. Send the request again only if that is safe:
+    // MCP says a 404 to a session was not processed, but behind a proxy that is not certain, so a call
+    // that changes something is not sent twice; its outcome is unknown and a person resolves it.
     if (res.status === 404 && this.session && !again && m.method !== "initialize") {
       this.session = null; this.protocol = null;
       const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
-      if (!init || init.error) throw new NotSent(`${this.name}: the session expired and a new one could not be started`);
+      if (!init || init.error) throw new Timeout(`${this.name}: the session was lost and a new one could not be started`);
       await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
+      if (!resend) throw new Timeout(`${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`);
       return this.post(m, timeoutMs, true);
     }
     if (res.status >= 400 && res.status < 500) throw new NotSent(`${this.name}: HTTP ${res.status}`);
@@ -350,7 +356,7 @@ export async function loadGateway(configPath: string): Promise<Gateway> {
     for (const tool of d.tools) {
       const op = toolOperation(name, tool, config.operations);
       g.operations.set(nameFold(op.name), op);
-      g.implementations.set(nameFold(op.name), args => callTool(d, tool.name, args));
+      g.implementations.set(nameFold(op.name), args => callTool(d, tool.name, args, !isSideEffect(op.effect)));
       if (exposeReads && !isSideEffect(op.effect)) g.passthrough.push({ name: `${name}_${tool.name}`, server: d, tool });
     }
     log(`${name}: ${d.tools.length} tools`);
@@ -358,9 +364,9 @@ export async function loadGateway(configPath: string): Promise<Gateway> {
   return g;
 }
 
-async function callTool(d: Downstream, tool: string, args: Json): Promise<HostValue> {
+async function callTool(d: Downstream, tool: string, args: Json, readOnly: boolean): Promise<HostValue> {
   let r: Message;
-  try { r = await d.rpc.request("tools/call", { name: tool, arguments: args }); }
+  try { r = await d.rpc.request("tools/call", { name: tool, arguments: args }, undefined, { resend: readOnly }); }
   catch (e) {
     if (e instanceof NotSent) throw new OperationFailed(`${d.name} could not be reached; nothing was sent (${e.message})`);
     throw new OperationUnknown(`${d.name} did not answer (${(e as Error).message})`);
@@ -666,7 +672,7 @@ export class GatewayServer {
     const pass = g.passthrough.find(x => x.name === name);
     if (!pass) return textResult(`Unknown tool ${name}. Changes go through soz_preview and soz_execute.`, true);
     let r: Message;
-    try { r = await pass.server.rpc.request("tools/call", { name: pass.tool.name, arguments: args }); }
+    try { r = await pass.server.rpc.request("tools/call", { name: pass.tool.name, arguments: args }, undefined, { resend: true }); }   // pass-through tools only read
     catch { return textResult(`${pass.server.name} did not answer.`, true); }
     if (r.error) return textResult(isObject(r.error) ? String(r.error.message) : "error", true);
     return r.result;
