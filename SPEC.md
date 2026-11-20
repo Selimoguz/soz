@@ -489,6 +489,24 @@ A person resolves an `unresolved` step by marking its entry `done` (it did happe
 The audit record (10.5) may likewise be kept anywhere, as long as appends from several executions
 are serialized so that the hash chain stays one chain.
 
+### 10.9 Determinism
+
+The language itself is deterministic: it has no clock, no random numbers, no environment and no
+I/O of its own. Evaluated twice with the same results from its operations, a plan takes the same
+steps with the same arguments. Everything that changes over time (today's date, an exchange rate,
+a balance, the order of a search result) reaches a plan only as the result of an operation.
+
+So whatever drifts between preview and execution drifts in the world, not in the plan, and it is
+caught: execution evaluates the plan again with live reads, and a step whose operation or arguments
+differ from the approved preview is not called; the outcome is `changed` (10.4). The person approved
+those values, not whatever the world says a minute later.
+
+Hosts should therefore give reads a stable result where they can: return lists in a defined order
+(by code, by date), and round values the way the system of record does. A read whose answer is
+different on every call (a timestamp to the millisecond, an unordered set) makes every execution of
+a plan that writes it `changed`, which is safe but useless. A value that must differ between
+preview and execution (the moment of booking) belongs inside the operation, not in its arguments.
+
 ## 11. MCP gateway
 
 The gateway is an MCP server (protocol 2025-06-18, stdio) that sits between an agent and the MCP

@@ -30,6 +30,16 @@ Without running anything, the checker proves:
   in advance. No user-defined functions, no recursion, no unbounded loops.
 - **Isolation.** A plan is data. Reading it never evaluates anything of the host language.
 
+## Two tools, one idea
+
+What a model claims, it has to show. This repository holds two tools built on that idea; they do not
+depend on each other:
+
+| | When | What it checks |
+|---|---|---|
+| **soz** (this README) | at run time, before an agent acts | the plan an agent wants to run: where every value came from, what it touches, how far it can go; then preview, approval, execution, audit |
+| **[soz-guard](guard/README.md)** | at development time, before a coding agent says "done" | the code it changed: a `TODO`, an empty handler, a swallowed error or made-up data it did not mention |
+
 ## Quickstart
 
 The reference checker needs [SBCL](https://www.sbcl.org) and nothing else.
@@ -59,6 +69,20 @@ The plan did not run. Fix these and send it again:
 
 The error text is written for the model: it says where, why, and what to do instead. Add `--json`
 for the machine-readable result.
+
+### With Node instead of SBCL
+
+The TypeScript implementation passes the same conformance suite and needs Node 22.6 or newer (the
+only dependency, TypeScript, is for type checking):
+
+```sh
+cd impl/ts
+npm install
+npm test        # type check, the conformance suite, the stores, the renderer, the MCP gateway end to end
+```
+
+[impl/ts/README.md](impl/ts/README.md) shows the API (`preview`, `execute`, `defineOperation`) and how
+to put the gateway in front of your MCP servers.
 
 ### The whole loop
 
