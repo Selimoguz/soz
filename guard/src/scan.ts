@@ -34,8 +34,9 @@ export function loadConfig(root: string): Config {
   return config;
 }
 
+// git's own messages are captured (stdio "pipe"), not printed: soz-guard says what went wrong itself.
 const git = (root: string, args: string[]): string =>
-  execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
 
 const hasHead = (root: string): boolean => {
   try { git(root, ["rev-parse", "--verify", "--quiet", "HEAD"]); return true; } catch { return false; }

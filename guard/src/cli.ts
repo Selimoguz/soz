@@ -47,7 +47,13 @@ function hook(): number {
 
 function init(dir: string): number {
   const root = repoRoot(dir);
-  if (!root) { process.stderr.write(`${dir} is not in a git repository; soz-guard needs git\n`); return 1; }
+  if (!root) {
+    process.stderr.write(`${dir} is not a git repository.\n`
+      + `soz-guard is set up per project and looks at what changed, so run init inside your project's folder:\n`
+      + `  cd path/to/your/project\n  node --experimental-strip-types --disable-warning=ExperimentalWarning "${join(here, "cli.ts")}" init\n`
+      + `(A project that is not under git yet: git init there first.)\n`);
+    return 1;
+  }
   const done: string[] = [];
 
   const settingsPath = join(root, ".claude", "settings.json");

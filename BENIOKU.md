@@ -50,7 +50,7 @@ etmesini** (`soz-guard: ignore <neden>`) ister. Yarım bırakmak serbest; söyle
 Projede bir kez kurulur (Node 22.6+ ve git gerekir), sonra VS Code dahil her sekmede çalışır:
 
 ```sh
-node --experimental-strip-types C:/ml/soz/guard/src/cli.ts init
+node --experimental-strip-types --disable-warning=ExperimentalWarning C:/ml/soz/guard/src/cli.ts init
 ```
 
 Yalnızca değişen satırlara bakar; eski TODO'larla uğraşmaz. Mantık hatasını yakalamaz, onu testler

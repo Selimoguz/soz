@@ -17,7 +17,7 @@ agent writes rather than to actions an agent takes. It does not depend on soz.
 Requires Node 22.6 or newer and git.
 
 ```sh
-node --experimental-strip-types path/to/soz/guard/src/cli.ts init
+node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts init
 ```
 
 in your project adds, without touching what is already there:
@@ -86,9 +86,9 @@ A rule with the id of a built-in rule replaces it.
 ## Also by hand
 
 ```sh
-node --experimental-strip-types path/to/soz/guard/src/cli.ts scan           # exit 1 if anything is open
-node --experimental-strip-types path/to/soz/guard/src/cli.ts scan --json
-node --experimental-strip-types path/to/soz/guard/src/cli.ts scan --base main   # everything since main, e.g. in CI
+node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts scan           # exit 1 if anything is open
+node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts scan --json
+node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts scan --base main   # everything since main, e.g. in CI
 ```
 
 ## What it is not
