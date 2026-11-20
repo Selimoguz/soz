@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 143 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 146 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 143 conformance cases, the example, defineOperation, the gateway end to end
+npm test          # type check (tsc, strict), the 146 conformance cases, the example, defineOperation, the stores with real processes, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -86,6 +86,42 @@ Types: `t.text()`, `t.number()`, `t.bool()`, `t.any()`, `t.list(item)`, `t.recor
 Implementation keys are operation names after `nameFold` (`_` becomes `-`). Numbers are exact:
 implementations receive and may return `Rational` values (or `bigint`), never floats.
 
+## Journal and audit stores
+
+`preview` and `execute` take any `JournalStore` and `AuditSink` (SPEC 10.8), so a host can keep them
+in a database; `Journal` and `Audit` are the built-in ones, in memory or in files.
+
+A step is **claimed** before it is called and only then run: a step is never run twice, not even when
+two executions race for it or the host dies during the call. A claim left behind (a crash) or an
+unknown outcome makes the next execution stop with `unresolved` instead of guessing; a person checks
+the system and resolves it:
+
+```sh
+node --experimental-strip-types --disable-warning=ExperimentalWarning src/journal-cli.ts soz-journal.jsonl          # list
+node --experimental-strip-types --disable-warning=ExperimentalWarning src/journal-cli.ts soz-journal.jsonl done '["erp.add-order-line"'   # it happened
+node --experimental-strip-types --disable-warning=ExperimentalWarning src/journal-cli.ts soz-journal.jsonl release '["erp.pay"'         # it did not
+```
+
+On disk, each claim is a file created with the exclusive flag, so several gateways on one machine can
+share a journal; audit appends take turns through a lock file and always continue from the record's
+real last line, so they stay one chain. `npm run stores` checks this with real processes: 8 racing
+for one step (exactly one wins), 4 writing one audit record (100 records, one chain), and a host that
+dies mid-call (the step is not run again).
+
+A store of your own implements four methods:
+
+```ts
+interface JournalStore {
+  get(key: string): JournalEntry | undefined | Promise<...>;
+  claim(key: string): JournalEntry | null | Promise<...>;      // null: claimed by you; else the entry that was there
+  complete(key: string, status: "done" | "unknown", result: Json): void | Promise<void>;
+  release(key: string): void | Promise<void>;
+}
+```
+
+On Postgres, for example, `claim` is an `INSERT ... ON CONFLICT DO NOTHING RETURNING`; the audit sink
+takes the previous hash inside the transaction that inserts the next record.
+
 ## MCP gateway
 
 `src/soz-mcp.ts` is the MCP gateway of [SPEC section 11](../../SPEC.md#11-mcp-gateway), also with no
@@ -116,5 +152,6 @@ the gateway and a pretend ERP as real processes (36 checks).
 | `src/checker.ts` | reader, checker, operations, the policy decided from the text |
 | `src/run.ts` | preview, execution, journal, audit record, the policy with values |
 | `src/define.ts` | `defineOperation`: operations and implementations, typed together |
+| `src/journal-cli.ts` | resolving unresolved steps, by a person |
 | `src/gateway.ts`, `src/soz-mcp.ts` | the MCP gateway |
 | `test/conformance.ts` | the conformance runner |

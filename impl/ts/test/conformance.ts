@@ -122,7 +122,7 @@ function preloadJournal(entries: Json | undefined): Journal {
   for (const e of (entries ?? []) as Json[]) {
     const op = ops.get(nameFold(get(e, "operation") as string))!;
     const args = Object.entries(get(e, "args") as object).map(([k, v]) => [k, fromHost(v as Json, "any", "journal")] as [string, never]);
-    j.put(stepKeyText(op, args), "done", null);
+    j.put(stepKeyText(op, args), (get(e, "status") ?? "done") as "done", null);
   }
   return j;
 }

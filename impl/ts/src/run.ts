@@ -1,7 +1,7 @@
 // run.ts — Preview, approval, execution, journal and audit record (SPEC 10), and the policy applied
 // with argument values (SPEC 12).
 
-import { readFileSync, appendFileSync, existsSync } from "node:fs";
+import { readFileSync, appendFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import {
   Rational, type Json, type HostValue, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson,
 } from "./exact.ts";
@@ -106,49 +106,128 @@ function fromHostList(x: Json[], item: Type, where: string): ListV {
   return new ListV(x.map(y => fromHost(y, item, where)));
 }
 
-// --- Journal and audit record ------------------------------------------------------------------------------
+// --- Journal and audit record (SPEC 10.8) -----------------------------------------------------------------
 
-type JournalEntry = { key: string; status: string; result: Json };
+export type JournalStatus = "pending" | "done" | "unknown";
+export type JournalEntry = { key: string; status: JournalStatus; result: Json };
+type Maybe<T> = T | Promise<T>;
 
-export class Journal {
-  entries = new Map<string, JournalEntry>();
-  path: string | null;
-  constructor(path: string | null = null) { this.path = path; }
-  /** A journal kept in a file (one JSON object per line), loaded if it exists. */
+/** Where step keys are kept. Implement it on a database to share it between hosts. */
+export interface JournalStore {
+  get(key: string): Maybe<JournalEntry | undefined>;
+  /** Atomically: if the key has no entry, record it as pending and return null (claimed); otherwise
+   * return the entry that is there (someone else claimed it first, or it was done before). */
+  claim(key: string): Maybe<JournalEntry | null>;
+  complete(key: string, status: "done" | "unknown", result: Json): Maybe<void>;
+  /** The call did not happen: the step may run again. Also how a person resolves "it did not happen". */
+  release(key: string): Maybe<void>;
+}
+
+/** Where the audit record goes. Appends from several executions must be serialized (one chain). */
+export interface AuditSink {
+  append(type: string, data: unknown): Maybe<void>;
+}
+
+const entryOf = (key: string, status: JournalStatus, result: unknown): JournalEntry =>
+  parseJson(canonicalJson({ key, status, result: result ?? null })) as JournalEntry;
+
+/**
+ * The journal in memory (no path) or in files (with a path). On disk, each key has a file of its own
+ * in PATH.d/, created with the exclusive flag, so a claim is atomic between processes on one
+ * machine; PATH itself is a log of every change, one JSON object per line.
+ */
+export class Journal implements JournalStore {
+  private memory = new Map<string, JournalEntry>();
+  readonly path: string | null;
+  private dir: string | null;
+  constructor(path: string | null = null) {
+    this.path = path;
+    this.dir = path ? path + ".d" : null;
+    if (this.dir) mkdirSync(this.dir, { recursive: true });
+  }
+  /** A journal kept in files, with entries an older version wrote to PATH carried over. */
   static open(path: string): Journal {
     const j = new Journal(path);
     if (existsSync(path))
       for (const line of readFileSync(path, "utf8").split("\n")) if (line.trim()) {
         const e = parseJson(line) as { key: string; status: string; result: Json };
-        j.entries.set(e.key, e);
+        if (e.status === "released") j.memory.delete(e.key); else j.memory.set(e.key, e as JournalEntry);
       }
     return j;
   }
-  get(key: string): JournalEntry | undefined { return this.entries.get(key); }
-  put(key: string, status: string, result: unknown) {
-    const line = canonicalJson({ key, status, result: result ?? null });
-    this.entries.set(key, parseJson(line) as JournalEntry);
-    if (this.path) appendFileSync(this.path, line + "\n", "utf8");
+  private file(key: string) { return `${this.dir}/${sha256Hex(key)}.json`; }
+  private log(entry: unknown) { if (this.path) appendFileSync(this.path, canonicalJson(entry) + "\n", "utf8"); }
+
+  get(key: string): JournalEntry | undefined {
+    if (this.dir && existsSync(this.file(key))) return parseJson(readFileSync(this.file(key), "utf8")) as JournalEntry;
+    return this.memory.get(key);
   }
+  claim(key: string): JournalEntry | null {
+    const existing = this.get(key);
+    if (existing) return existing;
+    const entry = entryOf(key, "pending", null);
+    if (this.dir) {
+      try { writeFileSync(this.file(key), canonicalJson(entry), { flag: "wx" }); }
+      catch (e) { if ((e as { code?: string }).code === "EEXIST") return this.get(key)!; throw e; }
+    }
+    this.memory.set(key, entry);
+    this.log(entry);
+    return null;
+  }
+  complete(key: string, status: "done" | "unknown", result: Json) {
+    const entry = entryOf(key, status, result);
+    if (this.dir) writeFileSync(this.file(key), canonicalJson(entry));
+    this.memory.set(key, entry);
+    this.log(entry);
+  }
+  release(key: string) {
+    if (this.dir && existsSync(this.file(key))) unlinkSync(this.file(key));
+    this.memory.delete(key);
+    this.log({ key, status: "released", result: null });
+  }
+  /** Writes an entry directly (preloading, and what a person records when resolving). */
+  put(key: string, status: JournalStatus, result: unknown) { this.complete(key, status as "done", entryOf(key, status, result).result); }
 }
 
-export class Audit {
-  path: string | null; seq = 0; prev = "0".repeat(64); lines: string[] = [];
+const sleep = (ms: number) => new Promise(r => setTimeout(() => r(null), ms));
+
+/**
+ * The audit record in memory (no path) or in a file. Writers on one machine take turns through a lock
+ * file created with the exclusive flag, and each append continues from the file's actual last line,
+ * so several gateways writing to one record still make one chain.
+ */
+export class Audit implements AuditSink {
+  readonly path: string | null;
+  seq = 0; prev = "0".repeat(64); lines: string[] = [];
   constructor(path: string | null = null) { this.path = path; }
-  /** Continues the chain from the file's last line, so a restart never starts a second chain. */
-  static open(path: string): Audit {
-    const a = new Audit(path);
-    if (existsSync(path)) {
-      const last = readFileSync(path, "utf8").split("\n").filter(l => l.trim()).pop();
-      if (last) { a.seq = Number(((parseJson(last) as { seq: Rational }).seq).n); a.prev = sha256Hex(last); }
-    }
-    return a;
+  static open(path: string): Audit { return new Audit(path); }
+
+  private lastLine(): string | undefined {
+    return this.path && existsSync(this.path) ? readFileSync(this.path, "utf8").split("\n").filter(l => l.trim()).pop() : undefined;
   }
-  append(type: string, data: unknown) {
-    const line = canonicalJson({ seq: Rational.of(++this.seq), type, time: new Date().toISOString().replace(/\.\d+Z$/, "Z"), prev: this.prev, data });
-    this.prev = sha256Hex(line);
-    this.lines.push(line);
-    if (this.path) appendFileSync(this.path, line + "\n", "utf8");
+  private async lock(): Promise<() => void> {
+    const lockFile = this.path + ".lock";
+    for (let waited = 0; ; waited += 5) {
+      try { writeFileSync(lockFile, String(Date.now()), { flag: "wx" }); return () => { try { unlinkSync(lockFile); } catch { /* already gone */ } }; }
+      catch (e) {
+        if ((e as { code?: string }).code !== "EEXIST") throw e;
+        // a writer that died holding the lock: older than 10 s is stale
+        try { if (Date.now() - statSync(lockFile).mtimeMs > 10000) unlinkSync(lockFile); } catch { /* it moved on */ }
+        if (waited > 30000) throw new Error(`could not lock the audit record ${this.path}`);
+        await sleep(5);
+      }
+    }
+  }
+  async append(type: string, data: unknown) {
+    const unlock = this.path ? await this.lock() : () => {};
+    try {
+      const last = this.lastLine();
+      if (last) { this.seq = Number(((parseJson(last) as { seq: Rational }).seq).n); this.prev = sha256Hex(last); }
+      const line = canonicalJson({ seq: Rational.of(++this.seq), type, time: new Date().toISOString().replace(/\.\d+Z$/, "Z"), prev: this.prev, data });
+      this.prev = sha256Hex(line);
+      this.lines.push(line);
+      if (this.path) appendFileSync(this.path, line + "\n", "utf8");
+    } finally { unlock(); }
   }
 }
 
@@ -202,7 +281,7 @@ export type Step = {
 
 type Ctx = {
   mode: "preview" | "execute"; steps: Step[]; ops: Operations; impls: Implementations;
-  journal: Journal; audit: Audit | null; previewed: Step[]; policy: Rule[]; actor: Actor | null; approvers: Actor[];
+  journal: JournalStore; audit: AuditSink | null; previewed: Step[]; policy: Rule[]; actor: Actor | null; approvers: Actor[];
 };
 
 type Env = [string, Value][];
@@ -348,7 +427,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env): Promise<
 
   const index = c.steps.length + 1;
   const key = stepKeyText(op, argv);
-  const done = c.journal.get(key);
+  const done = await c.journal.get(key);
   const st: Step = { index, operation: op, args: new RecordV(argv), key, alreadyDone: !!done, requires: [] };
   c.steps.push(st);
 
@@ -371,32 +450,51 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env): Promise<
   const { denials, requires } = stepPolicy(c, op, argv);
   st.requires = requires;
   if (denials.length) { st.status = "not_run"; throw new PlanHalted("denied", `step ${index}: ${denialText(op, denials)}`); }
-  const unmet = done ? [] : unmetRequirements(requires, c.approvers, c.actor);
+  const unmet = done?.status === "done" ? [] : unmetRequirements(requires, c.approvers, c.actor);
   if (unmet.length) {
     st.status = "not_run";
     throw new PlanHalted("not-approved", `step ${index} (${op.name}) needs ${requirementsText(unmet, c.actor)}`);
   }
-  if (done) { st.status = "already_done"; return fromHostOrAny(done.result, op); }
+  const unresolved = (entry: JournalEntry): never => {
+    st.status = "unresolved";
+    throw new PlanHalted("unresolved", `step ${index} (${op.name}) is in the journal as ${entry.status}: `
+      + (entry.status === "pending" ? "another execution is running it, or one stopped during the call" : "an earlier call's outcome is unknown")
+      + "; it may have happened. A person should check and resolve it (done or released); it was not run again");
+  };
+  if (done?.status === "done") { st.status = "already_done"; return fromHostOrAny(done.result, op); }
+  if (done) unresolved(done);
+  // Claim, then call (SPEC 10.4): never twice, not even across a crash or two executions at once.
+  const other = await c.journal.claim(key);
+  if (other?.status === "done") { st.status = "already_done"; return fromHostOrAny(other.result, op); }
+  if (other) unresolved(other);
+  const record = (status: string, extra: object) => c.audit?.append("call", { step: Rational.of(index), operation: op.name, args: st.args, status, ...extra });
   let raw: HostValue;
   try { raw = await callImplementation(c, op, argv); }
   catch (e) {
+    if (e instanceof RunProblem) { await c.journal.release(key); throw e; }   // no implementation: nothing was called
     if (e instanceof OperationFailed) {
       st.status = "failed";
-      c.audit?.append("call", { step: Rational.of(index), operation: op.name, args: st.args, status: "failed", message: e.message });
+      await c.journal.release(key);
+      await record("failed", { message: e.message });
       throw new PlanHalted("failed", `step ${index} (${op.name}) failed: ${e.message}`);
     }
-    if (e instanceof OperationUnknown) {
-      st.status = "unknown";
-      c.journal.put(key, "unknown", null);
-      c.audit?.append("call", { step: Rational.of(index), operation: op.name, args: st.args, status: "unknown", message: e.message });
-      throw new PlanHalted("unknown", `step ${index} (${op.name}): the outcome is unknown (${e.message}); it will not be run again by itself`);
-    }
-    throw e;
+    st.status = "unknown";
+    await c.journal.complete(key, "unknown", null);
+    await record("unknown", { message: (e as Error).message });
+    throw new PlanHalted("unknown", `step ${index} (${op.name}): the outcome is unknown (${(e as Error).message}); it will not be run again by itself`);
   }
-  const v = fromHost(raw!, op.returns, op.name);
+  let v: Value;
+  try { v = fromHost(raw!, op.returns, op.name); }
+  catch (e) {
+    // It ran, but answered with something that does not fit its declaration: it happened, in some way.
+    st.status = "unknown";
+    await c.journal.complete(key, "unknown", null);
+    await record("unknown", { message: (e as Error).message });
+    throw new PlanHalted("unknown", `step ${index} (${op.name}) ran but ${(e as Error).message}; it will not be run again by itself`);
+  }
   st.status = "done"; st.result = v;
-  c.journal.put(key, "done", v);
-  c.audit?.append("call", { step: Rational.of(index), operation: op.name, args: st.args, status: "done", result: v });
+  await c.journal.complete(key, "done", parseJson(canonicalJson(v)));
+  await record("done", { result: v });
   return v;
 }
 
@@ -411,7 +509,7 @@ export type Execution = { outcome: string; steps: Step[]; message: string | null
 
 export type RunOptions = {
   message?: string | null; operations: Operations; implementations: Implementations;
-  journal?: Journal; audit?: Audit | null; policy?: Rule[]; actor?: Actor | null;
+  journal?: JournalStore; audit?: AuditSink | null; policy?: Rule[]; actor?: Actor | null;
 };
 
 const planBody = (text: string): Node[] => (readPlan(text) as { items: Node[] }).items.slice(2);
@@ -443,12 +541,12 @@ export async function preview(text: string, o: RunOptions): Promise<Preview> {
   const hash = status === "ready" || status === "stopped"
     ? sha256Hex(canonicalJson({ plan: text, message, steps: steps.map(s => ({ operation: s.operation.name, args: s.args, key: s.key })) }))
     : null;
-  c.audit?.append("preview", { plan: text, message, valid: check.valid, actor, status, steps: stepsJson(steps), hash, stop_reason: reason });
+  await c.audit?.append("preview", { plan: text, message, valid: check.valid, actor, status, steps: stepsJson(steps), hash, stop_reason: reason });
   return { text, message, check, status, steps, problems, stopReason: reason, hash, used: false, actor, policy, operations: o.operations };
 }
 
 export type ExecuteOptions = {
-  implementations: Implementations; journal?: Journal; audit?: Audit | null; approvers?: Actor[]; approvedBy?: string;
+  implementations: Implementations; journal?: JournalStore; audit?: AuditSink | null; approvers?: Actor[]; approvedBy?: string;
 };
 
 /** Runs the approved preview (SPEC 10.4). APPROVAL must be its hash. */
@@ -460,16 +558,16 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
       .filter((r, i, all) => all.findIndex(x => x.role === r.role && x.fourEyes === r.fourEyes && x.rule === r.rule) === i),
     approvers, p.actor);
   if (unmet.length && p.hash && approval === p.hash && !p.used) {
-    audit?.append("outcome", { outcome: "not-approved", message: requirementsText(unmet, p.actor) });
+    await audit?.append("outcome", { outcome: "not-approved", message: requirementsText(unmet, p.actor) });
     return { outcome: "not-approved", steps: [], message: `this plan needs ${requirementsText(unmet, p.actor)}; nothing ran`, stopReason: null };
   }
   if (!p.hash || approval !== p.hash || p.used) {
-    audit?.append("outcome", { outcome: "not-approved" });
+    await audit?.append("outcome", { outcome: "not-approved" });
     return { outcome: "not-approved", steps: [], stopReason: null,
              message: p.used ? "this preview was already executed; an approval is for one execution" : "the approval does not match this preview; nothing ran" };
   }
   p.used = true;
-  audit?.append("approval", { hash: approval, by: o.approvedBy ?? "unknown", approvers: approvers.map(a => ({ id: a.id, roles: a.roles })) });
+  await audit?.append("approval", { hash: approval, by: o.approvedBy ?? "unknown", approvers: approvers.map(a => ({ id: a.id, roles: a.roles })) });
   const c: Ctx = { mode: "execute", steps: [], ops: p.operations, impls: o.implementations, journal, audit,
                    previewed: p.steps, policy: p.policy, actor: p.actor, approvers };
   let outcome: string, message: string | null = null, reason: string | null = null;
@@ -487,7 +585,7 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
   const all: Step[] = [...reached, ...p.steps.filter(s => !reached.some(r => r.index === s.index))
     .map(s => ({ ...s, status: "not_run", result: undefined }))];
   for (const s of all) s.status ??= "not_run";
-  audit?.append("outcome", { outcome, message, stop_reason: reason, steps: all.map(s => ({ index: Rational.of(s.index), status: s.status })) });
+  await audit?.append("outcome", { outcome, message, stop_reason: reason, steps: all.map(s => ({ index: Rational.of(s.index), status: s.status })) });
   return { outcome, steps: all, message, stopReason: reason };
 }
 

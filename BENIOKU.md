@@ -37,7 +37,7 @@ plan yazar, kullanıcı önizlemeyi kendi istemcisinde (MCP elicitation) onaylar
 çalıştırır.
 
 **İki uygulama:** Common Lisp referans uygulaması ve bağımlılıksız TypeScript uygulaması
-(`impl/ts/`) aynı 143 uyumluluk vakasını geçer.
+(`impl/ts/`) aynı 146 uyumluluk vakasını geçer.
 
 ## soz-guard: modele kod yazdıranlar için
 

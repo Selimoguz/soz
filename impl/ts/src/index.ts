@@ -6,8 +6,9 @@ export {
   type CheckResult, type CheckOptions, type Operation, type Operations, type Rule, type Actor, type SozError,
 } from "./checker.ts";
 export {
-  preview, execute, previewSummary, stepsJson, Journal, Audit, verifyAudit, OperationFailed, OperationUnknown,
+  preview, execute, previewSummary, stepsJson, stepKeyText, Journal, Audit, verifyAudit, OperationFailed, OperationUnknown,
   type Preview, type Execution, type Step, type Implementation, type Implementations, type RunOptions, type ExecuteOptions,
+  type JournalStore, type JournalEntry, type JournalStatus, type AuditSink,
 } from "./run.ts";
 export { t, defineOperation, defineOperations, Schema, type Args, type HostOut, type OperationSpec, type Defined } from "./define.ts";
 export { main as runGateway, loadGateway, GatewayServer } from "./gateway.ts";

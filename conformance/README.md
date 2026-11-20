@@ -55,7 +55,7 @@ A case with a `tools` field is an execution case. Instead of `expect` it has:
 - Each operation in `tools` answers its calls in order from its script: `{"result": X}`,
   `{"failed": "why"}` or `{"unknown": "why"}`; when the script runs out, the last answer repeats.
   An operation without a script has no implementation.
-- `journal` entries are keys already done before the case starts.
+- `journal` entries are keys in the journal before the case starts: `done`, or with `"status"` `pending` or `unknown`.
 - The preview runs with `tools`; then, if `expect_execute` is present, execution runs with
   `execute_tools` (or fresh copies of `tools`) and the preview's hash as the approval, or a wrong
   approval when `"approve": false`. `expect_execute_again` executes the same preview once more.

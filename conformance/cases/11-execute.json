@@ -521,6 +521,187 @@
           }
         ]
       }
+    },
+    {
+      "name": "a step claimed and never finished (a crash, or another execution) is not run: unresolved",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "journal": [
+        {
+          "operation": "erp.add_order_line",
+          "args": {
+            "customer": "C1",
+            "product": "tomatoes",
+            "quantity": 20
+          },
+          "status": "pending"
+        }
+      ],
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "already_done": true
+          },
+          {
+            "already_done": false
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "unresolved",
+        "steps": [
+          {
+            "index": 1,
+            "status": "unresolved"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.find_customer"
+        ]
+      }
+    },
+    {
+      "name": "a step whose earlier outcome is unknown is not run: unresolved",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (if (> (get c balance) (get c limit))",
+        "        (stop \"over the limit, balance\" (get c balance))",
+        "        (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                              (record product \"peppers\" quantity 5)))",
+        "          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "journal": [
+        {
+          "operation": "erp.add_order_line",
+          "args": {
+            "customer": "C1",
+            "product": "peppers",
+            "quantity": 5
+          },
+          "status": "unknown"
+        }
+      ],
+      "expect_execute": {
+        "outcome": "unresolved",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "unresolved"
+          }
+        ],
+        "calls": [
+          "erp.find_customer",
+          {
+            "operation": "erp.add_order_line",
+            "args": {
+              "customer": "C1",
+              "product": "tomatoes",
+              "quantity": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a step that ran but answered outside its declaration is unknown, not done",
+      "plan": [
+        "(plan \"Order with a header\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\"))",
+        "        (o (erp.create_order customer (get c code))))",
+        "    (erp.add_line order (get o id) product \"tomatoes\" quantity 20)))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.create_order": [
+          {
+            "result": {
+              "number": "O-77"
+            }
+          }
+        ],
+        "erp.add_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "unknown",
+        "steps": [
+          {
+            "index": 1,
+            "status": "unknown"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.find_customer",
+          "erp.create_order"
+        ]
+      }
     }
   ]
 }

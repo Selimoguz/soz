@@ -209,7 +209,10 @@
     (with-open-file (s (journal-path j) :external-format :utf-8)
       (loop for line = (read-line s nil) while line
             when (plusp (length line))
-              do (let ((e (json:json-oku line))) (setf (gethash (gethash "key" e) (journal-entries j)) e)))))
+              do (let ((e (json:json-oku line)))
+                   (if (equal (gethash "status" e) "released")
+                       (remhash (gethash "key" e) (journal-entries j))
+                       (setf (gethash (gethash "key" e) (journal-entries j)) e))))))
   j)
 
 (defun open-journal (path)
@@ -225,6 +228,21 @@
       (with-open-file (s (journal-path j) :direction :output :if-exists :append :if-does-not-exist :create
                                           :external-format :utf-8)
         (write-line line s)))))
+
+(defun journal-claim (j key)
+  "SPEC 10.4: if KEY has no entry, record it as pending and return NIL (claimed); otherwise return the
+entry that is there. One process: the check and the write cannot interleave. (The TypeScript
+implementation also claims atomically between processes.)"
+  (or (journal-get j key)
+      (progn (journal-put j key "pending" :null) nil)))
+
+(defun journal-release (j key)
+  "The call did not happen: the step may run again."
+  (remhash key (journal-entries j))
+  (when (journal-path j)
+    (with-open-file (s (journal-path j) :direction :output :if-exists :append :if-does-not-exist :create
+                                        :external-format :utf-8)
+      (write-line (canonical-json (obj "key" key "status" "released" "result" :null)) s))))
 
 (defstruct audit path (seq 0) (prev (make-string 64 :initial-element #\0)) (lines '()))
 
@@ -474,38 +492,64 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                  (when denials
                    (setf (step-status st) "not_run")
                    (error 'plan-halted :outcome "denied" :message (format nil "step ~d: ~a" index (denial-text op denials))))
-                 (let ((unmet (and (not done) (unmet-requirements requires *approvers* *preview-actor*))))
+                 (let ((unmet (and (not (and done (equal (gethash "status" done) "done")))
+                                   (unmet-requirements requires *approvers* *preview-actor*))))
                    (when unmet
                      (setf (step-status st) "not_run")
                      (error 'plan-halted :outcome "not-approved"
                                          :message (format nil "step ~d (~a) needs ~a" index (op-name op)
                                                           (requirements-text unmet *preview-actor*))))))
-               (cond
-                 (done
-                  (setf (step-status st) "already_done")
-                  (from-host-or-any (gethash "result" done) op))
-                 (t
-                  (handler-case
-                      (let* ((raw (call-implementation op argv))
-                             (v (from-host raw (op-returns op) (op-name op))))
-                        (setf (step-status st) "done" (step-result st) v)
-                        (journal-put *journal* key "done" v)
-                        (audit-append *audit* "call" (obj "step" index "operation" (op-name op) "args" (step-args st)
-                                                          "status" "done" "result" v))
-                        v)
-                    (operation-failed (e)
-                      (setf (step-status st) "failed")
-                      (audit-append *audit* "call" (obj "step" index "operation" (op-name op) "args" (step-args st)
-                                                        "status" "failed" "message" (outcome-message e)))
-                      (error 'plan-halted :outcome "failed" :message (format nil "step ~d (~a) failed: ~a" index (op-name op) (outcome-message e))))
-                    (operation-unknown (e)
-                      (setf (step-status st) "unknown")
-                      (journal-put *journal* key "unknown" :null)
-                      (audit-append *audit* "call" (obj "step" index "operation" (op-name op) "args" (step-args st)
-                                                        "status" "unknown" "message" (outcome-message e)))
-                      (error 'plan-halted :outcome "unknown"
-                                          :message (format nil "step ~d (~a): the outcome is unknown (~a); it will not be run again by itself"
-                                                           index (op-name op) (outcome-message e))))))))))))))
+               (flet ((unresolved (entry)
+                        (setf (step-status st) "unresolved")
+                        (error 'plan-halted :outcome "unresolved"
+                                            :message (format nil "step ~d (~a) is in the journal as ~a: ~a; it may have happened. A person should check and resolve it (done or released); it was not run again"
+                                                             index (op-name op) (gethash "status" entry)
+                                                             (if (equal (gethash "status" entry) "pending")
+                                                                 "another execution is running it, or one stopped during the call"
+                                                                 "an earlier call's outcome is unknown"))))
+                      (record (status &rest more)
+                        (audit-append *audit* "call" (apply #'obj "step" index "operation" (op-name op) "args" (step-args st)
+                                                            "status" status more))))
+                 (when (and done (equal (gethash "status" done) "done"))
+                   (setf (step-status st) "already_done")
+                   (return-from eval-call (from-host-or-any (gethash "result" done) op)))
+                 (when done (unresolved done))
+                 ;; Claim, then call (SPEC 10.4): never twice, not even across a crash.
+                 (let ((other (journal-claim *journal* key)))
+                   (when (and other (equal (gethash "status" other) "done"))
+                     (setf (step-status st) "already_done")
+                     (return-from eval-call (from-host-or-any (gethash "result" other) op)))
+                   (when other (unresolved other)))
+                 (let ((raw (handler-case (call-implementation op argv)
+                              (run-problem (e)   ; no implementation: nothing was called
+                                (journal-release *journal* key)
+                                (error e))
+                              (operation-failed (e)
+                                (setf (step-status st) "failed")
+                                (journal-release *journal* key)
+                                (record "failed" "message" (outcome-message e))
+                                (error 'plan-halted :outcome "failed" :message (format nil "step ~d (~a) failed: ~a" index (op-name op) (outcome-message e))))
+                              (error (e)
+                                (setf (step-status st) "unknown")
+                                (journal-put *journal* key "unknown" :null)
+                                (record "unknown" "message" (if (typep e 'operation-unknown) (outcome-message e) (princ-to-string e)))
+                                (error 'plan-halted :outcome "unknown"
+                                                    :message (format nil "step ~d (~a): the outcome is unknown (~a); it will not be run again by itself"
+                                                                     index (op-name op) (if (typep e 'operation-unknown) (outcome-message e) e))))))
+                       (v nil))
+                   (handler-case (setf v (from-host raw (op-returns op) (op-name op)))
+                     (run-problem (e)
+                       ;; It ran, but answered with something that does not fit its declaration.
+                       (setf (step-status st) "unknown")
+                       (journal-put *journal* key "unknown" :null)
+                       (record "unknown" "message" (problem-message e))
+                       (error 'plan-halted :outcome "unknown"
+                                           :message (format nil "step ~d (~a) ran but ~a; it will not be run again by itself"
+                                                            index (op-name op) (problem-message e)))))
+                   (setf (step-status st) "done" (step-result st) v)
+                   (journal-put *journal* key "done" v)
+                   (record "done" "result" v)
+                   v)))))))))
 
 (defun from-host-or-any (x op)
   (handler-case (from-host x (op-returns op) (op-name op))

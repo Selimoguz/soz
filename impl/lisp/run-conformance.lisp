@@ -94,7 +94,7 @@
           do (let* ((op (gethash (name-fold (gethash "operation" e)) *operations*))
                     (args (loop for k being the hash-keys of (gethash "args" e) using (hash-value v)
                                 collect (cons k (soz::from-host v :any "journal")))))
-               (soz::journal-put j (soz::step-key-text op args) "done" :null)))
+               (soz::journal-put j (soz::step-key-text op args) (or (gethash "status" e) "done") :null)))
     j))
 
 (defun compare-steps (want got fields)

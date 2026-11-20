@@ -1,4 +1,4 @@
-# soz specification, version 0.3 (draft)
+# soz specification, version 0.4 (draft)
 
 This document defines the soz plan language and its **checker**: the program that decides, before
 anything runs, whether a plan written by a language model may run, what it touches and how many
@@ -335,16 +335,25 @@ with live reads. For every step reached, in order:
 1. If the preview has no step with that index, or its operation or arguments differ, execution stops
    with `changed` **before** calling it, and says what differs. A pending argument in the preview
    matches any value. (The balance moved, the stock ran out: the person approved something else.)
-2. If its key is in the journal, it is not called again; its status is `already_done`.
-3. Otherwise it is called:
-   - result: the key goes into the journal with the result; status `done`;
-   - failed: status `failed`; execution stops with `failed`;
-   - unknown: the key goes into the journal as **unknown**, so that nothing runs it again by
-     itself; status `unknown`; execution stops with `unknown`. There is no retry.
+2. If its key is in the journal as `done`, it is not called again; its status is `already_done`.
+3. If its key is in the journal as `pending` or `unknown`, it is not called either: it may have
+   happened. Its status is `unresolved` and execution stops with `unresolved`. A person checks
+   and resolves the entry (section 10.8).
+4. Otherwise the step is **claimed**: its key goes into the journal as `pending`, atomically (if
+   another execution claimed it first, the step is `unresolved` as in 3). Only then is it called:
+   - result: the entry becomes `done` with the result; status `done`;
+   - failed: the claim is released (the operation did not happen and may run again); status
+     `failed`; execution stops with `failed`;
+   - unknown: the entry becomes `unknown`; status `unknown`; execution stops with `unknown`. There is
+     no retry.
+
+   A host that dies during the call leaves the claim `pending`, so the step is never run twice
+   by accident, not even across a crash.
 
 If evaluation ends with fewer steps than the preview had, the outcome is `changed`, unless a `stop`
 was reached, which gives `stopped`. Otherwise the outcome is `done`. Every step has a status:
-`done`, `already_done`, `failed`, `unknown` or `not_run`.
+`done`, `already_done`, `failed`, `unknown`, `unresolved` or `not_run`. In a preview, a step whose key
+is in the journal with any status has `already_done` set.
 
 ### 10.5 Audit record
 
@@ -375,7 +384,23 @@ value is `{"pending": N}` or `{"pending": N, "path": ["field", ...]}`.
 
 Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, `duplicate-step`, `no-implementation`,
 `read-failed`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`,
-`changed`, `failed`, `unknown`, `not-approved`, and with a policy `denied`.
+`changed`, `failed`, `unknown`, `unresolved`, `not-approved`, and with a policy `denied`.
+
+### 10.8 Journal and audit stores
+
+The journal maps a step key to an entry `{key, status, result}`, `status` one of `pending`, `done`,
+`unknown`. A host may keep it anywhere (a file, a database) as long as:
+
+- **claim** is atomic: of two executions claiming the same key at the same time, exactly one
+  succeeds, and the other sees the winner's entry;
+- **release** removes an entry, so the step may run again;
+- entries survive a restart.
+
+A person resolves an `unresolved` step by marking its entry `done` (it did happen) or releasing it
+(it did not), after checking the system the operation acts on. The host offers a way to do that.
+
+The audit record (10.5) may likewise be kept anywhere, as long as appends from several executions
+are serialized so that the hash chain stays one chain.
 
 ## 11. MCP gateway
 
