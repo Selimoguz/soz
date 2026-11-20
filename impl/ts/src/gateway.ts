@@ -18,6 +18,7 @@ import {
   preview, execute, previewSummary, Journal, Audit, verifyAudit, OperationFailed, OperationUnknown,
   unmetRequirements, requirementsText,
 } from "./run.ts";
+import { planJsonSchema } from "./json-plan.ts";
 import { type Approver, approversFromJson, requestFor, requestJson, verifyApproval } from "./approvals.ts";
 
 const log = (m: string) => process.stderr.write(`soz-gateway: ${m}\n`);
@@ -263,6 +264,10 @@ Rules the checker enforces (it explains every error with line and column):
 - What a read returns for a value you made up is not trusted either.
 - Pass the user's message to soz_preview exactly as they wrote it.
 - Loops run only over lists, at most 50 items.
+- The same plan may be written as JSON instead: {"plan": "title", "body": [...]}, with
+  {"call": "erp.find_customer", "args": [{"name": "name", "value": "Yilmaz Market"}]},
+  {"var": "c"}, {"get": {"var": "c"}, "field": "code"}, {"op": ">", "args": [...]} and so on;
+  the resource soz://plan-schema is its JSON Schema (SPEC 2.1).
 
 Operations:
 ${operationsText(g)}
@@ -285,7 +290,7 @@ function toolList(g: Gateway) {
     { name: "soz_guide", description: "How to write a soz plan, the operations available and the policy in force. Read this before your first plan.",
       inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
     { name: "soz_preview", description: "Check a soz plan and preview it: reads run, nothing is changed. Returns the steps the plan would take and a preview_id, or the errors to fix.",
-      inputSchema: { type: "object", properties: { plan: stringProp('The plan, one (plan "title" ...) s-expression.'),
+      inputSchema: { type: "object", properties: { plan: stringProp('The plan, one (plan "title" ...) s-expression, or the same plan as JSON {"plan": "title", "body": [...]} (see soz://plan-schema).'),
                                                    message: stringProp("The user's request, exactly as they wrote it.") },
                      required: ["plan", "message"] },
       annotations: { readOnlyHint: true } },
@@ -383,6 +388,7 @@ export class GatewayServer {
         { uri: "soz://guide", name: "soz guide", description: "How to write a soz plan, the operations and the policy.", mimeType: "text/plain" },
         { uri: "soz://operations", name: "operations", description: "The operations a plan may call, with parameters and effects.", mimeType: "application/json" },
         { uri: "soz://policy", name: "policy", description: "The policy in force and the person it applies to.", mimeType: "application/json" },
+        { uri: "soz://plan-schema", name: "plan schema", description: "JSON Schema of a plan in the JSON syntax, for structured output.", mimeType: "application/schema+json" },
       ] } as unknown as Json;
       case "resources/read": return { contents: [{ uri: params.uri, ...this.resource(params.uri as string) }] } as unknown as Json;
       case "prompts/list": return { prompts: [{ name: "soz_plan_guard", description: "Rules for working through soz: plan, preview, ask, execute; never make up values." }] } as unknown as Json;
@@ -396,6 +402,7 @@ export class GatewayServer {
 
   private resource(uri: string): { mimeType: string; text: string } {
     if (uri === "soz://guide") return { mimeType: "text/plain", text: guideText(this.g) };
+    if (uri === "soz://plan-schema") return { mimeType: "application/schema+json", text: JSON.stringify(planJsonSchema(), null, 2) };
     if (uri === "soz://operations") return { mimeType: "application/json", text: canonicalJson([...this.g.operations.values()].map(op => ({
       name: op.name, effect: op.effect, returns: typeToJson(op.returns), key: op.key,
       params: op.params.map(p => ({ name: p.name, type: typeToJson(p.type), required: p.required, model_allowed: p.modelAllowed })) }))) };

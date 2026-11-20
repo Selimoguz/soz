@@ -1,6 +1,7 @@
 // checker.ts — The soz reader and checker (SPEC 2 to 9) and the policy rules decided from the text
 // (SPEC 12). Nothing in a plan is ever evaluated here.
 
+import { readJsonPlan } from "./json-plan.ts";
 import {
   Rational, type Json, isObject, fold, nameFold, isAlphanumeric, compareCodePoints,
 } from "./exact.ts";
@@ -32,7 +33,15 @@ export function parseNumber(s: string): Rational | null {
   return /^-?[0-9]+(\.[0-9]+)?$/.test(s) ? Rational.parse(s) : null;
 }
 
+/** A name as an atom (SPEC 2): atom characters only, not a number, not starting with a digit. */
+export function isNameAtom(s: string): boolean {
+  const cs = Array.from(s);
+  return cs.length > 0 && cs.every(isAtomChar) && !parseNumber(s) && !isDecimalDigit(cs[0]);
+}
+
+/** Reads a plan: the s-expression syntax, or the JSON syntax (SPEC 2.1) when it starts with "{". */
 export function readPlan(text: string): Node {
+  if (/^[ \t\r\n]*\{/.test(text)) return readJsonPlan(text);
   const cs = Array.from(text);
   let i = 0, line = 1, col = 1, tokens = 0;
   const failAt = (code: string, l: number, c: number, m: string): never => { throw new SyntaxError_(code, l, c, m); };

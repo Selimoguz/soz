@@ -1,0 +1,135 @@
+{
+  "description": "The JSON syntax (SPEC 2.1): the same plans as JSON, its own errors, and positions in the JSON text.",
+  "message": "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.",
+  "cases": [
+    {
+      "name": "a valid plan in JSON",
+      "plan": [
+        "{\"plan\": \"Order for Yilmaz Market\", \"body\": [",
+        "  {\"let\": [{\"name\": \"customer\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]}}],",
+        "   \"body\": [",
+        "     {\"for_each\": {\"name\": \"line\", \"value\": {\"list\": [",
+        "        {\"record\": [{\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": 20}]},",
+        "        {\"record\": [{\"name\": \"product\", \"value\": \"peppers\"}, {\"name\": \"quantity\", \"value\": 5}]}]}},",
+        "      \"body\": [",
+        "        {\"call\": \"erp.add_order_line\", \"args\": [",
+        "          {\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"customer\"}, \"field\": \"code\"}},",
+        "          {\"name\": \"product\", \"value\": {\"get\": {\"var\": \"line\"}, \"field\": \"product\"}},",
+        "          {\"name\": \"quantity\", \"value\": {\"get\": {\"var\": \"line\"}, \"field\": \"quantity\"}}]}]}]}]}"
+      ],
+      "expect": {
+        "valid": true, "effects": ["read", "write"], "requires_approval": true, "max_calls": 3, "may_stop": false,
+        "calls": [
+          {"operation": "erp.find_customer", "effect": "read", "line": 2, "max_count": 1, "conditional": false},
+          {"operation": "erp.add_order_line", "effect": "write", "line": 8, "max_count": 2, "conditional": false}
+        ]
+      }
+    },
+    {
+      "name": "an invented quantity is reported where it is in the JSON",
+      "plan": [
+        "{\"plan\": \"Order\", \"body\": [",
+        "  {\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": \"Yilmaz Market\"},",
+        "    {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": 30}]}]}"
+      ],
+      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 3, "column": 77}], "only": true}
+    },
+    {
+      "name": "JSON escapes are decoded before the text is matched against the message",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz \\u004Darket\"}]}]}",
+      "expect": {"valid": true, "effects": ["read"]}
+    },
+    {
+      "name": "an if without else, and with else null",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"if\": {\"op\": \">\", \"args\": [20, 5]}, \"then\": {\"stop\": [\"tomatoes\"]}, \"else\": null}]}",
+      "expect": {"valid": true, "may_stop": true}
+    },
+    {
+      "name": "the JSON of a plan does not parse: a comma is missing",
+      "plan": ["{\"plan\": \"x\",", "  \"body\": [\"tomatoes\" \"peppers\"]}"],
+      "expect": {"valid": false, "errors": [{"code": "bad-json", "line": 2, "column": 23}], "only": true}
+    },
+    {
+      "name": "a key twice is bad-json at the second",
+      "plan": "{\"plan\": \"x\", \"plan\": \"y\", \"body\": [\"tomatoes\"]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-json", "line": 1, "column": 15}], "only": true}
+    },
+    {
+      "name": "the JSON ends early",
+      "plan": "{\"plan\": \"x\", \"body\": [\"tomatoes\"",
+      "expect": {"valid": false, "errors": [{"code": "unexpected-end", "line": 1, "column": 34}], "only": true}
+    },
+    {
+      "name": "content after the plan",
+      "plan": "{\"plan\": \"x\", \"body\": [\"tomatoes\"]} {}",
+      "expect": {"valid": false, "errors": [{"code": "trailing-content", "line": 1, "column": 37}], "only": true}
+    },
+    {
+      "name": "a key that does not belong to the object is bad-form at the key",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"erp.find_customer\", \"argz\": []}]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-form", "line": 1, "column": 54}], "only": true}
+    },
+    {
+      "name": "an object that is no expression",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"tomatoes\": 20}]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-form", "line": 1, "column": 24}], "only": true}
+    },
+    {
+      "name": "a form cannot be called as an operation",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"list\", \"args\": []}]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-form", "line": 1, "column": 33}], "only": true}
+    },
+    {
+      "name": "true, false and null are not values of a plan",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"if\": true, \"then\": \"tomatoes\"}]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-form", "line": 1, "column": 31}], "only": true}
+    },
+    {
+      "name": "a number with an exponent is bad-token",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"op\": \"+\", \"args\": [2e1, 5]}]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-token", "line": 1, "column": 45}], "only": true}
+    },
+    {
+      "name": "a name that is not an atom is bad-token",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"var\": \"20 crates\"}]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-token", "line": 1, "column": 32}], "only": true}
+    },
+    {
+      "name": "an unknown operation is reported at its name",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"erp.delete_everything\"}]}",
+      "expect": {"valid": false, "errors": [{"code": "unknown-operation", "line": 1, "column": 33}], "only": true}
+    },
+    {
+      "name": "the top must be a plan",
+      "plan": "{\"body\": [\"tomatoes\"]}",
+      "expect": {"valid": false, "errors": [{"code": "bad-form", "line": 1, "column": 1}], "only": true}
+    },
+    {
+      "name": "a plan without a body is empty",
+      "plan": "{\"plan\": \"x\", \"body\": []}",
+      "expect": {"valid": false, "errors": [{"code": "empty-plan", "line": 1, "column": 1}], "only": true}
+    },
+    {
+      "name": "leading whitespace, then a JSON plan",
+      "plan": ["", "   {\"plan\": \"x\", \"body\": [{\"list\": []}]}"],
+      "expect": {"valid": true, "effects": []}
+    },
+    {
+      "name": "a JSON plan is previewed and executed like its s-expression",
+      "plan": [
+        "{\"plan\": \"Order\", \"body\": [",
+        "  {\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]}}],",
+        "   \"body\": [{\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}},",
+        "     {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": 20}]}]}]}"
+      ],
+      "tools": {
+        "erp.find_customer": [{"result": {"code": "C1", "title": "Yilmaz Market", "balance": 100, "limit": 1000}}],
+        "erp.add_order_line": [{"result": null}]
+      },
+      "expect_preview": {"status": "ready", "steps": [{"operation": "erp.add_order_line", "args": {"customer": "C1", "product": "tomatoes", "quantity": 20}}]},
+      "expect_execute": {"outcome": "done", "steps": [{"index": 1, "status": "done"}],
+                         "calls": ["erp.find_customer", {"operation": "erp.add_order_line", "args": {"customer": "C1", "product": "tomatoes", "quantity": 20}}]},
+      "expect_execute_again": {"outcome": "not-approved"}
+    }
+  ]
+}

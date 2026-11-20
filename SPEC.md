@@ -70,6 +70,45 @@ Other syntax errors: `unclosed-list` (at its `(`), `unclosed-text` (at its `"`),
 
 A syntax error stops the check: it is the only error reported.
 
+### 2.1 JSON syntax
+
+A plan whose first character other than whitespace is `{` is written in **JSON** (RFC 8259), for
+models with structured output. It stands for exactly one s-expression plan and is read into the same
+tree; from there on (sections 3 to 12) nothing depends on which syntax was used, except that
+positions are those of the JSON text. Every object has fixed keys, so the syntax fits a strict JSON
+Schema (the TypeScript implementation's `planJsonSchema()` gives one).
+
+| JSON | Stands for |
+|---|---|
+| `{"plan": TITLE, "body": [E, ...]}` (the whole plan) | `(plan TITLE E ...)` |
+| a string | a text |
+| a number | a number; it MUST match the number rule of section 2 (no exponent), else `bad-token` |
+| `{"var": NAME}` | the name |
+| `{"call": OPERATION, "args": [{"name": P, "value": E}, ...]}` (`args` optional) | `(OPERATION P E ...)` |
+| `{"let": [{"name": N, "value": E}, ...], "body": [E, ...]}` | `(let ((N E) ...) E ...)` |
+| `{"for_each": {"name": N, "value": E}, "body": [E, ...]}` | `(for-each (N E) E ...)` |
+| `{"if": C, "then": E, "else": E}` (`else` optional or `null`) | `(if C E E)` |
+| `{"do": [E, ...]}`, `{"stop": [E, ...]}`, `{"list": [E, ...]}` | `(do E ...)`, `(stop E ...)`, `(list E ...)` |
+| `{"record": [{"name": F, "value": E}, ...]}` | `(record F E ...)` |
+| `{"get": E, "field": F}` | `(get E F)` |
+| `{"op": OP, "args": [E, ...]}`, OP one of `+ - * / = != < > <= >= and or not` | `(OP E ...)` |
+
+Names (`NAME`, `OPERATION`, `P`, `N`, `F`) are JSON strings that MUST be names as atoms (section 2),
+else `bad-token` at the string. `call` of a form's name is `bad-form`.
+
+Positions: a form is at its object's `{`; a form's name (`let`, `if`, ...) at its key; an operation
+or operator at its string; a text, number or name at its token.
+
+Errors of the JSON syntax, which stop the check like syntax errors: `bad-json` (not JSON, a key that
+appears twice in one object, a control character in a string), `bad-escape`, `unclosed-text`,
+`unexpected-end`, `trailing-content`; `bad-form` at an object or key that is not one of the shapes
+above (an unknown or missing key, `true`, `false`, `null` or an array where an expression belongs,
+a top that is not `{"plan", "body"}`). The limits of section 2 apply to the tree read (`too-deep`
+for its lists, `too-large` for its tokens) and to the text (`too-long`); JSON nested deeper than
+100 is `too-deep` too.
+
+The conformance suite runs every checker case it can in both syntaxes (`13-json-equivalents.json`).
+
 ## 3. Folding
 
 Names are compared after **name folding**, texts against the message after **text folding**.
@@ -273,8 +312,8 @@ The checker's result (the conformance suite compares these fields):
 `not-a-plan`, `empty-plan`, `empty-form`, `bad-form`, `unknown-name`, `unknown-operation`,
 `unknown-parameter`, `duplicate-parameter`, `missing-parameter`, `duplicate-field`,
 `unknown-field`, `type-mismatch`, `not-a-list`, `not-a-record`, `mixed-list`, `division-by-zero`,
-`invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`, and with a policy
-`policy-denied`, `policy-source` (section 12).
+`invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`, in the JSON syntax
+`bad-json` (section 2.1), and with a policy `policy-denied`, `policy-source` (section 12).
 
 ## 10. Execution (0.2)
 
@@ -588,7 +627,6 @@ in section 11.5.
 
 ## 13. Planned
 
-- **JSON syntax:** the same plan as JSON, for models with structured output.
 - **Source labels:** operations may label their results (`erp`, `crm`) so that policies can say
   which system a value came from, not just that it came from a tool.
 - **Language profiles:** optional message matching for number words ("twenty", "yirmi") and

@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 146 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 250 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 146 conformance cases, the example, defineOperation, the stores with real processes, the gateway
+npm test          # type check (tsc, strict), the 250 conformance cases, the example, defineOperation, the stores with real processes, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -86,6 +86,23 @@ Types: `t.text()`, `t.number()`, `t.bool()`, `t.any()`, `t.list(item)`, `t.recor
 Implementation keys are operation names after `nameFold` (`_` becomes `-`). Numbers are exact:
 implementations receive and may return `Rational` values (or `bigint`), never floats.
 
+## Plans in JSON
+
+A plan whose text starts with `{` is read in the JSON syntax (SPEC 2.1), for models with structured
+output; everything after reading is the same. `planJsonSchema()` is a strict JSON Schema of it (the
+gateway serves it as `soz://plan-schema`), and `planToJson(readPlan(text))` writes an s-expression
+plan in JSON:
+
+```json
+{"plan": "Order", "body": [
+  {"let": [{"name": "c", "value": {"call": "erp.find_customer", "args": [{"name": "name", "value": "Yilmaz Market"}]}}],
+   "body": [{"call": "erp.add_order_line", "args": [{"name": "customer", "value": {"get": {"var": "c"}, "field": "code"}},
+                                                   {"name": "quantity", "value": 20}]}]}]}
+```
+
+`test/make-json-cases.ts` regenerates `conformance/cases/13-json-equivalents.json`, every checker case
+the JSON syntax can write, expecting what its s-expression gives.
+
 ## Showing a preview in a chat app
 
 `previewSummary(p)` is plain text; `renderPreview(p, format)` writes the same preview for a chat app or
@@ -159,7 +176,7 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (53 checks).
+the gateway and a pretend ERP as real processes (57 checks).
 
 ### Another person's approval
 
@@ -199,6 +216,7 @@ the gateway holds only public keys. Details: SPEC 11.5. The Lisp gateway verifie
 | `src/checker.ts` | reader, checker, operations, the policy decided from the text |
 | `src/run.ts` | preview, execution, journal, audit record, the policy with values |
 | `src/render.ts` | the preview for chat apps: Markdown, Slack, Telegram, plain text |
+| `src/json-plan.ts` | the JSON syntax: reader, `planToJson`, `planJsonSchema` |
 | `src/define.ts` | `defineOperation`: operations and implementations, typed together |
 | `src/journal-cli.ts` | resolving unresolved steps, by a person |
 | `src/approvals.ts`, `src/approve-cli.ts` | another person's approval: requests, Ed25519 tokens, `soz-approve` |

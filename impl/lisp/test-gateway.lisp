@@ -296,6 +296,17 @@
                                       (search "{\"id\":\"ali\"" line) (search "{\"id\":\"ayse\"" line) (search ayse line))))))
         (close-client c))))
 
+(format t "~%A plan in the JSON syntax~%")
+(let* ((c (connect (write-config "gateway6.json" "elicitation")))
+       (plan (lambda (q) (format nil "{\"plan\": \"Order\", \"body\": [{\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]}}], \"body\": [{\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}}, {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": ~d}]}]}]}" q)))
+       (msg "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow."))
+  (let ((r (call c "soz_preview" (json:json-nesne "plan" (funcall plan 20) "message" msg))))
+    (check "a JSON plan is previewed like an s-expression"
+           (and (not (error-p r)) (search "erp.add_order_line" (text-of r)) (preview-id r))))
+  (let ((r (call c "soz_preview" (json:json-nesne "plan" (funcall plan 25) "message" msg))))
+    (check "an invented value in a JSON plan is refused" (and (error-p r) (search "[invented-value]" (text-of r)))))
+  (close-client c))
+
 (format t "~%Audit record across restarts~%")
 (check "four gateway sessions wrote one audit record, and its chain is intact"
        (let ((sessions 0))

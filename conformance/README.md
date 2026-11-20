@@ -7,6 +7,9 @@ specification when it passes every case here.
 
 - `operations.json`: the operations every case may call, in the declaration format of SPEC 6.
 - `cases/*.json`: one file per area of the specification.
+  `13-json-equivalents.json` is generated (`impl/ts/test/make-json-cases.ts`): the checker cases of
+  files 01 to 08 in the JSON syntax (SPEC 2.1), expecting what the s-expression gives, positions left
+  out. `14-json.json` has the JSON syntax's own cases, with positions.
 
 ```json
 {

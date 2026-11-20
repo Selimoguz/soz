@@ -15,3 +15,4 @@ export { main as runGateway, loadGateway, GatewayServer } from "./gateway.ts";
 export { renderPreview, type RenderFormat } from "./render.ts";
 export { visible } from "./exact.ts";
 export { newKeyPair, openPrivateKey, signApproval, verifyApproval, readRequest, requestFor, requestJson, approversFromJson, type Approver, type ApprovalRequest } from "./approvals.ts";
+export { readJsonPlan, planToJson, nodeToJson, planJsonSchema } from "./json-plan.ts";

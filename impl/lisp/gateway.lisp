@@ -263,6 +263,9 @@ Rules the checker enforces (it explains every error with line and column):
   not know a value, look it up with a read, or stop and ask: (stop \"Which customer?\").
 - Pass the user's message to soz_preview exactly as they wrote it.
 - Loops run only over lists, at most 50 items.
+- The same plan may be written as JSON instead: {\"plan\": \"title\", \"body\": [...]}, with
+  {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]},
+  {\"var\": \"c\"}, {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}, {\"op\": \">\", \"args\": [...]} and so on (SPEC 2.1).
 
 Operations:
 ~a
@@ -292,7 +295,7 @@ Example:
                "annotations" (obj "readOnlyHint" :true))
           (obj "name" "soz_preview"
                "description" "Check a soz plan and preview it: reads run, nothing is changed. Returns the steps the plan would take and a preview_id, or the errors to fix."
-               "inputSchema" (input-schema '("plan" "The plan, one (plan \"title\" ...) s-expression.")
+               "inputSchema" (input-schema '("plan" "The plan, one (plan \"title\" ...) s-expression, or the same plan as JSON {\"plan\": \"title\", \"body\": [...]}.")
                                            '("message" "The user's request, exactly as they wrote it."))
                "annotations" (obj "readOnlyHint" :true))
           (obj "name" "soz_execute"

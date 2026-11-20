@@ -257,6 +257,29 @@ console.log("\nAnother person's approval (four eyes, signed)");
   c.close();
 }
 
+console.log("\nA plan in the JSON syntax");
+{
+  const codeFile = join(dir, "code-json.txt");
+  const c = await new Client(writeConfig("g6.json", "auto", { journal: "journal-json.jsonl" }), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
+  const before = await orders(c);
+  const schema = JSON.parse((await c.request("resources/read", { uri: "soz://plan-schema" })).contents?.[0]?.text ?? "null");
+  check("the resource soz://plan-schema is the plan's JSON Schema", schema?.required?.includes("plan") && schema?.$defs?.expr?.anyOf?.length === 13);
+  const plan = JSON.stringify({ plan: "Order for Yilmaz Market", body: [
+    { let: [{ name: "c", value: { call: "erp.find_customer", args: [{ name: "name", value: "Yilmaz Market" }] } }],
+      body: [{ call: "erp.add_order_line", args: [{ name: "customer", value: { get: { var: "c" }, field: "code" } },
+                                                 { name: "product", value: "tomatoes" }, { name: "quantity", value: 20 }] }] }] });
+  const p = await c.call("soz_preview", { plan, message: MESSAGE });
+  check("a JSON plan is previewed like an s-expression", !p.isError && text(p).includes("erp.add_order_line") && !!previewId(p));
+  const invented = await c.call("soz_preview", { plan: plan.replace('"value":20', '"value":25'), message: MESSAGE });
+  check("an invented value in a JSON plan is refused, with its JSON position", invented.isError && text(invented).includes("[invented-value]") && text(invented).includes("line 1"));
+  const id = previewId(p);
+  await c.call("soz_execute", { preview_id: id });
+  const code = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
+  const done = await c.call("soz_execute", { preview_id: id, approval_code: code });
+  check("and executed after the user's approval", text(done).includes("Outcome: done") && await orders(c) === before + 1);
+  c.close();
+}
+
 console.log("\nAudit record across restarts");
 {
   const lines = readFileSync(join(dir, "audit.jsonl"), "utf8").split("\n").filter(l => l.trim());
