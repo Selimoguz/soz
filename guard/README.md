@@ -1,16 +1,38 @@
 # soz-guard
 
-**Unfinished work, said out loud.**
+**Work is finished when the checks say so, not when the agent does.**
 
-A coding agent that writes a lot of code, in many tabs at once, tends to leave things unfinished
-without saying so: a `TODO` here, a button whose handler is empty there, an error caught and
-dropped, a `// ... rest of the screen`, an `example.com` where real data should be. Then it says
-"done". soz-guard is a Claude Code hook that does not let it say "done" while its changes still
-contain such gaps: it shows the agent what is open, line by line, and asks it to finish or to
-**declare** what has to stay.
+A coding agent writes a lot of code, in many tabs at once, and then says "done". Often it is not:
+a `TODO` here, a button whose handler is empty there, an error caught and dropped, an `example.com`
+where real data should be; or the tests were never run; or the test that failed was quietly
+deleted. soz-guard is a deterministic wrapper around the agent's "done":
 
-It is a sibling of [soz](../README.md) with the same idea, no silent errors, applied to code an
-agent writes rather than to actions an agent takes. It does not depend on soz.
+1. **Unfinished work, said out loud.** It reads what the agent changed and finds the gaps people
+   find in review: TODOs, empty handlers, swallowed errors, `// ...` in place of code, made-up data.
+2. **Evidence, not claims.** The repository's owner names the checks that must pass (`npm test`, a
+   linter, a build). soz-guard runs them itself, on exactly this change. The agent's "tests pass" is
+   not evidence; a check soz-guard ran is.
+3. **The goalposts stay where the owner put them.** An agent may add tests. It may not delete a test,
+   remove more assertions than it adds, or change soz-guard's own rules to get its work accepted:
+   that needs a person.
+
+The verdict is one of four, and only the first two count as finished:
+
+| Verdict | Means |
+|---|---|
+| `verified` | nothing open, and every check that applies ran on exactly this change and passed |
+| `unchecked` | nothing open, and no check applies (none configured, or none for what changed) |
+| `unverified` | a check could not give an answer: it timed out or could not start |
+| `open` | unfinished work, a failed check, or the criteria changed without a person's acceptance |
+
+The same change, the same rules and the same check results always give the same verdict. Each one
+is written to `.soz-guard/last.json` with what it rests on: a fingerprint of the change, of the
+rules, and every check's command, exit code and last lines of output.
+
+soz-guard works in two places: as a **Claude Code hook** while the agent works, and as a **CI
+check** on the pull request, where the same decision is enforced. It is a sibling of
+[soz](../README.md), which checks an agent's actions before they run; soz-guard checks its work
+before it counts as done. It does not depend on soz.
 
 ## Set up (Claude Code, also in VS Code)
 
@@ -18,13 +40,13 @@ Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one 
 folder, with no dependencies:
 
 ```sh
-npm pack                                   # here, in guard/: makes soz-guard-0.1.0.tgz
+npm pack                                   # here, in guard/: makes soz-guard-0.2.0.tgz
 ```
 
 and on the machine that will use it, in the project:
 
 ```sh
-npm install --save-dev path/to/soz-guard-0.1.0.tgz
+npm install --save-dev path/to/soz-guard-0.2.0.tgz
 npx soz-guard init
 ```
 
@@ -34,30 +56,97 @@ npx soz-guard init
 `init` adds, without touching what is already there:
 
 - a `Stop` hook in `.claude/settings.json`;
-- a `.soz-guard.json` for your own settings;
+- a `.soz-guard.json`, with `npm test` as a required check if the project has a test script;
+- `.soz-guard/` in `.gitignore` (verdicts and caches stay local);
 - a short "Finished means finished" section in `CLAUDE.md`.
 
 Every Claude Code session in that project, in every tab, then runs it when the agent tries to stop.
 The hook calls this Node by its full path, because a desktop app's PATH may not include it; after
 moving Node or the package, run `init` again.
 
-## What it looks at
+## Required checks
 
-Only what changed: the lines your working tree adds against `HEAD`, and new files whole. Old TODOs
-already committed are not its business.
+`.soz-guard.json`, set by the repository's owner:
 
-| Rule | Catches | Does not catch |
-|---|---|---|
-| `todo` | `// TODO`, `# FIXME`, `@todo` in comments | "TODO" in a string or a test name |
-| `not-implemented` | `throw new Error("not implemented")`, `NotImplementedException`, `todo!()` | |
-| `swallowed-error` | `catch (e) {}`, `.catch(() => {})`, `except: pass` | a catch block that does something |
-| `skipped-test` | `test.skip(`, `it.todo(`, `xit(`, `@Disabled`, `pytest.mark.skip` | |
-| `deferred` | comments that put work off: "for now", "hard-coded", "wire this up later", "şimdilik", "yapılacak", "bağlanacak" | "retried later", "a temporary folder" |
-| `elided` | `// ...` and `// ... rest of the code` | spread syntax `...rest` |
-| `fake-data` | lorem ipsum, example.com, test@test, John Doe, 123456789 (outside tests) | the same in tests and fixtures |
-| `empty-function` | `function f() {}`, `save() {}`, `onClick={() => {}}`, `handleSave = () => {}` | `useEffect(() => {}, [])`, `if (x) {}`, `constructor() {}` |
+```json
+{
+  "checks": [
+    {"name": "tests", "run": "npm test", "timeoutSeconds": 600},
+    {"name": "types", "run": "npx tsc --noEmit", "when": ["src/**/*.ts"]}
+  ]
+}
+```
 
-Markdown, lock files, `node_modules`, `dist` and `build` are skipped.
+A check runs when something it covers changed (`when`, glob patterns; without it, on any change),
+through the shell, in the repository's folder. Exit 0 is passed; anything else failed; a check that
+outlives `timeoutSeconds` (600) or cannot start leaves the work `unverified`. The checks run only once
+the static part is clean (unfinished work has to be finished first anyway), and their results are
+kept for exactly this change: stopping again without changing anything does not run them again.
+
+When a check fails, the agent sees its name, the exit code and the last 30 lines of its output, and
+is told to fix the code, not the check.
+
+## The criteria
+
+What "finished" means is defined by the tests, the CI configuration and `.soz-guard.json`. These
+belong to the repository's owner. soz-guard treats a change to them as a person's decision:
+
+| Change | Verdict |
+|---|---|
+| a new test or a new assertion | fine |
+| an assertion changed (as many added as removed) | fine |
+| fewer assertions in a file than before | `open`: a person accepts it |
+| a test or CI file deleted | `open` |
+| `.soz-guard.json` changed | `open` |
+
+Which files count: `.soz-guard.json`, `test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`,
+`*_test.*`, `test_*.py`, `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, and whatever you add
+under `"criteria"`. With `"criteriaChanges": "report"` such changes are only reported.
+
+A test sometimes really is obsolete. Then a person accepts the change, in a terminal:
+
+```sh
+npx soz-guard accept "the old pricing test covered a rule we removed"
+```
+
+It asks to type `yes`, and refuses piped input: an agent runs commands without a terminal. The
+acceptance is bound to exactly these changes; any further change to the tests or rules needs
+accepting again. Be clear about what this is: on one machine an agent can do whatever its user can,
+so locally this slows an agent down rather than stops it. **CI is where the rule is enforced**, on
+the pull request, where the agent cannot accept anything.
+
+## In CI
+
+```sh
+npx soz-guard ci --base origin/main             # exit 1 unless finished
+npx soz-guard ci --base origin/main --checks    # run the required checks too
+npx soz-guard ci --criteria report              # a team that reviews test changes in the PR itself
+```
+
+On GitHub Actions `--base` defaults to the pull request's base branch. The change is everything the
+branch adds since it left the base (the merge base). In CI the tests usually run in their own step;
+`--checks` is for when soz-guard should run them itself.
+
+## The hook
+
+When the agent tries to stop and the verdict is `open` or `unverified`, the hook exits with code 2
+and tells the agent what is open, so it continues instead of stopping. To never trap an agent in a
+loop, it does this at most `maxBlocks` times (3); after that it lets the agent stop and tells the
+person, plainly, that the work is not finished. Outside a git repository it does nothing. If it
+fails itself, it says so and does not block.
+
+## A pilot: replay the past
+
+Before relying on it, see what it would have done:
+
+```sh
+npx soz-guard replay main~50..main          # each commit with its verdict
+npx soz-guard replay main~50..main --json   # the same, for counting
+```
+
+Take commits where an agent said "done" and something turned out missing, and commits that were
+fine. Count both: how many gaps soz-guard catches, and how many good changes it would have stopped
+for nothing. (Replay judges the static rules and the criteria; it does not run checks on the past.)
 
 ## Unfinished is allowed; unsaid is not
 
@@ -71,17 +160,23 @@ return 0; // soz-guard: ignore the stock service has no release call yet
 and the agent says so in its final message. The marker is the point: the gap is now visible in
 the code, in the diff and in review.
 
-## The hook
+## The static rules
 
-When the agent tries to stop and its changes contain unfinished work, the hook exits with code 2
-and tells the agent what is open, so it continues instead of stopping. To never trap an agent in a
-loop, it does this at most `maxBlocks` times (3); after that it lets the agent stop and shows the
-person what is still open. Outside a git repository it does nothing. If it fails itself, it says
-so and does not block.
+Only what changed: the lines the change adds, and new files whole. Old TODOs already committed are
+not its business.
 
-## Settings
+| Rule | Catches | Does not catch |
+|---|---|---|
+| `todo` | `// TODO`, `# FIXME`, `@todo` in comments | "TODO" in a string or a test name |
+| `not-implemented` | `throw new Error("not implemented")`, `NotImplementedException`, `todo!()` | |
+| `swallowed-error` | `catch (e) {}`, `.catch(() => {})`, `except: pass` | a catch block that does something |
+| `skipped-test` | `test.skip(`, `it.todo(`, `xit(`, `@Disabled`, `pytest.mark.skip` | |
+| `deferred` | comments that put work off: "for now", "hard-coded", "wire this up later", "şimdilik", "yapılacak", "bağlanacak" | "retried later", "a temporary folder" |
+| `elided` | `// ...` and `// ... rest of the code` | spread syntax `...rest` |
+| `fake-data` | lorem ipsum, example.com, test@test, John Doe, 123456789 (outside tests) | the same in tests and fixtures |
+| `empty-function` | `function f() {}`, `save() {}`, `onClick={() => {}}`, `handleSave = () => {}` | `useEffect(() => {}, [])`, `if (x) {}`, `constructor() {}` |
 
-`.soz-guard.json`:
+Markdown, lock files, `node_modules`, `dist` and `build` are skipped. Your own rules and settings:
 
 ```json
 {
@@ -96,17 +191,19 @@ so and does not block.
 
 A rule with the id of a built-in rule replaces it.
 
-## Also by hand
+## By hand
 
 ```sh
-npx soz-guard scan               # exit 1 if anything is open
-npx soz-guard scan --json
-npx soz-guard scan --base main   # everything since main, e.g. in CI
+npx soz-guard check              # the verdict on what changed since HEAD, checks run; exit 1 unless finished
+npx soz-guard check --json
+npx soz-guard scan               # the static rules only
 ```
 
 ## What it is not
 
-It finds work left unfinished without saying so. It does not find wrong logic, a wrong business
-rule or a screen that does the wrong thing; tests do that. It reads lines, not programs, so a
-determined way of hiding a gap will pass. It makes the common, unintended gaps visible, which in
-practice are most of them.
+It finds work left unfinished without saying so, runs the checks the owner requires, and keeps the
+agent from weakening them. It does not know whether the checks are good enough: a requirement no
+test covers can still be missed, which is why the owner, not the agent, decides what the checks
+are. Its static rules read lines, not programs, so a determined way of hiding a gap will pass; they
+make the common, unintended gaps visible, which in practice are most of them. And a flaky test makes
+a flaky verdict: the record in `.soz-guard/last.json` shows which check said what.

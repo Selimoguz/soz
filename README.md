@@ -38,7 +38,7 @@ depend on each other:
 | | When | What it checks |
 |---|---|---|
 | **soz** (this README) | at run time, before an agent acts | the plan an agent wants to run: where every value came from, what it touches, how far it can go; then preview, approval, execution, audit |
-| **[soz-guard](guard/README.md)** | at development time, before a coding agent says "done" | the code it changed: a `TODO`, an empty handler, a swallowed error or made-up data it did not mention |
+| **[soz-guard](guard/README.md)** | at development time, before a coding agent's "done" counts | the work itself: the checks the repository's owner requires, run by soz-guard on exactly this change; tests and rules the agent may add to but not weaken; and the gaps it did not mention (a `TODO`, an empty handler, a swallowed error, made-up data). As a Claude Code hook and as a CI check |
 
 ## Quickstart
 
@@ -269,10 +269,13 @@ what defines soz.
 
 ## soz-guard: the same idea, for code an agent writes
 
-[soz-guard](guard/README.md) is a sibling tool: a Claude Code hook that does not let a coding agent
-say "done" while its changes still leave a `TODO`, an empty button handler, a swallowed error, a
-`// ... rest of the code` or made-up data unsaid. It shows the agent what is open and asks it to
-finish or to declare what has to stay. One command sets it up in a project.
+[soz-guard](guard/README.md) is a deterministic wrapper around a coding agent's "done": work is
+finished when the checks say so, not when the agent does. The repository's owner names the checks
+that must pass; soz-guard runs them itself on exactly the agent's change, keeps the agent from
+deleting tests, removing assertions or editing its rules to get accepted, and finds the gaps it did
+not mention (a `TODO`, an empty handler, a swallowed error, made-up data). It works as a Claude Code
+hook while the agent works and as a CI check on the pull request, and can replay past commits to
+measure what it would have caught. One command sets it up in a project.
 
 ## Prior art
 

@@ -28,16 +28,31 @@ declare module "node:child_process" {
     cwd?: string; encoding: "utf8"; maxBuffer?: number; input?: string; env?: Record<string, string | undefined>;
     stdio?: ("pipe" | "ignore")[];
   }): string;
-  type SpawnResult = { status: number | null; stdout: string; stderr: string };
-  export function spawnSync(file: string, args: string[], options: { cwd?: string; encoding: "utf8"; input?: string }): SpawnResult;
+  type SpawnResult = { status: number | null; stdout: string; stderr: string; signal?: string | null; error?: Error & { code?: string } };
+  type SpawnOptions = {
+    cwd?: string; encoding: "utf8"; input?: string; timeout?: number; maxBuffer?: number;
+    env?: Record<string, string | undefined>; windowsHide?: boolean;
+  };
+  export function spawnSync(file: string, args: string[], options: SpawnOptions): SpawnResult;
   /** A whole command line, run through a shell (as Claude Code runs a hook command). */
-  export function spawnSync(command: string, options: { cwd?: string; encoding: "utf8"; input?: string; shell: true }): SpawnResult;
+  export function spawnSync(command: string, options: SpawnOptions & { shell: true }): SpawnResult;
+}
+
+declare module "node:crypto" {
+  interface Hash { update(data: string, encoding?: "utf8"): Hash; digest(encoding: "hex"): string }
+  export function createHash(algorithm: "sha256"): Hash;
+}
+
+declare module "node:readline" {
+  interface Interface { question(q: string, f: (answer: string) => void): void; close(): void }
+  export function createInterface(o: { input: unknown; output: unknown }): Interface;
 }
 
 declare const process: {
-  argv: string[]; env: Record<string, string | undefined>; execPath: string;
+  argv: string[]; env: Record<string, string | undefined>; execPath: string; platform: string;
   cwd(): string; exit(code?: number): never;
   stdout: { write(s: string): void }; stderr: { write(s: string): void };
+  stdin: { isTTY?: boolean };
 };
 declare const console: { log(...args: unknown[]): void };
 

@@ -93,7 +93,8 @@ check("the agent is told what, where, and how to declare what must stay", h1.std
 run(["hook"], hookInput); run(["hook"], hookInput);
 const h4 = run(["hook"], hookInput);
 check("after 3 checks it lets the agent finish (no endless loop)", h4.status === 0);
-check("... and tells the person what is still unfinished", JSON.parse(h4.stdout).systemMessage.includes("unfinished item(s) remain"));
+check("... and tells the person, plainly, that it is not finished", JSON.parse(h4.stdout).systemMessage.includes("the work is open, not finished")
+      && JSON.parse(h4.stdout).systemMessage.includes("src/stock.ts:6"));
 write("src/stock.ts", "export function reserve() {\n  // TODO: old one, not ours\n  return 1;\n}\nexport function release() {\n  return 0; // soz-guard: ignore the stock API has no release call yet\n}\n");  // soz-guard: ignore (test data)
 write("src/screens/Order.tsx", "export const Order = () => <form><button onClick={save}>Kaydet</button></form>;\n");
 check("finished, or declared: the agent may stop", run(["hook"], hookInput).status === 0);
