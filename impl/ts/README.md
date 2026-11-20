@@ -194,7 +194,7 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (73 checks, an HTTP server among them).
+the gateway and a pretend ERP as real processes (80 checks, an HTTP server among them).
 
 Every value a server returns is labelled with the server's name (SPEC 5.2), so a policy can say which
 system an argument must come from: `{"args_from": {"iban": ["tool:erp"]}}` takes an IBAN from the
@@ -223,8 +223,11 @@ When the policy needs someone besides the user (`approve_by` finance, `four_eyes
 who may give it, with their public keys; their roles come from here, not from them:
 
 ```json
-"approvers": [{"id": "ayse", "roles": ["finance"], "public_key": "Wo5Jaq..."}]
+"approvers": [{"id": "ayse", "roles": ["finance"], "public_key": "Wo5Jaq..."}],
+"gateway_id": "acme-erp"
 ```
+
+`gateway_id` names this gateway (and tenant); approvals are bound to it.
 
 Each of them makes a key pair once, on their own machine:
 
@@ -241,7 +244,10 @@ soz-approve REQUEST.json --key ayse.soz-key
 
 which computes the preview hash again from the steps it shows (an edited request is refused), asks
 her to type `yes` and her passphrase in a terminal (piped input is refused), and prints a token
-`soz1.ayse.<expires>.<signature>`, valid for 24 hours (`--hours`) and only for these steps. The user
+`soz2.ayse.<expires>.<signature>`, valid for 24 hours (`--hours`). The token is bound to this preview
+of these steps, at this gateway, for the user who asked, under this policy: it does not work for the
+same plan previewed again, by someone else, at another gateway or tenant, or after the policy
+changed. The user
 gives the token to the model, which passes it in `approvals`; then the user approves as always, and
 their approval window says who else approved. The model can carry a token but cannot make one, and
 the gateway holds only public keys. Details: SPEC 11.5. The Lisp gateway verifies the same tokens

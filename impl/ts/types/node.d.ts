@@ -4,6 +4,7 @@ declare module "node:crypto" {
   interface Hash { update(data: string, encoding?: "utf8"): Hash; digest(encoding: "hex"): string }
   export function createHash(algorithm: "sha256"): Hash;
   export function randomInt(max: number): number;
+  export function randomBytes(size: number): Uint8Array;
   interface KeyObject {
     export(o: { format: "jwk" }): { x?: string; d?: string; crv?: string; kty?: string };
     export(o: { format: "pem"; type: "pkcs8"; cipher?: string; passphrase?: string }): string;

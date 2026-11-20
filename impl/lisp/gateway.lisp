@@ -179,7 +179,9 @@
 ;;; ------------------------------------------------------------------
 
 (defstruct gateway servers passthrough journal audit (approval "auto") (previews (make-hash-table :test #'equal))
-  (codes (make-hash-table :test #'equal)) policy actor approvers requests-dir profile (signed (make-hash-table :test #'equal)))
+  (codes (make-hash-table :test #'equal)) policy actor approvers requests-dir profile (signed (make-hash-table :test #'eq))
+  ;; binds other people's approvals (SPEC 11.5): this gateway's id, the policy's digest, a nonce per preview
+  gateway-id policy-digest (nonces (make-hash-table :test #'eq)))
 
 (defun resolve (path base) (and path (namestring (merge-pathnames path base))))
 
@@ -199,6 +201,18 @@
     (setf (gateway-approvers g) (approvers-from-json (gethash "approvers" config))
           (gateway-requests-dir g) (let ((d (resolve (or (gethash "approval_requests" config) "soz-approval-requests") base)))
                                      (if (char= (char d (1- (length d))) #\/) d (concatenate 'string d "/"))))
+    (setf (gateway-gateway-id g) (gethash "gateway_id" config)
+          (gateway-policy-digest g) (let ((pol (gethash "policy" config)))
+                                      (soz::sha256-hex (soz::canonical-json
+                                                        (if (stringp pol)
+                                                            (with-open-file (s (resolve pol base) :external-format :utf-8)
+                                                              (let ((text (make-string (file-length s))))
+                                                                (json:json-oku (subseq text 0 (read-sequence text s)))))
+                                                            (or pol #()))))))
+    (when (and (gateway-approvers g)
+               (not (and (stringp (gateway-gateway-id g)) (plusp (length (gateway-gateway-id g)))
+                         (notany (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) (gateway-gateway-id g)))))
+      (error "approvers need \"gateway_id\": a name for this gateway (and tenant) that approvals are bound to, without spaces"))
     (setf (gateway-actor g) (actor-from-json (gethash "actor" config))
           (gateway-policy g) (let ((pol (gethash "policy" config)))
                                (cond ((stringp pol)   ; a file next to the config
@@ -317,7 +331,7 @@ Example:
                                   "properties" (obj "preview_id" (obj "type" "string" "description" "The preview_id returned by soz_preview.")
                                                     "approval_code" (obj "type" "string" "description" "Only the code the user told you. Never guess it.")
                                                     "approvals" (obj "type" "array" "items" (obj "type" "string")
-                                                                     "description" "Approval tokens (soz1....) other people gave the user, when the plan needs their approval. Only tokens the user gave you."))
+                                                                     "description" "Approval tokens (soz2....) other people gave the user, when the plan needs their approval. Only tokens the user gave you."))
                                   "required" (vector "preview_id"))
                "annotations" (obj "readOnlyHint" :false "destructiveHint" :true)))
     (loop for (name nil tool) in (reverse (gateway-passthrough g))
@@ -403,31 +417,47 @@ Example:
 
 (defun unix-now () (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0)))
 
-(defun verify-token (g token hash)
-  "The approver TOKEN proves for HASH, or NIL and why not."
+(defun approval-context (g p)
+  "What another person's approval of P is bound to (SPEC 11.5): (hash nonce gateway actor policy).
+The nonce is this preview's own: the same plan previewed again is another preview."
+  (list (preview-hash p)
+        (or (gethash p (gateway-nonces g))
+            (setf (gethash p (gateway-nonces g))
+                  (format nil "~(~32,'0x~)" (random (expt 2 128) (make-random-state t)))))
+        (gateway-gateway-id g)
+        (if (gateway-actor g) (actor-id (gateway-actor g)) "")
+        (gateway-policy-digest g)))
+
+(defun verify-token (g token context)
+  "The approver TOKEN proves for CONTEXT (see approval-context), or NIL and why not."
   (let* ((s (string-trim '(#\Space #\Tab #\Newline #\Return) token))
          (dot3 (position #\. s :from-end t))
          (dot2 (and dot3 (position #\. s :from-end t :end dot3)))
-         (id (and dot2 (> dot2 5) (string= "soz1." s :end2 5) (subseq s 5 dot2)))
+         (id (and dot2 (> dot2 5) (string= "soz2." s :end2 5) (subseq s 5 dot2)))
          (exp (and id (every #'digit-char-p (subseq s (1+ dot2) dot3)) (< 0 (- dot3 dot2 1) 13)
                    (parse-integer s :start (1+ dot2) :end dot3)))
          (sig (and exp (= (- (length s) dot3 1) 86) (soz-ed25519:base64url-decode (subseq s (1+ dot3))))))
-    (cond ((or (null sig) (some (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) id))
+    (cond ((and (> (length s) 5) (string= "soz1." s :end2 5))
+           (values nil "this token is of an older version, which did not bind the approval to its context; ask for a new one"))
+          ((or (null sig) (some (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) id))
            (values nil "this is not a soz approval token"))
           (t (let ((a (find id (gateway-approvers g) :key #'approver-id :test #'string=)))
                (cond ((null a) (values nil (format nil "~a is not an approver of this gateway" id)))
                      ((not (soz-ed25519:ed25519-verify
                             (approver-public-key a)
-                            (sb-ext:string-to-octets (format nil "soz approval 1~%~a~%~a~%~d" hash id exp) :external-format :utf-8)
+                            (sb-ext:string-to-octets
+                             (destructuring-bind (hash nonce gateway actor policy) context
+                               (format nil "soz approval 2~%~a~%~a~%~a~%~a~%~a~%~a~%~d" hash nonce gateway actor policy id exp))
+                             :external-format :utf-8)
                             sig))
-                      (values nil (format nil "the token is not ~a's approval of this preview" id)))
+                      (values nil (format nil "the token is not ~a's approval of this preview (for this gateway, user and policy)" id)))
                      ((< exp (unix-now)) (values nil (format nil "~a's approval has expired" id)))
                      (t (values a nil))))))))
 
 (defun requirements-of (p)
   (remove-duplicates (loop for st in (preview-steps p) unless (step-already-done st) append (step-requires st)) :test #'equal))
 
-(defun signed-of (g p) (gethash (preview-hash p) (gateway-signed g)))
+(defun signed-of (g p) (gethash p (gateway-signed g)))   ; by preview, not by hash: a new preview starts over
 
 (defun approvers-of (g p)
   "The user and everyone whose signed approval of P the gateway has accepted."
@@ -446,7 +476,7 @@ Example:
   (let ((notes '()) (actor (gateway-actor g)))
     (dolist (tok (cond ((vectorp given) (coerce given 'list)) ((stringp given) (list given)) (t '())))
       (when (stringp tok)
-        (multiple-value-bind (a why) (verify-token g tok (preview-hash p))
+        (multiple-value-bind (a why) (verify-token g tok (approval-context g p))
           (cond
             ((null a) (push (format nil "Not accepted: ~a." why) notes))
             ((and actor (string= (approver-id a) (actor-id actor)))
@@ -456,13 +486,14 @@ Example:
                            (approver-id a) (approver-id a) (actor-roles (approver-actor a)))
                    notes))
             ((find (approver-id a) (signed-of g p) :key (lambda (x) (approver-id (car x))) :test #'string=))
-            (t (setf (gethash (preview-hash p) (gateway-signed g))
+            (t (setf (gethash p (gateway-signed g))
                      (append (signed-of g p) (list (cons a (string-trim '(#\Space #\Tab #\Newline #\Return) tok))))))))))
     (reverse notes)))
 
 (defun approval-request-json (g p unmet)
   (soz::canonical-json
-   (obj "soz_approval_request" 1 "hash" (preview-hash p) "plan" (soz::preview-text p)
+   (obj "soz_approval_request" 2 "hash" (preview-hash p) "plan" (soz::preview-text p)
+        "nonce" (second (approval-context g p)) "gateway" (gateway-gateway-id g) "policy" (gateway-policy-digest g)
         "message" (or (soz::preview-message p) :null)
         "steps" (map 'vector (lambda (s) (obj "operation" (soz::op-name (step-operation s)) "args" (soz::step-args s) "key" (soz::step-key s)))
                      (preview-steps p))
@@ -493,7 +524,7 @@ Example:
                (with-open-file (s path :direction :output :if-exists :supersede :external-format :utf-8)
                  (write-string (approval-request-json g p unmet) s) (terpri s)))
       (error (e) (return-from ask-others (text-result (format nil "Could not write the approval request: ~a. Nothing ran." e) :error t))))
-    (text-result (format nil "~{~a~%~}This plan also needs the approval of other people:~%~{~a~^~%~}~%~%An approval request was written to:~%  ~a~%~%Tell the user: give this file to one of the people named above. They open it with soz-approve on their own machine, check the steps and, if they agree, give back an approval token (soz1....). When the user gives you the token, call soz_execute again with preview_id and approvals. You cannot make or change a token. Nothing ran."
+    (text-result (format nil "~{~a~%~}This plan also needs the approval of other people:~%~{~a~^~%~}~%~%An approval request was written to:~%  ~a~%~%Tell the user: give this file to one of the people named above. They open it with soz-approve on their own machine, check the steps and, if they agree, give back an approval token (soz2....). When the user gives you the token, call soz_execute again with preview_id and approvals. You cannot make or change a token. Nothing ran."
                          notes who path)
                  :error t)))
 

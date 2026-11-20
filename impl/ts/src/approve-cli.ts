@@ -24,7 +24,8 @@ function valueText(v: Json): string {
 
 function requestText(r: ApprovalRequest): string {
   let o = `Approval request ${r.hash.slice(0, 12)} (created ${visible(r.created)})\n`;
-  o += `Asked by: ${r.actor ? `${visible(r.actor.id)} (${r.actor.roles.map(visible).join(", ")})` : "(not given)"}\n`;
+  o += `Gateway: ${visible(r.gateway)}   (your approval is valid only there, only for this request)\n`;
+  o += `Asked by: ${r.actor ? `${visible(r.actor)} (${r.actorRoles.map(visible).join(", ")})` : "(not given)"}\n`;
   o += `Their message: ${r.message === null ? "(none)" : visible(r.message)}\n\nSteps:\n`;
   r.steps.forEach((s, i) => {
     const step = isObject(s) ? s : {};
@@ -82,15 +83,15 @@ async function approve(requestPath: string, args: string[]) {
   if (!isObject(key) || typeof key.id !== "string" || typeof key.private_key !== "string") fail(`${keyPath} is not a soz key`);
   const k = key as { id: string; private_key: string };
   out(requestText(r));
-  if (r.actor && r.actor.id === k.id && r.requires.some(x => x.fourEyes))
+  if (r.actor && r.actor === k.id && r.requires.some(x => x.fourEyes))
     out(`\nNote: you asked for this yourself; four eyes means someone else approves it. The gateway will not count it.\n`);
   const yes = await ask(`\nApprove exactly these steps as ${k.id}? Type yes: `);
   if (yes.trim().toLowerCase() !== "yes") { out("Not approved.\n"); process.exit(1); }
   let pk;
   try { pk = openPrivateKey(k.private_key, await ask("Passphrase: ", true)); } catch { return fail("wrong passphrase"); }
   const expires = Math.floor(Date.now() / 1000 + hours * 3600);
-  out(`\nYour approval (valid for ${hours} hours, only for these steps). Give it to the person who asked:\n\n  `
-    + `${signApproval(r.hash, k.id, expires, pk)}\n`);
+  out(`\nYour approval (valid for ${hours} hours, only for these steps, for ${visible(r.actor || "this request")} at ${visible(r.gateway)}).`
+    + ` Give it to the person who asked:\n\n  ${signApproval(r, k.id, expires, pk)}\n`);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);

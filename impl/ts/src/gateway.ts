@@ -7,7 +7,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve, isAbsolute, join } from "node:path";
-import { randomInt } from "node:crypto";
+import { randomInt, randomBytes } from "node:crypto";
 import { Rational, type Json, type HostValue, isObject, newObject, canonicalJson, parseJson, nameFold, visible } from "./exact.ts";
 import {
   type Operation, type Operations, type Param, type Type, type Rule, type Actor,
@@ -20,7 +20,7 @@ import {
 } from "./run.ts";
 import { planJsonSchema } from "./json-plan.ts";
 import { type Profile, profileFromJson } from "./profile.ts";
-import { type Approver, approversFromJson, requestFor, requestJson, verifyApproval } from "./approvals.ts";
+import { type Approver, type ApprovalContext, approversFromJson, requestFor, requestJson, verifyApproval, policyDigest } from "./approvals.ts";
 
 const log = (m: string) => process.stderr.write(`soz-gateway: ${m}\n`);
 const PROTOCOL = "2025-06-18";
@@ -323,7 +323,9 @@ export type Gateway = {
   journal: Journal; audit: Audit; auditPath: string;
   approval: "auto" | "elicitation" | "code" | "client";
   policy: Rule[]; actor: Actor | null; profile: Profile | null;
-  approvers: Approver[]; requestsDir: string; signed: Map<string, { approver: Approver; token: string }[]>;
+  approvers: Approver[]; requestsDir: string; signed: WeakMap<Preview, { approver: Approver; token: string }[]>;
+  /** Binds other people's approvals (SPEC 11.5): this gateway's id, the policy's digest, a nonce per preview. */
+  gatewayId: string; policyDigest: string; nonces: WeakMap<Preview, string>;
   previews: Map<string, Preview>; codes: Map<string, { code: string | null; expires: number; wrong: number }>;
 };
 
@@ -345,8 +347,11 @@ export async function loadGateway(configPath: string): Promise<Gateway> {
     profile: typeof config.profile === "string" ? profileFromJson(parseJson(readFileSync(at(config.profile), "utf8"))) : null,
     approvers: approversFromJson(config.approvers),
     requestsDir: at(typeof config.approval_requests === "string" ? config.approval_requests : "soz-approval-requests"),
-    signed: new Map(), previews: new Map(), codes: new Map(),
+    signed: new WeakMap(), nonces: new WeakMap(), previews: new Map(), codes: new Map(),
+    gatewayId: typeof config.gateway_id === "string" ? config.gateway_id : "", policyDigest: policyDigest(policyJson),
   };
+  if (g.approvers.length && !/^\S+$/.test(g.gatewayId))
+    throw new Error('approvers need "gateway_id": a name for this gateway (and tenant) that approvals are bound to, without spaces');
   const exposeReads = config.expose_reads !== false;
   for (const [name, spec] of Object.entries(isObject(config.servers) ? config.servers : {})) {
     let d: Downstream;
@@ -577,12 +582,19 @@ export class GatewayServer {
   /** The user and everyone whose signed approval of this preview the gateway has accepted. */
   private approversOf(p: Preview): Actor[] {
     return [...(this.g.actor ? [this.g.actor] : []),
-            ...(this.g.signed.get(p.hash!) ?? []).map(x => ({ id: x.approver.id, roles: x.approver.roles }))];
+            ...(this.g.signed.get(p) ?? []).map(x => ({ id: x.approver.id, roles: x.approver.roles }))];
   }
 
   private alsoApproved(p: Preview): string {
-    const s = this.g.signed.get(p.hash!) ?? [];
+    const s = this.g.signed.get(p) ?? [];
     return s.length ? `Also approved by: ${s.map(x => `${x.approver.id} (${x.approver.roles.join(", ")})`).join(", ")}\n` : "";
+  }
+
+  /** What another person's approval of P is bound to (SPEC 11.5); the nonce is this preview's own. */
+  private context(p: Preview): ApprovalContext {
+    let nonce = this.g.nonces.get(p);
+    if (!nonce) { nonce = Buffer.from(randomBytes(16)).toString("base64url"); this.g.nonces.set(p, nonce); }
+    return { hash: p.hash!, nonce, gateway: this.g.gatewayId, actor: this.g.actor?.id ?? "", policy: this.g.policyDigest };
   }
 
   /** Takes the tokens the model passed on; says which it could not accept, and why. */
@@ -591,7 +603,7 @@ export class GatewayServer {
     const notes: string[] = [];
     for (const t of tokens) {
       if (typeof t !== "string") continue;
-      const v = verifyApproval(t, p.hash!, this.g.approvers);
+      const v = verifyApproval(t, this.context(p), this.g.approvers);
       if (!v.ok) { notes.push(`Not accepted: ${v.why}.`); continue; }
       const a = v.approver, actor = this.g.actor;
       // The user approves in their own window; a token counts only for a requirement it meets.
@@ -599,9 +611,9 @@ export class GatewayServer {
       if (!this.requirementsOf(p).some(r => a.roles.includes(r.role))) {
         notes.push(`Not accepted: this plan needs no approval ${a.id} can give (${a.id}: ${a.roles.join(", ") || "no roles"}).`); continue;
       }
-      const list = this.g.signed.get(p.hash!) ?? [];
+      const list = this.g.signed.get(p) ?? [];
       if (!list.some(x => x.approver.id === v.approver.id)) list.push({ approver: v.approver, token: t.trim() });
-      this.g.signed.set(p.hash!, list);
+      this.g.signed.set(p, list);
     }
     return notes;
   }
@@ -615,12 +627,12 @@ export class GatewayServer {
         + (can.length ? can.join(", ") : "nobody among this gateway's approvers has this role");
     }).join("\n");
     const path = join(g.requestsDir, `${p.hash!.slice(0, 16)}.json`);
-    try { mkdirSync(g.requestsDir, { recursive: true }); writeFileSync(path, requestJson(requestFor(p, unmet))); }
+    try { mkdirSync(g.requestsDir, { recursive: true }); writeFileSync(path, requestJson(requestFor(p, this.context(p), unmet))); }
     catch (e) { return textResult(`Could not write the approval request: ${(e as Error).message}. Nothing ran.`, true); }
     return textResult(`${notes.length ? notes.join("\n") + "\n" : ""}This plan also needs the approval of other people:\n${who}\n\n`
       + `An approval request was written to:\n  ${path}\n\n`
       + `Tell the user: give this file to one of the people named above. They open it with soz-approve on their own machine, `
-      + `check the steps and, if they agree, give back an approval token (soz1....). When the user gives you the token, call `
+      + `check the steps and, if they agree, give back an approval token (soz2....). When the user gives you the token, call `
       + `soz_execute again with preview_id and approvals. You cannot make or change a token. Nothing ran.`, true);
   }
 
@@ -629,7 +641,7 @@ export class GatewayServer {
   }
 
   private run(p: Preview, by: string) {
-    const signed = this.g.signed.get(p.hash!) ?? [];
+    const signed = this.g.signed.get(p) ?? [];
     return execute(p, p.hash!, { implementations: this.g.implementations, journal: this.g.journal, audit: this.g.audit, approvedBy: by,
                                  approvers: this.approversOf(p), signatures: signed.map(x => x.token) });
   }

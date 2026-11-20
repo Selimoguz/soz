@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { verifyAudit } from "../src/run.ts";
 import { newKeyPair, openPrivateKey, readRequest, signApproval } from "../src/approvals.ts";
+import { loadGateway } from "../src/gateway.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "soz-ts-gateway-"));
@@ -188,11 +189,15 @@ console.log("\nAnother person's approval (four eyes, signed)");
 {
   const codeFile = join(dir, "code-four-eyes.txt");
   const ayse = newKeyPair("ayse's passphrase"), ali = newKeyPair("ali's passphrase"), veli = newKeyPair("veli's passphrase");
+  let unbound = "";
+  try { await loadGateway(writeConfig("g5-no-id.json", "auto", { servers: {}, approvers: [{ id: "ayse", roles: ["finance"], public_key: ayse.publicKey }] })); }
+  catch (e) { unbound = (e as Error).message; }
+  check("approvers without a gateway_id: the gateway does not start", unbound.includes("gateway_id"));
   const c = await new Client(writeConfig("g5.json", "auto", {
     actor: { id: "ali", roles: ["sales", "finance"] },
     approvers: [{ id: "ayse", roles: ["finance"], public_key: ayse.publicKey }, { id: "ali", roles: ["finance"], public_key: ali.publicKey },
                 { id: "veli", roles: ["sales"], public_key: veli.publicKey }],
-    approval_requests: "requests",
+    approval_requests: "requests", gateway_id: "acme-erp",
     policy: { rules: [{ name: "orders over 10: finance, four eyes", when: { operation: "erp.add_order_line", args: { quantity: { ">": 10 } } },
                         then: { approve_by: "finance", four_eyes: true } }] },
   }), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
@@ -203,28 +208,41 @@ console.log("\nAnother person's approval (four eyes, signed)");
   const path = /written to:\n  (.+)\n/.exec(text(asked))?.[1] ?? "";
   check("the gateway writes an approval request and names who can approve (not ali himself)",
         asked.isError && existsSync(path) && text(asked).includes("approval by finance (someone other than ali): ayse") && !existsSync(codeFile));
-  const req = readRequest(readFileSync(path, "utf8"));
-  check("the request's hash is the preview's", req.hash === id && req.requires[0]?.fourEyes === true);
+  let req = readRequest(readFileSync(path, "utf8"));
+  check("the request's hash is the preview's, and it names the gateway and the user it is for",
+        req.hash === id && req.requires[0]?.fourEyes === true && req.gateway === "acme-erp" && req.actor === "ali" && req.nonce.length > 10);
   const tampered = readFileSync(path, "utf8").replace('"quantity":30', '"quantity":3');
   let refused = false;
   try { readRequest(tampered); } catch { refused = true; }
   check("an edited request is refused: its steps no longer match its hash", refused && tampered !== readFileSync(path, "utf8"));
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
-  const tok = (who: string, k: { privatePem: string }, pass: string, hash = id, e = exp) => signApproval(hash, who, e, openPrivateKey(k.privatePem, pass));
-  const ayseTok = tok("ayse", ayse, "ayse's passphrase");
+  const tok = (who: string, k: { privatePem: string }, pass: string, change: Partial<typeof req> = {}, e = exp) =>
+    signApproval({ ...req, ...change }, who, e, openPrivateKey(k.privatePem, pass));
+  let ayseTok = tok("ayse", ayse, "ayse's passphrase");
   const forged = ayseTok.slice(0, -3) + (ayseTok.endsWith("AAA") ? "BBB" : "AAA");
   const tries: [string, string, string][] = [
     ["a forged signature", forged, "not ayse's approval"],
-    ["ayse's approval of another preview", tok("ayse", ayse, "ayse's passphrase", "0".repeat(64)), "not ayse's approval"],
-    ["an expired approval", tok("ayse", ayse, "ayse's passphrase", id, 1000), "expired"],
+    ["ayse's approval of another plan", tok("ayse", ayse, "ayse's passphrase", { hash: "0".repeat(64) }), "not ayse's approval"],
+    ["ayse's approval of the same plan at another gateway (another tenant)", tok("ayse", ayse, "ayse's passphrase", { gateway: "other-erp" }), "not ayse's approval"],
+    ["ayse's approval of the same plan for another user", tok("ayse", ayse, "ayse's passphrase", { actor: "veli" }), "not ayse's approval"],
+    ["ayse's approval under another policy", tok("ayse", ayse, "ayse's passphrase", { policy: "0".repeat(64) }), "not ayse's approval"],
+    ["an expired approval", tok("ayse", ayse, "ayse's passphrase", {}, 1000), "expired"],
     ["a key that is not ayse's, under her name", tok("ayse", veli, "veli's passphrase"), "not ayse's approval"],
     ["someone the gateway does not know", tok("mallory", veli, "veli's passphrase"), "not an approver"],
+    ["a token of the old version, bound to the hash only", "soz1.ayse.9999999999." + "A".repeat(86), "older version"],
   ];
   for (const [what, t, why] of tries) {
     const r = await c.call("soz_execute", { preview_id: id, approvals: [t] });
     check(`${what} is not accepted, nothing runs`, r.isError && text(r).includes(why) && !existsSync(codeFile) && await orders(c) === before);
   }
+  // The same plan previewed again is another preview: an approval of the first one does not carry over.
+  check("previewing the same plan again gives the same preview_id", previewId(await c.call("soz_preview", { plan, message: "Yilmaz Market: 30 tomatoes" })) === id);
+  const replay = await c.call("soz_execute", { preview_id: id, approvals: [ayseTok] });
+  check("but ayse's approval of the earlier preview is not taken for it (its nonce differs)", replay.isError && text(replay).includes("not ayse's approval") && !existsSync(codeFile));
+  await c.call("soz_execute", { preview_id: id });                       // writes the new preview's request
+  req = readRequest(readFileSync(path, "utf8"));
+  ayseTok = tok("ayse", ayse, "ayse's passphrase");
   const own = await c.call("soz_execute", { preview_id: id, approvals: [tok("ali", ali, "ali's passphrase")] });
   check("ali's own signed approval is not taken: he approves in his own window", own.isError && text(own).includes("ali is the user") && text(own).includes("someone other than ali") && await orders(c) === before);
   const wrongRole = await c.call("soz_execute", { preview_id: id, approvals: [tok("veli", veli, "veli's passphrase")] });

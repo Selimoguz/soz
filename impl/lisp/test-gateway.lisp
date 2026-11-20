@@ -246,7 +246,7 @@
                                        (format nil "\"actor\": {\"id\": \"ali\", \"roles\": [\"sales\", \"finance\"]},
  \"approvers\": [{\"id\": \"ayse\", \"roles\": [\"finance\"], \"public_key\": ~s}, {\"id\": \"ali\", \"roles\": [\"finance\"], \"public_key\": ~s},
                  {\"id\": \"veli\", \"roles\": [\"sales\"], \"public_key\": ~s}],
- \"approval_requests\": \"requests\",
+ \"approval_requests\": \"requests\", \"gateway_id\": \"acme-erp\",
  \"policy\": {\"rules\": [{\"name\": \"orders over 10: finance, four eyes\", \"when\": {\"operation\": \"erp.add_order_line\", \"args\": {\"quantity\": {\">\": 10}}},
                           \"then\": {\"approve_by\": \"finance\", \"four_eyes\": true}}]}"
                                                (gethash "ayse" pub) (gethash "ali" pub) (gethash "veli" pub)))
@@ -258,9 +258,10 @@
              (path (let* ((s (text-of asked)) (i (search "written to:" s)))
                      (and i (string-trim '(#\Space #\Newline #\Return) (subseq s (+ i 11) (position #\Newline s :start (+ i 13)))))))
              (dir (namestring *dir*))
-             (sign (lambda (who &key (hash id) expires key) (node "test/approval-helper.ts" "sign" dir who hash
-                                                                 (if expires (princ-to-string expires) "")
-                                                                 (or key who)))))
+             ;; signs the request this gateway wrote; CHANGE ("gateway=other" ...) signs another context
+             (sign (lambda (who &key change expires key)
+                     (apply #'node "test/approval-helper.ts" "sign" dir who path
+                            (if expires (princ-to-string expires) "") (or key who) change))))
         (when (probe-file code-file) (delete-file code-file))
         (check "the gateway writes an approval request and names who can approve (not ali himself)"
                (and (error-p asked) path (probe-file path)
@@ -272,7 +273,12 @@
           (dolist (try (list (list "a forged signature" (concatenate 'string (subseq ayse 0 (- (length ayse) 3))
                                                                      (if (search "AAA" ayse :start2 (- (length ayse) 3)) "BBB" "AAA"))
                                    "not ayse's approval")
-                             (list "ayse's approval of another preview" (funcall sign "ayse" :hash (make-string 64 :initial-element #\0)) "not ayse's approval")
+                             (list "ayse's approval of another plan" (funcall sign "ayse" :change (list (format nil "hash=~a" (make-string 64 :initial-element #\0)))) "not ayse's approval")
+                             (list "ayse's approval of the same plan at another gateway (another tenant)" (funcall sign "ayse" :change (list "gateway=other-erp")) "not ayse's approval")
+                             (list "ayse's approval of the same plan for another user" (funcall sign "ayse" :change (list "actor=veli")) "not ayse's approval")
+                             (list "ayse's approval under another policy" (funcall sign "ayse" :change (list (format nil "policy=~a" (make-string 64 :initial-element #\0)))) "not ayse's approval")
+                             (list "ayse's approval of an earlier preview of the same plan (another nonce)" (funcall sign "ayse" :change (list "nonce=0123456789abcdef")) "not ayse's approval")
+                             (list "a token of the old version, bound to the hash only" (format nil "soz1.ayse.9999999999.~a" (make-string 86 :initial-element #\A)) "older version")
                              (list "an expired approval" (funcall sign "ayse" :expires 1000) "expired")
                              (list "a key that is not ayse's, under her name" (funcall sign "ayse" :key "veli") "not ayse's approval")
                              (list "someone the gateway does not know" (funcall sign "mallory" :key "veli") "not an approver")

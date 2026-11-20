@@ -640,29 +640,40 @@ A gateway whose configuration lists **approvers** collects their approval as sig
 
 ```json
 "approvers": [{"id": "ayse", "roles": ["finance"], "public_key": "<Ed25519 public key, 32 octets, base64url>"}],
-"approval_requests": "soz-approval-requests"
+"approval_requests": "soz-approval-requests",
+"gateway_id": "acme-erp"
 ```
 
 The roles come from this list, never from a token. Without approvers, a requirement the user cannot
-meet alone makes `soz_execute` refuse, as before.
+meet alone makes `soz_execute` refuse, as before. A gateway with approvers MUST have a `gateway_id`
+(a name without spaces, unique per gateway and tenant); it does not start without one.
+
+**What an approval is bound to.** An approval is for one preview, in one context, and for nothing
+else. Its **context** is: the preview hash (the plan, the message, the steps); the preview's
+**nonce**, a random id the gateway gives each preview it creates, so that the same plan previewed
+again (same hash) is another preview; the `gateway_id`; the id of the user who asked (empty without
+an actor); and the **policy digest**, the SHA-256 in lower-case hex of the canonical JSON (10.6) of
+the policy as configured (`[]` without one). So an approval cannot be replayed for the same plan
+previewed again, by another user, at another gateway or tenant, or after the policy changed.
 
 1. When requirements are unmet, `soz_execute` runs nothing; it writes an **approval request** to
    `approval_requests/<first 16 hex digits of the hash>.json`, says which requirements are unmet and
    which approvers can meet each, and asks the model to tell the user to pass the file on.
-2. The request is a canonical JSON object `{"soz_approval_request": 1, "hash", "plan", "message",
-   "steps", "actor", "requires", "created"}`, where `steps` is the list the preview hash is computed
-   from (section 10.3). A tool that shows a request MUST compute the hash again from `plan`,
-   `message` and `steps` and refuse a request whose hash differs.
-3. An approver who agrees signs, with Ed25519 (RFC 8032), the UTF-8 text
-   `"soz approval 1\n" HASH "\n" ID "\n" EXPIRES` (`EXPIRES` in Unix seconds, decimal; `\n` is
-   U+000A) and gives back the
-   **token** `soz1.ID.EXPIRES.SIGNATURE` (signature: 64 octets, base64url without padding). The id
-   has no spaces.
+2. The request is a canonical JSON object `{"soz_approval_request": 2, "hash", "nonce", "gateway",
+   "policy", "actor", "plan", "message", "steps", "requires", "created"}`, where `steps` is the list
+   the preview hash is computed from (section 10.3) and `actor` is `{"id", "roles"}` or `null`. A tool
+   that shows a request MUST compute the hash again from `plan`, `message` and `steps` and refuse a
+   request whose hash differs, and SHOULD show the gateway and the user the approval is for.
+3. An approver who agrees signs, with Ed25519 (RFC 8032), the UTF-8 text of these lines joined by
+   `\n` (U+000A): `soz approval 2`, HASH, NONCE, GATEWAY, ACTOR, POLICY, ID, EXPIRES (Unix seconds,
+   decimal), and gives back the **token** `soz2.ID.EXPIRES.SIGNATURE` (signature: 64 octets,
+   base64url without padding). The id has no spaces; no field contains a line break.
 4. The model passes tokens in `soz_execute`'s `approvals`. The gateway accepts a token only if the id
-   is an approver's, the signature verifies with that approver's public key for this preview's hash,
-   it has not expired, the approver is not the user (who approves in their own way, section 11.3),
-   and the approver has a role some requirement of the preview names. It says why it refuses any
-   other. Accepted approvals are kept for the preview.
+   is an approver's, the signature verifies with that approver's public key for this preview's
+   context, it has not expired, the approver is not the user (who approves in their own way, section
+   11.3), and the approver has a role some requirement of the preview names. It says why it refuses
+   any other; a `soz1.` token (the first version, bound to the hash only) is refused as outdated.
+   Accepted approvals are kept for this preview, not for its hash: a new preview starts over.
 5. Once no requirement is unmet, the user approves as in section 11.3; the approval they see lists
    who else approved. The execution's approvers are the user and the accepted approvers, and the
    approval record (10.5) carries the tokens under `signatures`.
