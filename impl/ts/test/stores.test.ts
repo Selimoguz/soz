@@ -22,7 +22,7 @@ function worker(...args: string[]): Promise<{ code: number | null; out: string }
                     { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     p.stdout.on("data", (d: unknown) => { out += String(d); });
-    p.on("exit", code => res({ code, out }));
+    p.on("close", code => res({ code, out }));   // "close", not "exit": by then all output is read
   });
 }
 

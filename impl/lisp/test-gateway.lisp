@@ -221,6 +221,81 @@
                 (= 1 (orders c)))))
   (close-client c))
 
+;;; Another person's approval: tokens signed by Node (impl/ts), verified here; the request this
+;;; gateway writes is read by the TypeScript soz-approve. Skipped where Node is not installed.
+(defun node (&rest args)
+  "Runs a TypeScript file of impl/ts with Node: (values output exit-code), or NIL without Node."
+  (handler-case
+      (let* ((out (make-string-output-stream))
+             (p (sb-ext:run-program "node" (list* "--experimental-strip-types" "--disable-warning=ExperimentalWarning"
+                                                  (namestring (merge-pathnames (first args) (merge-pathnames "../ts/" *here*)))
+                                                  (rest args))
+                                    :search t :output out :error out :external-format :utf-8)))
+        (values (string-trim '(#\Newline #\Return #\Space) (get-output-stream-string out)) (sb-ext:process-exit-code p)))
+    (error () nil)))
+
+(format t "~%Another person's approval (four eyes, signed)~%")
+(let ((keys (node "test/approval-helper.ts" "keys" (namestring *dir*) "ayse" "ali" "veli")))
+  (if (null keys)
+      (format t "  skipped: Node is not installed~%")
+      (let* ((pub (json:json-oku keys))
+             (code-file (merge-pathnames "code-four-eyes.txt" *dir*))
+             (c (connect (write-config "gateway5.json" "auto"
+                                       (format nil "\"actor\": {\"id\": \"ali\", \"roles\": [\"sales\", \"finance\"]},
+ \"approvers\": [{\"id\": \"ayse\", \"roles\": [\"finance\"], \"public_key\": ~s}, {\"id\": \"ali\", \"roles\": [\"finance\"], \"public_key\": ~s},
+                 {\"id\": \"veli\", \"roles\": [\"sales\"], \"public_key\": ~s}],
+ \"approval_requests\": \"requests\",
+ \"policy\": {\"rules\": [{\"name\": \"orders over 10: finance, four eyes\", \"when\": {\"operation\": \"erp.add_order_line\", \"args\": {\"quantity\": {\">\": 10}}},
+                          \"then\": {\"approve_by\": \"finance\", \"four_eyes\": true}}]}"
+                                               (gethash "ayse" pub) (gethash "ali" pub) (gethash "veli" pub)))
+                         :elicitation nil :code-file code-file))
+             (before (orders c))
+             (id (preview-id (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 30)))"
+                                                                  "message" "Yilmaz Market: 30 tomatoes"))))
+             (asked (call c "soz_execute" (json:json-nesne "preview_id" id)))
+             (path (let* ((s (text-of asked)) (i (search "written to:" s)))
+                     (and i (string-trim '(#\Space #\Newline #\Return) (subseq s (+ i 11) (position #\Newline s :start (+ i 13)))))))
+             (dir (namestring *dir*))
+             (sign (lambda (who &key (hash id) expires key) (node "test/approval-helper.ts" "sign" dir who hash
+                                                                 (if expires (princ-to-string expires) "")
+                                                                 (or key who)))))
+        (when (probe-file code-file) (delete-file code-file))
+        (check "the gateway writes an approval request and names who can approve (not ali himself)"
+               (and (error-p asked) path (probe-file path)
+                    (search "approval by finance (someone other than ali): ayse" (text-of asked))))
+        (multiple-value-bind (out code) (node "src/approve-cli.ts" "show" path)
+          (check "the TypeScript soz-approve reads the Lisp gateway's request: the same hash"
+                 (and (eql code 0) (search "erp.add_order_line" out) (search "quantity: 30" out))))
+        (let ((ayse (funcall sign "ayse")))
+          (dolist (try (list (list "a forged signature" (concatenate 'string (subseq ayse 0 (- (length ayse) 3))
+                                                                     (if (search "AAA" ayse :start2 (- (length ayse) 3)) "BBB" "AAA"))
+                                   "not ayse's approval")
+                             (list "ayse's approval of another preview" (funcall sign "ayse" :hash (make-string 64 :initial-element #\0)) "not ayse's approval")
+                             (list "an expired approval" (funcall sign "ayse" :expires 1000) "expired")
+                             (list "a key that is not ayse's, under her name" (funcall sign "ayse" :key "veli") "not ayse's approval")
+                             (list "someone the gateway does not know" (funcall sign "mallory" :key "veli") "not an approver")
+                             (list "ali's own token: he approves in his own window" (funcall sign "ali") "ali is the user")
+                             (list "veli's token: he is not finance" (funcall sign "veli") "no approval veli can give")))
+            (destructuring-bind (what token why) try
+              (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id "approvals" (vector token)))))
+                (check (format nil "~a is not accepted, nothing runs" what)
+                       (and (error-p r) (search why (text-of r)) (not (probe-file code-file)) (= before (orders c)))))))
+          (let ((shown (call c "soz_execute" (json:json-nesne "preview_id" id "approvals" (vector ayse)))))
+            (check "with ayse's approval, ali is shown his own code, which says ayse approved"
+                   (and (search "approval code is now shown" (text-of shown))
+                        (with-open-file (s code-file :external-format :utf-8)
+                          (search "Also approved by: ayse (finance)" (let ((x (make-string (file-length s)))) (subseq x 0 (read-sequence x s)))))
+                        (= before (orders c)))))
+          (check "ali's code then runs it: two people approved"
+                 (and (search "Outcome: done" (text-of (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" (read-code code-file)))))
+                      (= (1+ before) (orders c))))
+          (check "the audit record keeps both approvers and ayse's signed token"
+                 (with-open-file (s (merge-pathnames "audit.jsonl" *dir*) :external-format :utf-8)
+                   (loop for line = (read-line s nil) while line
+                         thereis (and (search "\"type\":\"approval\"" line) (search id line)
+                                      (search "{\"id\":\"ali\"" line) (search "{\"id\":\"ayse\"" line) (search ayse line))))))
+        (close-client c))))
+
 (format t "~%Audit record across restarts~%")
 (check "four gateway sessions wrote one audit record, and its chain is intact"
        (let ((sessions 0))

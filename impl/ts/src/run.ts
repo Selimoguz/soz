@@ -167,8 +167,17 @@ export class Journal implements JournalStore {
     if (existing) return existing;
     const entry = entryOf(key, "pending", null);
     if (this.dir) {
-      try { writeFileSync(this.file(key), canonicalJson(entry), { flag: "wx" }); }
-      catch (e) { if ((e as { code?: string }).code === "EEXIST") return this.get(key)!; throw e; }
+      for (let tries = 0; ; tries++) {
+        try { writeFileSync(this.file(key), canonicalJson(entry), { flag: "wx" }); break; }
+        catch (e) {
+          if ((e as { code?: string }).code === "EEXIST") return this.get(key)!;
+          // Windows: a file another process is deleting (a release) cannot be created for a moment
+          if (!busy(e) || tries >= 400) throw e;
+          spin(5);
+          const now = this.get(key);
+          if (now) return now;
+        }
+      }
     }
     this.memory.set(key, entry);
     this.log(entry);
@@ -190,6 +199,9 @@ export class Journal implements JournalStore {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(() => r(null), ms));
+const spin = (ms: number) => { const t = Date.now() + ms; while (Date.now() < t) { /* a few milliseconds, synchronously */ } };
+/** On Windows, creating a file that another process is deleting fails with EPERM (or EACCES, EBUSY) for a moment. */
+const busy = (e: unknown) => ["EEXIST", "EPERM", "EACCES", "EBUSY"].includes((e as { code?: string }).code ?? "");
 
 /**
  * The audit record in memory (no path) or in a file. Writers on one machine take turns through a lock
@@ -210,7 +222,7 @@ export class Audit implements AuditSink {
     for (let waited = 0; ; waited += 5) {
       try { writeFileSync(lockFile, String(Date.now()), { flag: "wx" }); return () => { try { unlinkSync(lockFile); } catch { /* already gone */ } }; }
       catch (e) {
-        if ((e as { code?: string }).code !== "EEXIST") throw e;
+        if (!busy(e)) throw e;
         // a writer that died holding the lock: older than 10 s is stale
         try { if (Date.now() - statSync(lockFile).mtimeMs > 10000) unlinkSync(lockFile); } catch { /* it moved on */ }
         if (waited > 30000) throw new Error(`could not lock the audit record ${this.path}`);
@@ -547,6 +559,8 @@ export async function preview(text: string, o: RunOptions): Promise<Preview> {
 
 export type ExecuteOptions = {
   implementations: Implementations; journal?: JournalStore; audit?: AuditSink | null; approvers?: Actor[]; approvedBy?: string;
+  /** Signed approvals by other people (SPEC 11.6), kept in the approval record. */
+  signatures?: string[];
 };
 
 /** Runs the approved preview (SPEC 10.4). APPROVAL must be its hash. */
@@ -567,7 +581,8 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
              message: p.used ? "this preview was already executed; an approval is for one execution" : "the approval does not match this preview; nothing ran" };
   }
   p.used = true;
-  await audit?.append("approval", { hash: approval, by: o.approvedBy ?? "unknown", approvers: approvers.map(a => ({ id: a.id, roles: a.roles })) });
+  await audit?.append("approval", { hash: approval, by: o.approvedBy ?? "unknown", approvers: approvers.map(a => ({ id: a.id, roles: a.roles })),
+                                    ...(o.signatures?.length ? { signatures: o.signatures } : {}) });
   const c: Ctx = { mode: "execute", steps: [], ops: p.operations, impls: o.implementations, journal, audit,
                    previewed: p.steps, policy: p.policy, actor: p.actor, approvers };
   let outcome: string, message: string | null = null, reason: string | null = null;

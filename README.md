@@ -192,7 +192,9 @@ says so); everything else is a write.
 (Claude's desktop app, for one, did not when we tried it), the gateway shows the steps and a one-time
 code such as `K7V-XYN` in a window of its own, outside the chat; the user tells the model the code if
 they agree. The model never sees the code, a code works once, and three wrong codes lock the
-preview. Details: [SPEC section 11](SPEC.md#11-mcp-gateway).
+preview. When a policy needs someone else too (finance, four eyes), the gateway writes an approval
+request; that person checks it with `soz-approve` on their own machine and gives back a signed token
+the model can carry but not forge. Details: [SPEC section 11](SPEC.md#11-mcp-gateway).
 
 ```sh
 sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, the gateway and the ERP as real processes
@@ -221,7 +223,8 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | MCP gateway over stdio, in Lisp and in TypeScript (both without dependencies), with elicitation or approval-code approval, resources and a prompt; end-to-end tests | available |
 | Downstream servers over HTTP | next |
 | Policy: deny, approval by role with four eyes, sources an argument may come from | available |
-| JSON syntax, language profiles (number words), a way for the gateway to collect a second person's approval | planned |
+| Another person's approval collected by the gateway: approval requests and Ed25519-signed tokens (`soz-approve`), verified in both gateways | available |
+| JSON syntax, language profiles (number words) | planned |
 
 ## Writing another implementation
 

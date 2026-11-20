@@ -98,8 +98,7 @@ await slack.chat.postMessage({ channel, text: renderPreview(p, "slack") });
 
 What the model or a tool wrote (the title, the message, argument values, the stop reason) is untrusted
 text on an approval screen, so both functions pass it through `visible()`: a newline in a value is
-written as `
-` and cannot pose as an extra step, and control, invisible and bidirectional characters
+written as `\n` and cannot pose as an extra step, and control, invisible and bidirectional characters
 are named (`⟨U+202E⟩`) instead of turning an IBAN around. The renderers also put the steps in a code
 block and escape everything else for the format, so `*bold*`, `<b>` or `[click](https://...)` in a
 value is shown as written and never becomes formatting or a link.
@@ -160,7 +159,37 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (36 checks).
+the gateway and a pretend ERP as real processes (53 checks).
+
+### Another person's approval
+
+When the policy needs someone besides the user (`approve_by` finance, `four_eyes`), list the people
+who may give it, with their public keys; their roles come from here, not from them:
+
+```json
+"approvers": [{"id": "ayse", "roles": ["finance"], "public_key": "Wo5Jaq..."}]
+```
+
+Each of them makes a key pair once, on their own machine:
+
+```sh
+soz-approve keygen ayse          # ayse.soz-key (passphrase protected) stays with her; prints her public key
+```
+
+For such a plan `soz_execute` runs nothing and writes an approval request (by default to
+`soz-approval-requests/`). The user passes the file to Ayşe by any channel; she runs
+
+```sh
+soz-approve REQUEST.json --key ayse.soz-key
+```
+
+which computes the preview hash again from the steps it shows (an edited request is refused), asks
+her to type `yes` and her passphrase in a terminal (piped input is refused), and prints a token
+`soz1.ayse.<expires>.<signature>`, valid for 24 hours (`--hours`) and only for these steps. The user
+gives the token to the model, which passes it in `approvals`; then the user approves as always, and
+their approval window says who else approved. The model can carry a token but cannot make one, and
+the gateway holds only public keys. Details: SPEC 11.5. The Lisp gateway verifies the same tokens
+(Ed25519 and SHA-512 written out in `impl/lisp/ed25519.lisp`).
 
 ## Files
 
@@ -172,5 +201,6 @@ the gateway and a pretend ERP as real processes (36 checks).
 | `src/render.ts` | the preview for chat apps: Markdown, Slack, Telegram, plain text |
 | `src/define.ts` | `defineOperation`: operations and implementations, typed together |
 | `src/journal-cli.ts` | resolving unresolved steps, by a person |
+| `src/approvals.ts`, `src/approve-cli.ts` | another person's approval: requests, Ed25519 tokens, `soz-approve` |
 | `src/gateway.ts`, `src/soz-mcp.ts` | the MCP gateway |
 | `test/conformance.ts` | the conformance runner |

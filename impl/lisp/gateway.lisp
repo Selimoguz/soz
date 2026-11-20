@@ -5,7 +5,7 @@
 ;;;; directly: the agent writes a soz plan, the gateway checks and previews it, the user approves the
 ;;;; preview (through MCP elicitation, which the model cannot answer), and the gateway executes it.
 ;;;;
-;;;; Load after json.lisp, soz.lisp and run.lisp. Entry point: (soz-gateway:main config-path).
+;;;; Load after json.lisp, soz.lisp, run.lisp and ed25519.lisp. Entry point: (soz-gateway:main config-path).
 
 (defpackage :soz-gateway
   (:use :cl :soz)
@@ -172,7 +172,7 @@
 ;;; ------------------------------------------------------------------
 
 (defstruct gateway servers passthrough journal audit (approval "auto") (previews (make-hash-table :test #'equal))
-  (codes (make-hash-table :test #'equal)) policy actor)
+  (codes (make-hash-table :test #'equal)) policy actor approvers requests-dir (signed (make-hash-table :test #'equal)))
 
 (defun resolve (path base) (and path (namestring (merge-pathnames path base))))
 
@@ -185,6 +185,9 @@
                           :journal (open-journal (resolve (or (gethash "journal" config) "soz-journal.jsonl") base))
                           :audit (open-audit (resolve (or (gethash "audit" config) "soz-audit.jsonl") base))))
          (expose-reads (not (eq (gethash "expose_reads" config) :false))))
+    (setf (gateway-approvers g) (approvers-from-json (gethash "approvers" config))
+          (gateway-requests-dir g) (let ((d (resolve (or (gethash "approval_requests" config) "soz-approval-requests") base)))
+                                     (if (char= (char d (1- (length d))) #\/) d (concatenate 'string d "/"))))
     (setf (gateway-actor g) (actor-from-json (gethash "actor" config))
           (gateway-policy g) (let ((pol (gethash "policy" config)))
                                (cond ((stringp pol)   ; a file next to the config
@@ -296,7 +299,9 @@ Example:
                "description" "Run a previewed plan. The user approves it first: in their client, or by telling you the approval code shown to them outside the chat. Nothing runs without that approval."
                "inputSchema" (obj "type" "object"
                                   "properties" (obj "preview_id" (obj "type" "string" "description" "The preview_id returned by soz_preview.")
-                                                    "approval_code" (obj "type" "string" "description" "Only the code the user told you. Never guess it."))
+                                                    "approval_code" (obj "type" "string" "description" "Only the code the user told you. Never guess it.")
+                                                    "approvals" (obj "type" "array" "items" (obj "type" "string")
+                                                                     "description" "Approval tokens (soz1....) other people gave the user, when the plan needs their approval. Only tokens the user gave you."))
                                   "required" (vector "preview_id"))
                "annotations" (obj "readOnlyHint" :false "destructiveHint" :true)))
     (loop for (name nil tool) in (reverse (gateway-passthrough g))
@@ -359,9 +364,126 @@ Example:
           (execution-outcome e) (execution-message e) (execution-stop-reason e)
           (mapcar (lambda (s) (format nil "~d ~a" (step-index s) (step-status s))) (execution-steps e))))
 
-(defun approval-message (p)
-  (format nil "~a~%The assistant based this on your message:~%  ~a~%~%Approve these steps?"
-          (preview-summary p) (soz::visible (or (soz::preview-message p) "(no message)"))))
+(defun approval-message (g p)
+  (format nil "~a~a~%The assistant based this on your message:~%  ~a~%~%Approve these steps?"
+          (preview-summary p) (also-approved g p) (soz::visible (or (soz::preview-message p) "(no message)"))))
+
+;;; --- Other people's approval (SPEC 11.6): signed tokens, verified with the approvers' public keys
+
+(defstruct approver actor public-key)
+
+(defun approvers-from-json (j)
+  (loop for a across (or j #())
+        collect (let ((id (and (hash-table-p a) (gethash "id" a)))
+                      (key (and (hash-table-p a) (stringp (gethash "public_key" a)) (soz-ed25519:base64url-decode (gethash "public_key" a)))))
+                  (unless (and (stringp id) (plusp (length id)) (notany (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) id)
+                               (vectorp (gethash "roles" a)))
+                    (error "an approver needs an id without spaces, roles and a public_key: ~a" (soz::canonical-json a)))
+                  (unless (and key (= (length key) 32) (soz-ed25519::decode-point key))
+                    (error "the public_key of ~a is not an Ed25519 key" id))
+                  (make-approver :actor (make-actor :id id :roles (coerce (gethash "roles" a) 'list)) :public-key key))))
+
+(defun approver-id (a) (actor-id (approver-actor a)))
+
+(defun unix-now () (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0)))
+
+(defun verify-token (g token hash)
+  "The approver TOKEN proves for HASH, or NIL and why not."
+  (let* ((s (string-trim '(#\Space #\Tab #\Newline #\Return) token))
+         (dot3 (position #\. s :from-end t))
+         (dot2 (and dot3 (position #\. s :from-end t :end dot3)))
+         (id (and dot2 (> dot2 5) (string= "soz1." s :end2 5) (subseq s 5 dot2)))
+         (exp (and id (every #'digit-char-p (subseq s (1+ dot2) dot3)) (< 0 (- dot3 dot2 1) 13)
+                   (parse-integer s :start (1+ dot2) :end dot3)))
+         (sig (and exp (= (- (length s) dot3 1) 86) (soz-ed25519:base64url-decode (subseq s (1+ dot3))))))
+    (cond ((or (null sig) (some (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) id))
+           (values nil "this is not a soz approval token"))
+          (t (let ((a (find id (gateway-approvers g) :key #'approver-id :test #'string=)))
+               (cond ((null a) (values nil (format nil "~a is not an approver of this gateway" id)))
+                     ((not (soz-ed25519:ed25519-verify
+                            (approver-public-key a)
+                            (sb-ext:string-to-octets (format nil "soz approval 1~%~a~%~a~%~d" hash id exp) :external-format :utf-8)
+                            sig))
+                      (values nil (format nil "the token is not ~a's approval of this preview" id)))
+                     ((< exp (unix-now)) (values nil (format nil "~a's approval has expired" id)))
+                     (t (values a nil))))))))
+
+(defun requirements-of (p)
+  (remove-duplicates (loop for st in (preview-steps p) unless (step-already-done st) append (step-requires st)) :test #'equal))
+
+(defun signed-of (g p) (gethash (preview-hash p) (gateway-signed g)))
+
+(defun approvers-of (g p)
+  "The user and everyone whose signed approval of P the gateway has accepted."
+  (append (and (gateway-actor g) (list (gateway-actor g)))
+          (mapcar (lambda (x) (approver-actor (car x))) (signed-of g p))))
+
+(defun also-approved (g p)
+  (let ((s (signed-of g p)))
+    (if s
+        (format nil "Also approved by: ~{~a~^, ~}~%"
+                (mapcar (lambda (x) (format nil "~a (~{~a~^, ~})" (approver-id (car x)) (actor-roles (approver-actor (car x))))) s))
+        "")))
+
+(defun accept-tokens (g p given)
+  "Takes the tokens the model passed on; returns notes on those it could not accept, and why."
+  (let ((notes '()) (actor (gateway-actor g)))
+    (dolist (tok (cond ((vectorp given) (coerce given 'list)) ((stringp given) (list given)) (t '())))
+      (when (stringp tok)
+        (multiple-value-bind (a why) (verify-token g tok (preview-hash p))
+          (cond
+            ((null a) (push (format nil "Not accepted: ~a." why) notes))
+            ((and actor (string= (approver-id a) (actor-id actor)))
+             (push (format nil "Not accepted: ~a is the user, who approves in their own approval window, not by a token." (approver-id a)) notes))
+            ((notany (lambda (r) (member (first r) (actor-roles (approver-actor a)) :test #'string=)) (requirements-of p))
+             (push (format nil "Not accepted: this plan needs no approval ~a can give (~a: ~:[no roles~;~:*~{~a~^, ~}~])."
+                           (approver-id a) (approver-id a) (actor-roles (approver-actor a)))
+                   notes))
+            ((find (approver-id a) (signed-of g p) :key (lambda (x) (approver-id (car x))) :test #'string=))
+            (t (setf (gethash (preview-hash p) (gateway-signed g))
+                     (append (signed-of g p) (list (cons a (string-trim '(#\Space #\Tab #\Newline #\Return) tok))))))))))
+    (reverse notes)))
+
+(defun approval-request-json (g p unmet)
+  (soz::canonical-json
+   (obj "soz_approval_request" 1 "hash" (preview-hash p) "plan" (soz::preview-text p)
+        "message" (or (soz::preview-message p) :null)
+        "steps" (map 'vector (lambda (s) (obj "operation" (soz::op-name (step-operation s)) "args" (soz::step-args s) "key" (soz::step-key s)))
+                     (preview-steps p))
+        "created" (multiple-value-bind (s mi h d mo y) (decode-universal-time (get-universal-time) 0)
+                    (format nil "~d-~2,'0d-~2,'0dT~2,'0d:~2,'0d:~2,'0dZ" y mo d h mi s))
+        "actor" (if (gateway-actor g)
+                    (obj "id" (actor-id (gateway-actor g)) "roles" (coerce (actor-roles (gateway-actor g)) 'vector))
+                    :null)
+        "requires" (map 'vector (lambda (r) (obj "role" (first r) "four_eyes" (if (second r) :true :false) "rule" (third r))) unmet))))
+
+(defun ask-others (g p unmet notes)
+  "Writes an approval request for the people P still needs, and says who they are."
+  (let* ((actor (gateway-actor g))
+         (who (mapcar (lambda (r)
+                        (destructuring-bind (role four-eyes rule) r
+                          (declare (ignore rule))
+                          (let ((can (loop for a in (gateway-approvers g)
+                                           when (and (member role (actor-roles (approver-actor a)) :test #'string=)
+                                                     (not (and four-eyes actor (string= (approver-id a) (actor-id actor)))))
+                                             collect (approver-id a))))
+                            (format nil "- approval by ~a~:[~*~; (someone other than ~a)~]: ~:[nobody among this gateway's approvers has this role~;~:*~{~a~^, ~}~]"
+                                    role (and four-eyes actor) (and actor (actor-id actor)) can))))
+                      unmet))
+         (path (namestring (merge-pathnames (format nil "~a.json" (subseq (preview-hash p) 0 16))
+                                            (gateway-requests-dir g)))))
+    (handler-case
+        (progn (ensure-directories-exist path)
+               (with-open-file (s path :direction :output :if-exists :supersede :external-format :utf-8)
+                 (write-string (approval-request-json g p unmet) s) (terpri s)))
+      (error (e) (return-from ask-others (text-result (format nil "Could not write the approval request: ~a. Nothing ran." e) :error t))))
+    (text-result (format nil "~{~a~%~}This plan also needs the approval of other people:~%~{~a~^~%~}~%~%An approval request was written to:~%  ~a~%~%Tell the user: give this file to one of the people named above. They open it with soz-approve on their own machine, check the steps and, if they agree, give back an approval token (soz1....). When the user gives you the token, call soz_execute again with preview_id and approvals. You cannot make or change a token. Nothing ran."
+                         notes who path)
+                 :error t)))
+
+(defun run-approved (g p by)
+  (execute p (preview-hash p) :journal (gateway-journal g) :audit (gateway-audit g) :approved-by by
+                              :approvers (approvers-of g p) :signatures (mapcar #'cdr (signed-of g p))))
 
 ;;; --- Approval codes: shown to the user outside the chat, typed back by the user
 
@@ -429,9 +551,9 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
                       q (substitute sq q text) q q (substitute sq q title) q q q))))
       (t nil))))
 
-(defun code-window-text (p code)
-  (format nil "Approval code: ~a~%~%~a~%~%The assistant based this on your message:~%  ~a~%~%If you agree, type this code in the chat. If not, ignore it.~%The code works once and expires in ~d minutes."
-          code (preview-summary p) (soz::visible (or (soz::preview-message p) "(no message)")) (floor *code-lifetime* 60)))
+(defun code-window-text (g p code)
+  (format nil "Approval code: ~a~%~%~a~a~%The assistant based this on your message:~%  ~a~%~%If you agree, type this code in the chat. If not, ignore it.~%The code works once and expires in ~d minutes."
+          code (preview-summary p) (also-approved g p) (soz::visible (or (soz::preview-message p) "(no message)")) (floor *code-lifetime* 60)))
 
 (defun execute-with-code (g p given)
   (let ((pending (gethash (preview-hash p) (gateway-codes g)))
@@ -441,7 +563,7 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
        (text-result "Too many wrong approval codes for this preview; it is locked. Preview the plan again." :error t))
       ((zerop (length (normalize-code given)))
        (let ((code (new-code)))
-         (if (show-to-user "soz: approve these steps?" (code-window-text p code))
+         (if (show-to-user "soz: approve these steps?" (code-window-text g p code))
              (progn
                (setf (gethash (preview-hash p) (gateway-codes g))
                      (make-pending-code :code code :expires (+ now *code-lifetime*)))
@@ -454,8 +576,7 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
        (text-result "The approval code expired. Call soz_execute with only the preview_id to show the user a new one. Nothing ran." :error t))
       ((string= (normalize-code given) (normalize-code (pending-code-code pending)))
        (remhash (preview-hash p) (gateway-codes g))
-       (text-result (execution-text (execute p (preview-hash p) :journal (gateway-journal g) :audit (gateway-audit g)
-                                                                :approved-by "user (approval code)"))))
+       (text-result (execution-text (run-approved g p "user (approval code)"))))
       (t
        (incf (pending-code-wrong pending))
        (if (>= (pending-code-wrong pending) *code-attempts*)
@@ -467,11 +588,7 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
 
 (defun unmet-here (g p)
   "Requirements of P's steps that the gateway's own user cannot meet alone."
-  (soz::unmet-requirements
-   (remove-duplicates (loop for st in (preview-steps p) unless (step-already-done st) append (step-requires st))
-                      :test #'equal)
-   (if (gateway-actor g) (list (gateway-actor g)) '())
-   (gateway-actor g)))
+  (soz::unmet-requirements (requirements-of p) (approvers-of g p) (gateway-actor g)))
 
 (defun policy-text (g)
   (if (null (gateway-policy g))
@@ -509,21 +626,22 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
        (cond
          ((null p) (text-result "No preview with that preview_id. Call soz_preview first and use the preview_id it returns." :error t))
          ((soz::preview-used p) (text-result "This preview was already executed. To run the plan again, preview it again; the user approves again." :error t))
-         ((unmet-here g p)
-          (text-result (format nil "This plan needs ~a. This gateway can only collect the approval of ~a. Nothing ran."
-                               (soz::requirements-text (unmet-here g p) (gateway-actor g))
-                               (if (gateway-actor g) (actor-id (gateway-actor g)) "the user"))
-                       :error t))
+         ((let ((notes (accept-tokens g p (gethash "approvals" args))))
+            (when (unmet-here g p)
+              (if (gateway-approvers g)
+                  (ask-others g p (unmet-here g p) notes)
+                  (text-result (format nil "This plan needs ~a. This gateway can only collect the approval of ~a. Nothing ran."
+                                       (soz::requirements-text (unmet-here g p) (gateway-actor g))
+                                       (if (gateway-actor g) (actor-id (gateway-actor g)) "the user"))
+                               :error t)))))
          ((code-mode-p g) (execute-with-code g p (gethash "approval_code" args)))
          ((member (gateway-approval g) '("elicitation" "auto") :test #'string=)
           (if (not (client-elicits-p))
               (text-result "This client cannot ask the user for approval (MCP elicitation), and this gateway requires it. Nothing ran." :error t)
-              (if (elicit (approval-message p))
-                  (text-result (execution-text (execute p (preview-hash p) :journal (gateway-journal g) :audit (gateway-audit g)
-                                                                           :approved-by "user (MCP elicitation)")))
+              (if (elicit (approval-message g p))
+                  (text-result (execution-text (run-approved g p "user (MCP elicitation)")))
                   (text-result "The user did not approve. Nothing ran."))))
-         (t (text-result (execution-text (execute p (preview-hash p) :journal (gateway-journal g) :audit (gateway-audit g)
-                                                                     :approved-by "user (client tool approval)")))))))
+         (t (text-result (execution-text (run-approved g p "user (client tool approval)")))))))
     (t
      (let ((pass (find name (gateway-passthrough g) :key #'first :test #'string=)))
        (if (not pass)

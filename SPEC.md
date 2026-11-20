@@ -484,6 +484,44 @@ gateway where the agent has no shell.
 Relative paths are relative to the configuration file, which is also the working directory of the
 servers.
 
+### 11.5 Other people's approval
+
+A policy may require approval by someone other than the user (`approve_by`, `four_eyes`, section 12).
+A gateway whose configuration lists **approvers** collects their approval as signed tokens:
+
+```json
+"approvers": [{"id": "ayse", "roles": ["finance"], "public_key": "<Ed25519 public key, 32 octets, base64url>"}],
+"approval_requests": "soz-approval-requests"
+```
+
+The roles come from this list, never from a token. Without approvers, a requirement the user cannot
+meet alone makes `soz_execute` refuse, as before.
+
+1. When requirements are unmet, `soz_execute` runs nothing; it writes an **approval request** to
+   `approval_requests/<first 16 hex digits of the hash>.json`, says which requirements are unmet and
+   which approvers can meet each, and asks the model to tell the user to pass the file on.
+2. The request is a canonical JSON object `{"soz_approval_request": 1, "hash", "plan", "message",
+   "steps", "actor", "requires", "created"}`, where `steps` is the list the preview hash is computed
+   from (section 10.3). A tool that shows a request MUST compute the hash again from `plan`,
+   `message` and `steps` and refuse a request whose hash differs.
+3. An approver who agrees signs, with Ed25519 (RFC 8032), the UTF-8 text
+   `"soz approval 1\n" HASH "\n" ID "\n" EXPIRES` (`EXPIRES` in Unix seconds, decimal; `\n` is
+   U+000A) and gives back the
+   **token** `soz1.ID.EXPIRES.SIGNATURE` (signature: 64 octets, base64url without padding). The id
+   has no spaces.
+4. The model passes tokens in `soz_execute`'s `approvals`. The gateway accepts a token only if the id
+   is an approver's, the signature verifies with that approver's public key for this preview's hash,
+   it has not expired, the approver is not the user (who approves in their own way, section 11.3),
+   and the approver has a role some requirement of the preview names. It says why it refuses any
+   other. Accepted approvals are kept for the preview.
+5. Once no requirement is unmet, the user approves as in section 11.3; the approval they see lists
+   who else approved. The execution's approvers are the user and the accepted approvers, and the
+   approval record (10.5) carries the tokens under `signatures`.
+
+A token can travel through any channel, the chat included: the model can carry it, but cannot make
+one or change what it approves. Approvers keep their private keys on their own machines, protected
+by a passphrase; the gateway holds only public keys.
+
 ## 12. Policy (0.3)
 
 A **policy** is a list of rules the host puts in force, for an **actor**: the person who asked for the
@@ -545,7 +583,8 @@ host MUST NOT start with it.
   that it is unchanged (section 10.4), the rules are applied again with the actual values; a
   `deny` stops with the outcome `denied`, an unmet requirement with `not-approved`, before the step.
 
-The approval record (section 10.5) lists the approvers.
+The approval record (section 10.5) lists the approvers. A gateway collects other people's approval as
+in section 11.5.
 
 ## 13. Planned
 

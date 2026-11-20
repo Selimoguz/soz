@@ -8,6 +8,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { verifyAudit } from "../src/run.ts";
+import { newKeyPair, openPrivateKey, readRequest, signApproval } from "../src/approvals.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "soz-ts-gateway-"));
@@ -179,6 +180,80 @@ console.log("\nPolicy (actor ali, role sales)");
   const code = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
   const done = await c.call("soz_execute", { preview_id: id, approval_code: code });
   check("a step the policy asks nothing more for goes through the user's own approval", text(shown).includes("approval code is now shown") && text(done).includes("Outcome: done") && await orders(c) === 1);
+  c.close();
+}
+
+console.log("\nAnother person's approval (four eyes, signed)");
+{
+  const codeFile = join(dir, "code-four-eyes.txt");
+  const ayse = newKeyPair("ayse's passphrase"), ali = newKeyPair("ali's passphrase"), veli = newKeyPair("veli's passphrase");
+  const c = await new Client(writeConfig("g5.json", "auto", {
+    actor: { id: "ali", roles: ["sales", "finance"] },
+    approvers: [{ id: "ayse", roles: ["finance"], public_key: ayse.publicKey }, { id: "ali", roles: ["finance"], public_key: ali.publicKey },
+                { id: "veli", roles: ["sales"], public_key: veli.publicKey }],
+    approval_requests: "requests",
+    policy: { rules: [{ name: "orders over 10: finance, four eyes", when: { operation: "erp.add_order_line", args: { quantity: { ">": 10 } } },
+                        then: { approve_by: "finance", four_eyes: true } }] },
+  }), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
+  const before = await orders(c);
+  const plan = `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "tomatoes" quantity 30)))`;
+  const id = previewId(await c.call("soz_preview", { plan, message: "Yilmaz Market: 30 tomatoes" }))!;
+  const asked = await c.call("soz_execute", { preview_id: id });
+  const path = /written to:\n  (.+)\n/.exec(text(asked))?.[1] ?? "";
+  check("the gateway writes an approval request and names who can approve (not ali himself)",
+        asked.isError && existsSync(path) && text(asked).includes("approval by finance (someone other than ali): ayse") && !existsSync(codeFile));
+  const req = readRequest(readFileSync(path, "utf8"));
+  check("the request's hash is the preview's", req.hash === id && req.requires[0]?.fourEyes === true);
+  const tampered = readFileSync(path, "utf8").replace('"quantity":30', '"quantity":3');
+  let refused = false;
+  try { readRequest(tampered); } catch { refused = true; }
+  check("an edited request is refused: its steps no longer match its hash", refused && tampered !== readFileSync(path, "utf8"));
+
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const tok = (who: string, k: { privatePem: string }, pass: string, hash = id, e = exp) => signApproval(hash, who, e, openPrivateKey(k.privatePem, pass));
+  const ayseTok = tok("ayse", ayse, "ayse's passphrase");
+  const forged = ayseTok.slice(0, -3) + (ayseTok.endsWith("AAA") ? "BBB" : "AAA");
+  const tries: [string, string, string][] = [
+    ["a forged signature", forged, "not ayse's approval"],
+    ["ayse's approval of another preview", tok("ayse", ayse, "ayse's passphrase", "0".repeat(64)), "not ayse's approval"],
+    ["an expired approval", tok("ayse", ayse, "ayse's passphrase", id, 1000), "expired"],
+    ["a key that is not ayse's, under her name", tok("ayse", veli, "veli's passphrase"), "not ayse's approval"],
+    ["someone the gateway does not know", tok("mallory", veli, "veli's passphrase"), "not an approver"],
+  ];
+  for (const [what, t, why] of tries) {
+    const r = await c.call("soz_execute", { preview_id: id, approvals: [t] });
+    check(`${what} is not accepted, nothing runs`, r.isError && text(r).includes(why) && !existsSync(codeFile) && await orders(c) === before);
+  }
+  const own = await c.call("soz_execute", { preview_id: id, approvals: [tok("ali", ali, "ali's passphrase")] });
+  check("ali's own signed approval is not taken: he approves in his own window", own.isError && text(own).includes("ali is the user") && text(own).includes("someone other than ali") && await orders(c) === before);
+  const wrongRole = await c.call("soz_execute", { preview_id: id, approvals: [tok("veli", veli, "veli's passphrase")] });
+  check("veli's approval is not taken: the role comes from the gateway, and he is not finance", wrongRole.isError && text(wrongRole).includes("no approval veli can give") && await orders(c) === before);
+
+  const shown = await c.call("soz_execute", { preview_id: id, approvals: [ayseTok] });
+  const window = existsSync(codeFile) ? readFileSync(codeFile, "utf8") : "";
+  check("with ayse's approval, ali is shown his own approval code, which says ayse approved", text(shown).includes("approval code is now shown")
+        && window.includes("Also approved by: ayse (finance)") && await orders(c) === before);
+  const code = /Approval code: (\w{3}-\w{3})/.exec(window)?.[1];
+  const done = await c.call("soz_execute", { preview_id: id, approval_code: code });
+  check("ali's code then runs it: two people approved", text(done).includes("Outcome: done") && await orders(c) === before + 1);
+  const approval = readFileSync(join(dir, "audit.jsonl"), "utf8").split("\n").filter(l => l.includes('"type":"approval"') && l.includes(id)).map(l => JSON.parse(l))[0];
+  check("the audit record keeps both approvers and ayse's signed token",
+        approval?.data?.approvers?.map((a: Obj) => a.id).join() === "ali,ayse" && approval?.data?.signatures?.[0] === ayseTok);
+
+  const cli = (args: string[]) => new Promise<{ code: number | null; out: string }>(res => {
+    const p = spawn(process.execPath, [...NODE, join(here, "..", "src", "approve-cli.ts"), ...args], { stdio: ["pipe", "pipe", "pipe"] });
+    let out = ""; p.stdout.on("data", d => { out += String(d); }); p.stderr?.on("data", d => { out += String(d); });
+    p.stdin.write("yes\nayse's passphrase\n"); p.stdin.end();
+    p.on("close", code => res({ code, out }));
+  });
+  const shownByCli = await cli(["show", path]);
+  check("soz-approve show prints the steps of a request", shownByCli.code === 0 && shownByCli.out.includes("erp.add_order_line") && shownByCli.out.includes("quantity: 30"));
+  writeFileSync(join(dir, "tampered.json"), tampered);
+  const bad = await cli(["show", join(dir, "tampered.json")]);
+  check("soz-approve refuses an edited request", bad.code === 2 && bad.out.includes("was changed"));
+  writeFileSync(join(dir, "ayse.soz-key"), JSON.stringify({ soz_key: 1, id: "ayse", private_key: ayse.privatePem }));
+  const piped = await cli([path, "--key", join(dir, "ayse.soz-key")]);
+  check("soz-approve does not approve from piped input: a person types it in a terminal", piped.code === 2 && piped.out.includes("needs a terminal") && !piped.out.includes("soz1."));
   c.close();
 }
 

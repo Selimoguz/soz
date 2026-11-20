@@ -5,8 +5,8 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { dirname, resolve, isAbsolute } from "node:path";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, resolve, isAbsolute, join } from "node:path";
 import { randomInt } from "node:crypto";
 import { Rational, type Json, type HostValue, isObject, newObject, canonicalJson, parseJson, nameFold, visible } from "./exact.ts";
 import {
@@ -18,6 +18,7 @@ import {
   preview, execute, previewSummary, Journal, Audit, verifyAudit, OperationFailed, OperationUnknown,
   unmetRequirements, requirementsText,
 } from "./run.ts";
+import { type Approver, approversFromJson, requestFor, requestJson, verifyApproval } from "./approvals.ts";
 
 const log = (m: string) => process.stderr.write(`soz-gateway: ${m}\n`);
 const PROTOCOL = "2025-06-18";
@@ -178,6 +179,7 @@ export type Gateway = {
   journal: Journal; audit: Audit; auditPath: string;
   approval: "auto" | "elicitation" | "code" | "client";
   policy: Rule[]; actor: Actor | null;
+  approvers: Approver[]; requestsDir: string; signed: Map<string, { approver: Approver; token: string }[]>;
   previews: Map<string, Preview>; codes: Map<string, { code: string | null; expires: number; wrong: number }>;
 };
 
@@ -196,7 +198,9 @@ export async function loadGateway(configPath: string): Promise<Gateway> {
     journal: Journal.open(at(typeof config.journal === "string" ? config.journal : "soz-journal.jsonl")),
     audit: Audit.open(auditPath), auditPath, approval,
     policy: policyFromJson(policyJson ?? []), actor: actorFromJson(config.actor),
-    previews: new Map(), codes: new Map(),
+    approvers: approversFromJson(config.approvers),
+    requestsDir: at(typeof config.approval_requests === "string" ? config.approval_requests : "soz-approval-requests"),
+    signed: new Map(), previews: new Map(), codes: new Map(),
   };
   const exposeReads = config.expose_reads !== false;
   for (const [name, spec] of Object.entries(isObject(config.servers) ? config.servers : {})) {
@@ -287,7 +291,9 @@ function toolList(g: Gateway) {
       annotations: { readOnlyHint: true } },
     { name: "soz_execute", description: "Run a previewed plan. The user approves it first: in their client, or by telling you the approval code shown to them outside the chat. Nothing runs without that approval.",
       inputSchema: { type: "object", properties: { preview_id: stringProp("The preview_id returned by soz_preview."),
-                                                   approval_code: stringProp("Only the code the user told you. Never guess it.") },
+                                                   approval_code: stringProp("Only the code the user told you. Never guess it."),
+                                                   approvals: { type: "array", items: { type: "string" },
+                                                     description: "Approval tokens (soz1....) other people gave the user, when the plan needs their approval. Only tokens the user gave you." } },
                      required: ["preview_id"] },
       annotations: { readOnlyHint: false, destructiveHint: true } },
     { name: "soz_inspect_audit", description: "What happened to a plan: its preview, approval, every call and the outcome, from the audit record, and whether the record's hash chain is intact.",
@@ -405,10 +411,63 @@ export class GatewayServer {
     return hits.length === 1 ? hits[0] : null;
   }
 
-  private unmetHere(p: Preview): Requirement[] {
-    const reqs = p.steps.filter(s => !s.alreadyDone).flatMap(s => s.requires)
+  private requirementsOf(p: Preview): Requirement[] {
+    return p.steps.filter(s => !s.alreadyDone).flatMap(s => s.requires)
       .filter((r, i, all) => all.findIndex(x => x.role === r.role && x.fourEyes === r.fourEyes && x.rule === r.rule) === i);
-    return unmetRequirements(reqs, this.g.actor ? [this.g.actor] : [], this.g.actor);
+  }
+
+  private unmetHere(p: Preview): Requirement[] {
+    return unmetRequirements(this.requirementsOf(p), this.approversOf(p), this.g.actor);
+  }
+
+  /** The user and everyone whose signed approval of this preview the gateway has accepted. */
+  private approversOf(p: Preview): Actor[] {
+    return [...(this.g.actor ? [this.g.actor] : []),
+            ...(this.g.signed.get(p.hash!) ?? []).map(x => ({ id: x.approver.id, roles: x.approver.roles }))];
+  }
+
+  private alsoApproved(p: Preview): string {
+    const s = this.g.signed.get(p.hash!) ?? [];
+    return s.length ? `Also approved by: ${s.map(x => `${x.approver.id} (${x.approver.roles.join(", ")})`).join(", ")}\n` : "";
+  }
+
+  /** Takes the tokens the model passed on; says which it could not accept, and why. */
+  private acceptTokens(p: Preview, given: unknown): string[] {
+    const tokens = Array.isArray(given) ? given : typeof given === "string" ? [given] : [];
+    const notes: string[] = [];
+    for (const t of tokens) {
+      if (typeof t !== "string") continue;
+      const v = verifyApproval(t, p.hash!, this.g.approvers);
+      if (!v.ok) { notes.push(`Not accepted: ${v.why}.`); continue; }
+      const a = v.approver, actor = this.g.actor;
+      // The user approves in their own window; a token counts only for a requirement it meets.
+      if (actor && a.id === actor.id) { notes.push(`Not accepted: ${a.id} is the user, who approves in their own approval window, not by a token.`); continue; }
+      if (!this.requirementsOf(p).some(r => a.roles.includes(r.role))) {
+        notes.push(`Not accepted: this plan needs no approval ${a.id} can give (${a.id}: ${a.roles.join(", ") || "no roles"}).`); continue;
+      }
+      const list = this.g.signed.get(p.hash!) ?? [];
+      if (!list.some(x => x.approver.id === v.approver.id)) list.push({ approver: v.approver, token: t.trim() });
+      this.g.signed.set(p.hash!, list);
+    }
+    return notes;
+  }
+
+  /** Writes an approval request for the people the plan still needs, and says who they are. */
+  private askOthers(p: Preview, unmet: Requirement[], notes: string[]) {
+    const g = this.g;
+    const who = unmet.map(r => {
+      const can = g.approvers.filter(a => a.roles.includes(r.role) && !(r.fourEyes && g.actor && a.id === g.actor.id)).map(a => a.id);
+      return `- approval by ${r.role}${r.fourEyes && g.actor ? ` (someone other than ${g.actor.id})` : ""}: `
+        + (can.length ? can.join(", ") : "nobody among this gateway's approvers has this role");
+    }).join("\n");
+    const path = join(g.requestsDir, `${p.hash!.slice(0, 16)}.json`);
+    try { mkdirSync(g.requestsDir, { recursive: true }); writeFileSync(path, requestJson(requestFor(p, unmet))); }
+    catch (e) { return textResult(`Could not write the approval request: ${(e as Error).message}. Nothing ran.`, true); }
+    return textResult(`${notes.length ? notes.join("\n") + "\n" : ""}This plan also needs the approval of other people:\n${who}\n\n`
+      + `An approval request was written to:\n  ${path}\n\n`
+      + `Tell the user: give this file to one of the people named above. They open it with soz-approve on their own machine, `
+      + `check the steps and, if they agree, give back an approval token (soz1....). When the user gives you the token, call `
+      + `soz_execute again with preview_id and approvals. You cannot make or change a token. Nothing ran.`, true);
   }
 
   private executionText(e: Execution): string {
@@ -416,7 +475,9 @@ export class GatewayServer {
   }
 
   private run(p: Preview, by: string) {
-    return execute(p, p.hash!, { implementations: this.g.implementations, journal: this.g.journal, audit: this.g.audit, approvedBy: by });
+    const signed = this.g.signed.get(p.hash!) ?? [];
+    return execute(p, p.hash!, { implementations: this.g.implementations, journal: this.g.journal, audit: this.g.audit, approvedBy: by,
+                                 approvers: this.approversOf(p), signatures: signed.map(x => x.token) });
   }
 
   async callTool(name: string, args: { [k: string]: Json }) {
@@ -437,13 +498,16 @@ export class GatewayServer {
       const p = this.findPreview(args.preview_id);
       if (!p) return textResult("No preview with that preview_id. Call soz_preview first and use the preview_id it returns.", true);
       if (p.used) return textResult("This preview was already executed. To run the plan again, preview it again; the user approves again.", true);
+      const notes = this.acceptTokens(p, args.approvals);
       const unmet = this.unmetHere(p);
-      if (unmet.length) return textResult(`This plan needs ${requirementsText(unmet, g.actor)}. This gateway can only collect the approval of ${g.actor?.id ?? "the user"}. Nothing ran.`, true);
+      if (unmet.length && !g.approvers.length)
+        return textResult(`This plan needs ${requirementsText(unmet, g.actor)}. This gateway can only collect the approval of ${g.actor?.id ?? "the user"}. Nothing ran.`, true);
+      if (unmet.length) return this.askOthers(p, unmet, notes);
       if (this.codeMode()) return this.executeWithCode(p, args.approval_code);
       if (g.approval === "client") return textResult(this.executionText(await this.run(p, "user (client tool approval)")));
       if (!this.elicits()) return textResult("This client cannot ask the user for approval (MCP elicitation), and this gateway requires it. Nothing ran.", true);
       const r = await this.client.request("elicitation/create", {
-        message: `${previewSummary(p)}The assistant based this on your message:\n  ${visible(p.message ?? "(no message)")}\n\nApprove these steps?`,
+        message: `${previewSummary(p)}${this.alsoApproved(p)}The assistant based this on your message:\n  ${visible(p.message ?? "(no message)")}\n\nApprove these steps?`,
         requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Approve", description: "Run exactly these steps" } }, required: ["approve"] },
       }, 10 * 60 * 1000).catch(() => null);
       const res = r && isObject(r.result) ? r.result : null;
@@ -465,7 +529,7 @@ export class GatewayServer {
     if (pending && pending.code === null) return textResult("Too many wrong approval codes for this preview; it is locked. Preview the plan again.", true);
     if (!normalizeCode(given)) {
       const code = newCode();
-      const window = `Approval code: ${code}\n\n${previewSummary(p)}\nThe assistant based this on your message:\n  ${visible(p.message ?? "(no message)")}\n\nIf you agree, type this code in the chat. If not, ignore it.\nThe code works once and expires in ${CODE_LIFETIME / 60} minutes.`;
+      const window = `Approval code: ${code}\n\n${previewSummary(p)}${this.alsoApproved(p)}\nThe assistant based this on your message:\n  ${visible(p.message ?? "(no message)")}\n\nIf you agree, type this code in the chat. If not, ignore it.\nThe code works once and expires in ${CODE_LIFETIME / 60} minutes.`;
       if (!showToUser("soz: approve these steps?", window)) return textResult("Could not show the approval code to the user on this system. Nothing ran.", true);
       g.codes.set(key, { code, expires: now + CODE_LIFETIME, wrong: 0 });
       return textResult("An approval code is now shown to the user in a window outside this chat. Ask them to read the steps there and, if they agree, to tell you the code. Then call soz_execute again with preview_id and approval_code. Nothing has run.");

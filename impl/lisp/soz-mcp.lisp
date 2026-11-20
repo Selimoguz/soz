@@ -4,7 +4,7 @@
 
 (setf sb-impl::*default-external-format* :utf-8)
 (let ((*standard-output* *error-output*))
-  (dolist (f '("json" "soz" "run" "gateway"))
+  (dolist (f '("json" "soz" "run" "ed25519" "gateway"))
     (load (merge-pathnames (format nil "~a.lisp" f) *load-truename*))))
 
 (let ((config (second sb-ext:*posix-argv*)))

@@ -23,6 +23,7 @@
   },
   "bin": {
     "soz-mcp": "src/soz-mcp.ts",
-    "soz-journal": "src/journal-cli.ts"
+    "soz-journal": "src/journal-cli.ts",
+    "soz-approve": "src/approve-cli.ts"
   }
 }

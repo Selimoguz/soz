@@ -603,7 +603,7 @@ Returns a PREVIEW."
                                          "stop_reason" (or reason :null)))
       p)))
 
-(defun execute (p approval &key journal audit (approved-by "unknown") approvers)
+(defun execute (p approval &key journal audit (approved-by "unknown") approvers signatures)
   "Runs the approved preview P (SPEC 10.4). APPROVAL must be P's hash. APPROVERS (ACTORs) are the
 people who approved it; by default the person who asked. Returns an EXECUTION."
   (let* ((approvers (or approvers (and (preview-actor p) (list (preview-actor p)))))
@@ -624,9 +624,11 @@ people who approved it; by default the person who asked. Returns an EXECUTION."
                                                       "this preview was already executed; an approval is for one execution"
                                                       "the approval does not match this preview; nothing ran"))))
   (setf (preview-used p) t)
-  (audit-append audit "approval" (obj "hash" approval "by" approved-by
-                                      "approvers" (map 'vector (lambda (a) (obj "id" (actor-id a) "roles" (coerce (actor-roles a) 'vector)))
-                                                       *approvers*)))
+  (audit-append audit "approval" (apply #'obj "hash" approval "by" approved-by
+                                        "approvers" (map 'vector (lambda (a) (obj "id" (actor-id a) "roles" (coerce (actor-roles a) 'vector)))
+                                                         *approvers*)
+                                        ;; signed approvals by other people (SPEC 11.6)
+                                        (and signatures (list "signatures" (coerce signatures 'vector)))))
   (let ((*mode* :execute) (*steps* '()) (*journal* (or journal (make-journal))) (*audit* audit) (*previewed* (preview-steps p))
         (*policy* (preview-policy p)) (*actor* (preview-actor p)) (*preview-actor* (preview-actor p))
         (outcome nil) (message nil) (reason nil))
