@@ -257,6 +257,57 @@ console.log("\nAnother person's approval (four eyes, signed)");
   c.close();
 }
 
+console.log("\nA server over streamable HTTP");
+{
+  const token = "test-token-" + Math.random().toString(36).slice(2);
+  const fake = spawn(process.execPath, [...NODE, join(here, "fake-erp-http.ts")], { stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, FAKE_TOKEN: token } });
+  const port = await new Promise<string>(res => createInterface({ input: fake.stdout }).on("line", l => res(l.trim())));
+  const control = (mode: string) => fetch(`http://127.0.0.1:${port}/control`, { method: "POST", body: JSON.stringify({ mode }) });
+  const httpConfig = (name: string, extra: Obj = {}) => writeConfig(name, "auto", {
+    servers: { erp: { url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: "Bearer ${SOZ_TEST_TOKEN}" }, timeout_seconds: 1, ...extra } },
+    journal: "journal-http.jsonl" });
+  const codeFile = join(dir, "code-http.txt");
+  const c = await new Client(httpConfig("h1.json"), { SOZ_TEST_CODE_FILE: codeFile, SOZ_TEST_TOKEN: token }).init(false);
+  const tools = ((await c.request("tools/list")).tools as Obj[]).map(t => t.name);
+  check("the gateway connects over HTTP and passes the read tools through, not the write", tools.includes("erp_find_customer") && !tools.includes("erp_add_order_line"));
+  check("a read answered as server-sent events, after a question from the server it declines", text(await c.call("erp_find_customer", { name: "Yilmaz" })).includes("C-1042"));
+  const run = async (plan: string, message = MESSAGE) => {
+    const id = previewId(await c.call("soz_preview", { plan, message }));
+    await c.call("soz_execute", { preview_id: id });
+    const code = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
+    return text(await c.call("soz_execute", { preview_id: id, approval_code: code }));
+  };
+  const line = (product: string, q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "${product}" quantity ${q})))`;
+  check("a plan's write goes to the HTTP server after approval", (await run(line("tomatoes", 20))).includes("Outcome: done") && await orders(c) === 1);
+  await control("forget");
+  check("the server forgot the session: the gateway starts a new one and goes on", (await run(line("peppers", 5))).includes("Outcome: done") && await orders(c) === 2);
+  await control("fail500");
+  const r500 = await run(line("tomatoes", 5));
+  await control("normal");
+  check("a 500 after sending: the outcome is unknown, never assumed", r500.includes("Outcome: unknown") && await orders(c) === 3);
+  check("and the step is not run again: unresolved", (await run(line("tomatoes", 5))).includes("Outcome: unresolved") && await orders(c) === 3);
+  await control("slow");
+  const slow = await run(line("peppers", 20));
+  await control("normal");
+  check("no answer within timeout_seconds: unknown", slow.includes("Outcome: unknown"));
+  const lone = `(plan "x" (erp.add_order_line customer "C-1042" product "tomatoes" quantity 7))`;
+  const loneId = previewId(await c.call("soz_preview", { plan: lone, message: "Add 7 tomatoes for customer C-1042" }));
+  fake.kill();
+  await new Promise(r => setTimeout(() => r(null), 300));
+  await c.call("soz_execute", { preview_id: loneId });
+  const code = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
+  const down = text(await c.call("soz_execute", { preview_id: loneId, approval_code: code }));
+  check("the server is down: nothing was sent, so the step failed (and may run again), not unknown", down.includes("Outcome: failed") && down.includes("nothing was sent"));
+  c.close();
+
+  const wrong = await new Client(httpConfig("h2.json"), { SOZ_TEST_TOKEN: "wrong" }).init(false);
+  check("a wrong token: the server is left out, nothing of it is offered", !((await wrong.request("tools/list")).tools as Obj[]).some(t => String(t.name).startsWith("erp_")));
+  wrong.close();
+  const plain = await new Client(writeConfig("h3.json", "auto", { servers: { erp: { url: "http://erp.example.com/mcp" } } })).init(false);
+  check("plain http to another machine is refused (https, or allow_http)", !((await plain.request("tools/list")).tools as Obj[]).some(t => String(t.name).startsWith("erp_")));
+  plain.close();
+}
+
 console.log("\nA plan in the JSON syntax");
 {
   const codeFile = join(dir, "code-json.txt");

@@ -176,7 +176,24 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (57 checks).
+the gateway and a pretend ERP as real processes (67 checks, an HTTP server among them).
+
+### Servers on another machine
+
+A server may be an MCP endpoint over streamable HTTP instead of a program to start (SPEC 11.4):
+
+```json
+"servers": {"erp": {"url": "https://erp.example.com/mcp",
+                    "headers": {"Authorization": "Bearer ${ERP_TOKEN}"}, "timeout_seconds": 30}}
+```
+
+Only `https`, unless the server is on this machine or `"allow_http": true` is given; the token comes
+from the environment variable, not the file. The gateway keeps the session the server gives, starts a
+new one when the server forgot it, and reads answers sent as JSON or as server-sent events. What
+matters for writes: a call fails (and may run again) only when the request certainly did not reach the
+server (refused, no such host, an untrusted certificate, 4xx); a timeout or 5xx leaves it unknown, so
+the step is `unresolved` until a person checks. The Lisp gateway has no TLS without dependencies, so
+it starts stdio servers only.
 
 ### Another person's approval
 

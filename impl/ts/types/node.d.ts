@@ -83,3 +83,35 @@ declare function setTimeout(f: () => void, ms: number): unknown;
 declare function clearTimeout(t: unknown): void;
 
 interface ImportMeta { url: string }
+
+// fetch, for MCP over HTTP (the gateway) — only what is used
+declare class TextDecoder { decode(b?: Uint8Array, o?: { stream?: boolean }): string }
+interface FetchHeaders { get(name: string): string | null }
+interface StreamReader { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> }
+interface FetchResponse {
+  status: number; headers: FetchHeaders; text(): Promise<string>;
+  body: { getReader(): StreamReader } | null;
+}
+declare function fetch(url: string, init: {
+  method: "POST" | "GET" | "DELETE"; headers?: Record<string, string>; body?: string; signal?: AbortSignal;
+}): Promise<FetchResponse>;
+interface AbortSignal { aborted: boolean }
+declare class URL { constructor(s: string); protocol: string; hostname: string; toString(): string }
+declare const AbortSignal: { timeout(ms: number): AbortSignal };
+
+// node:http, for the test servers
+declare module "node:http" {
+  interface IncomingMessage {
+    method?: string; url?: string; headers: Record<string, string | string[] | undefined>;
+    on(event: "data", f: (chunk: unknown) => void): IncomingMessage; on(event: "end", f: () => void): IncomingMessage;
+  }
+  interface ServerResponse {
+    writeHead(status: number, headers?: Record<string, string>): ServerResponse;
+    write(s: string): boolean; end(s?: string): void; destroy(): void;
+  }
+  interface Server {
+    listen(port: number, host: string, f: () => void): Server; close(f?: () => void): void;
+    address(): { port: number } | string | null; closeAllConnections?(): void;
+  }
+  export function createServer(f: (req: IncomingMessage, res: ServerResponse) => void): Server;
+}

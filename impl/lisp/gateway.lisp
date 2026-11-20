@@ -44,6 +44,8 @@
               (error e)))))))
 
 (defun start-server (name spec directory)
+  (when (and (jget spec "url") (not (jget spec "command")))
+    (error "~a: MCP over HTTP needs TLS, which this dependency-free gateway does not have; use the TypeScript gateway (impl/ts) for a server with a url" name))
   (let* ((process (spawn (jget spec "command") (coerce (or (jget spec "args") #()) 'list) directory (jget spec "env")))
          (s (make-server :name name :process process :input (sb-ext:process-input process))))
     (sb-thread:make-thread
@@ -200,9 +202,11 @@
       (error "approval must be \"auto\", \"elicitation\", \"code\" or \"client\", not ~s" (gateway-approval g)))
     (setf *operations* (make-hash-table :test #'equal) *implementations* (make-hash-table :test #'equal))
     (maphash (lambda (name spec)
-               (let ((s (start-server name spec base)))
-                 (handler-case (server-initialize s)
-                   (error (e) (log-line "~a" e) (stop-server s) (setf s nil)))
+               (let ((s (handler-case (start-server name spec base)
+                          (error (e) (log-line "~a" e) nil))))   ; a server that cannot start is left out
+                 (when s
+                   (handler-case (server-initialize s)
+                     (error (e) (log-line "~a" e) (stop-server s) (setf s nil))))
                  (when s
                    (push s (gateway-servers g))
                    (dolist (tool (server-tools s))

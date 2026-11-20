@@ -523,6 +523,30 @@ gateway where the agent has no shell.
 Relative paths are relative to the configuration file, which is also the working directory of the
 servers.
 
+**Servers over HTTP.** A server with a `url` instead of a `command` is reached with MCP's streamable
+HTTP transport (one POST per message; an answer as JSON or as server-sent events; the
+`Mcp-Session-Id` the server gives at initialization, and `MCP-Protocol-Version`, on every later
+request):
+
+```json
+"servers": {"erp": {"url": "https://erp.example.com/mcp",
+                    "headers": {"Authorization": "Bearer ${ERP_TOKEN}"}, "timeout_seconds": 30}}
+```
+
+- The URL MUST be `https`, except for a server on the same machine (`localhost`, `127.0.0.1`,
+  `[::1]`) or with `"allow_http": true`.
+- `${NAME}` in a header value is the environment variable `NAME`, so tokens stay out of the
+  configuration file; a variable that is not set leaves the server out.
+- A server that answers 404 to a session it gave forgot it: the gateway initializes again and
+  sends the request once more (it was not processed). Requests the server makes of the gateway are
+  declined.
+- A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
+  when the request certainly did not reach the server: the connection was refused, the host was not
+  found, its certificate was not trusted, or it answered 4xx. A timeout, a broken connection after
+  sending or a 5xx makes the outcome **unknown**: the operation may have happened.
+- A server that cannot be reached or initialized at start is left out, with a message on standard
+  error; the gateway runs with the others.
+
 ### 11.5 Other people's approval
 
 A policy may require approval by someone other than the user (`approve_by`, `four_eyes`, section 12).
@@ -631,5 +655,3 @@ in section 11.5.
   which system a value came from, not just that it came from a tool.
 - **Language profiles:** optional message matching for number words ("twenty", "yirmi") and
   inflected words.
-- **Remote servers:** MCP over streamable HTTP, for downstream servers on another machine (an ERP
-  host).

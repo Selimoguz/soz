@@ -221,7 +221,7 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | [TypeScript implementation](impl/ts/README.md) (`impl/ts/`), no dependencies | passes the suite |
 | MCP gateway over stdio, in Lisp and in TypeScript (both without dependencies), with elicitation or approval-code approval, resources and a prompt; end-to-end tests | available |
-| Downstream servers over HTTP | next |
+| Downstream servers over streamable HTTP (https, tokens from the environment, sessions; a write whose answer is lost is unknown, never retried), in the TypeScript gateway | available |
 | Policy: deny, approval by role with four eyes, sources an argument may come from | available |
 | Another person's approval collected by the gateway: approval requests and Ed25519-signed tokens (`soz-approve`), verified in both gateways | available |
 | JSON syntax for models with structured output (SPEC 2.1), with a JSON Schema; read by both implementations into the same tree | available |

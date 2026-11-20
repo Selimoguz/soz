@@ -77,14 +77,143 @@ class RpcError extends Error { code: number; constructor(code: number, m: string
 
 type Tool = { name: string; description?: string; inputSchema?: Json; outputSchema?: Json; annotations?: Json };
 
-class Downstream {
-  name: string; rpc: Rpc; proc: ChildProcess; tools: Tool[] = []; alive = true;
+/** How the gateway talks to a server: a process over stdio, or HTTP. */
+interface Link {
+  request(method: string, params: unknown, timeoutMs?: number): Promise<Message>;
+  notify(method: string, params?: unknown): Promise<void>;
+  close(): void;
+}
+
+/**
+ * The request certainly did not reach the server (refused, no such host, a certificate it would not
+ * trust, an HTTP 4xx): an operation that fails so did not happen and may run again. Anything else
+ * after sending (a timeout, a broken connection, a 5xx) leaves its outcome unknown.
+ */
+class NotSent extends Error {}
+
+class StdioLink implements Link {
+  rpc: Rpc; proc: ChildProcess;
   constructor(name: string, proc: ChildProcess) {
-    this.name = name; this.proc = proc;
+    this.proc = proc;
     this.rpc = new Rpc(proc.stdin, "g", async () => { throw new RpcError(-32601, "not supported by soz-gateway"); });
     createInterface({ input: proc.stdout }).on("line", l => this.rpc.receive(l));
-    proc.on("exit", () => { this.alive = false; this.rpc.failAll(new Timeout(`${name} exited`)); });
+    proc.on("exit", () => this.rpc.failAll(new Timeout(`${name} exited`)));
   }
+  request(method: string, params: unknown, timeoutMs?: number) { return this.rpc.request(method, params, timeoutMs); }
+  async notify(method: string, params?: unknown) { this.rpc.notify(method, params); }
+  close() { this.proc.kill(); }
+}
+
+const NOT_SENT_CODES = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"];
+
+/** MCP's streamable HTTP transport (2025-06-18), as a client: one POST per message. */
+class HttpLink implements Link {
+  url: string; headers: Record<string, string>; name: string;
+  session: string | null = null; protocol: string | null = null; next = 0;
+  initParams: unknown = null; timeout = 60000;
+  constructor(name: string, url: string, headers: Record<string, string>) { this.name = name; this.url = url; this.headers = headers; }
+
+  request(method: string, params: unknown, timeoutMs = this.timeout): Promise<Message> {
+    if (method === "initialize") this.initParams = params;
+    return this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method, params: params ?? newObject() }, timeoutMs) as Promise<Message>;
+  }
+  async notify(method: string, params?: unknown) {
+    await this.post(params ? { jsonrpc: "2.0", method, params } : { jsonrpc: "2.0", method }, 10000);
+  }
+  close() {
+    if (this.session) fetch(this.url, { method: "DELETE", headers: this.head(), signal: AbortSignal.timeout(2000) }).catch(e => log(`${this.name}: could not end the session: ${(e as Error).message}`));
+  }
+
+  private head(): Record<string, string> {
+    return { ...this.headers, "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+             ...(this.session ? { "Mcp-Session-Id": this.session } : {}), ...(this.protocol ? { "MCP-Protocol-Version": this.protocol } : {}) };
+  }
+
+  private async post(m: { [k: string]: unknown }, timeoutMs: number, again = false): Promise<Message | null> {
+    let res: FetchResponse;
+    try { res = await fetch(this.url, { method: "POST", headers: this.head(), body: canonicalJson(m), signal: AbortSignal.timeout(timeoutMs) }); }
+    catch (e) {
+      const code = (e as { cause?: { code?: string } }).cause?.code ?? "";
+      if (NOT_SENT_CODES.includes(code)) throw new NotSent(`${this.name}: ${code}`);
+      throw new Timeout(`${this.name}: ${(e as Error).name === "TimeoutError" ? `no answer in ${timeoutMs / 1000}s` : (e as Error).message}`);
+    }
+    // the server forgot the session: start a new one and send again (the request was not processed)
+    if (res.status === 404 && this.session && !again && m.method !== "initialize") {
+      this.session = null; this.protocol = null;
+      const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
+      if (!init || init.error) throw new NotSent(`${this.name}: the session expired and a new one could not be started`);
+      await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
+      return this.post(m, timeoutMs, true);
+    }
+    if (res.status >= 400 && res.status < 500) throw new NotSent(`${this.name}: HTTP ${res.status}`);
+    if (res.status >= 500) throw new Timeout(`${this.name}: HTTP ${res.status}`);
+    if (m.id === undefined) return null;                                   // a notification: 202
+    if (m.method === "initialize") {
+      this.session = res.headers.get("mcp-session-id");
+    }
+    const type = (res.headers.get("content-type") ?? "").toLowerCase();
+    let answer: Message | null = null;
+    if (type.startsWith("text/event-stream")) answer = await this.fromStream(res, m.id as string, timeoutMs);
+    else {
+      const text = await res.text();
+      try { answer = parseJson(text) as Message; } catch { throw new Timeout(`${this.name}: an answer that is not JSON`); }
+    }
+    if (!answer) throw new Timeout(`${this.name}: the stream ended without an answer`);
+    if (m.method === "initialize" && isObject(answer.result) && typeof answer.result.protocolVersion === "string")
+      this.protocol = answer.result.protocolVersion;
+    return answer;
+  }
+
+  /** Reads server-sent events until the answer to ID; requests from the server are declined. */
+  private async fromStream(res: FetchResponse, id: string, timeoutMs: number): Promise<Message | null> {
+    if (!res.body) return null;
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return null;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+      let end: number;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const event = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+        const data = event.split("\n").filter(l => l.startsWith("data:")).map(l => l.slice(5).replace(/^ /, "")).join("\n");
+        if (!data) continue;
+        let msg: Message;
+        try { msg = parseJson(data) as Message; } catch { continue; }
+        if (msg.method === undefined && String(msg.id) === id) { reader.cancel().catch(() => {}); return msg; }   // soz-guard: ignore the answer is in hand; a stream that will not close changes nothing
+        if (typeof msg.method === "string" && msg.id !== undefined)       // the server asks something: not supported
+          this.post({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "not supported by soz-gateway" } }, timeoutMs).catch(e => log(`${this.name}: could not decline a request from the server: ${(e as Error).message}`));
+      }
+    }
+  }
+}
+
+class Downstream {
+  name: string; rpc: Link; tools: Tool[] = [];
+  constructor(name: string, rpc: Link) { this.name = name; this.rpc = rpc; }
+}
+
+/** ${NAME} in a header value is the environment variable NAME, so tokens stay out of the config file. */
+function expandEnv(server: string, value: string): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, v: string) => {
+    const x = process.env[v];
+    if (x === undefined) throw new Error(`${server}: the environment variable ${v} is not set`);
+    return x;
+  });
+}
+
+function httpLink(name: string, spec: { [k: string]: Json }): HttpLink {
+  let u: URL;
+  try { u = new URL(String(spec.url)); } catch { throw new Error(`${name}: url is not a URL`); }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && (local || spec.allow_http === true)))
+    throw new Error(`${name}: a remote server is reached over https (http only on this machine, or with "allow_http": true)`);
+  const headers = isObject(spec.headers)
+    ? Object.fromEntries(Object.entries(spec.headers).map(([k, v]) => [k, expandEnv(name, String(v))])) : {};
+  const link = new HttpLink(name, u.toString(), headers);
+  if (spec.timeout_seconds instanceof Rational) link.timeout = Number(spec.timeout_seconds.decimal()) * 1000;
+  return link;
 }
 
 function startProcess(command: string, args: string[], cwd: string, env: Record<string, string>): Promise<ChildProcess> {
@@ -107,14 +236,17 @@ function startProcess(command: string, args: string[], cwd: string, env: Record<
 }
 
 async function connect(name: string, spec: Json, base: string): Promise<Downstream> {
-  if (!isObject(spec) || typeof spec.command !== "string")
-    throw new Error(`${name}: a server needs a command (MCP over HTTP is not supported yet)`);
-  const env = isObject(spec.env) ? Object.fromEntries(Object.entries(spec.env).map(([k, v]) => [k, String(v)])) : {};
-  const proc = await startProcess(spec.command, ((spec.args ?? []) as Json[]).map(String), base, env);
-  const d = new Downstream(name, proc);
+  if (!isObject(spec) || (typeof spec.command !== "string") === (typeof spec.url !== "string"))
+    throw new Error(`${name}: a server has either a command (stdio) or a url (HTTP)`);
+  let d: Downstream;
+  if (typeof spec.url === "string") d = new Downstream(name, httpLink(name, spec));
+  else {
+    const env = isObject(spec.env) ? Object.fromEntries(Object.entries(spec.env).map(([k, v]) => [k, String(v)])) : {};
+    d = new Downstream(name, new StdioLink(name, await startProcess(spec.command as string, ((spec.args ?? []) as Json[]).map(String), base, env)));
+  }
   const init = await d.rpc.request("initialize", { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "soz-gateway", version: VERSION } });
   if (init.error) throw new Error(`${name}: initialize failed: ${canonicalJson(init.error)}`);
-  d.rpc.notify("notifications/initialized");
+  await d.rpc.notify("notifications/initialized");
   let cursor: Json | undefined;
   do {
     const r = await d.rpc.request("tools/list", cursor ? { cursor } : {});
@@ -223,7 +355,10 @@ export async function loadGateway(configPath: string): Promise<Gateway> {
 async function callTool(d: Downstream, tool: string, args: Json): Promise<HostValue> {
   let r: Message;
   try { r = await d.rpc.request("tools/call", { name: tool, arguments: args }); }
-  catch (e) { throw new OperationUnknown(`${d.name} did not answer (${(e as Error).message})`); }
+  catch (e) {
+    if (e instanceof NotSent) throw new OperationFailed(`${d.name} could not be reached; nothing was sent (${e.message})`);
+    throw new OperationUnknown(`${d.name} did not answer (${(e as Error).message})`);
+  }
   if (r.error) throw new OperationFailed(isObject(r.error) ? String(r.error.message) : "error");
   if (isObject(r.result) && r.result.isError === true) throw new OperationFailed(resultText(r.result));
   return toolValue(r.result ?? null);
@@ -576,7 +711,7 @@ export async function main(configPath: string) {
   const g = await loadGateway(configPath);
   const server = new GatewayServer(g, process.stdout);
   createInterface({ input: process.stdin }).on("line", l => server.receive(l)).on("close", () => {
-    for (const d of g.servers) d.proc.kill();
+    for (const d of g.servers) d.rpc.close();
     process.exit(0);
   });
 }
