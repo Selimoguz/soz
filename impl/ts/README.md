@@ -8,7 +8,7 @@ Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly 
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 143 conformance cases, and the example below
+npm test          # type check (tsc, strict), the 143 conformance cases, the example, the gateway end to end
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -46,6 +46,28 @@ console.log(e.outcome);                    // done, stopped, changed, failed, un
 Implementation keys are operation names after `nameFold` (`_` becomes `-`). Numbers are exact:
 implementations receive and may return `Rational` values (or `bigint`), never floats.
 
+## MCP gateway
+
+`src/soz-mcp.ts` is the MCP gateway of [SPEC section 11](../../SPEC.md#11-mcp-gateway), also with no
+dependencies: MCP over stdio is written out here (about 300 lines) rather than taken from the MCP SDK,
+which would bring 95 packages into a security tool's front door.
+
+```sh
+node --experimental-strip-types --disable-warning=ExperimentalWarning src/soz-mcp.ts gateway.json
+```
+
+The configuration is the same as the Lisp gateway's (servers, operations, approval, actor, policy,
+journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` it offers:
+
+- `soz_inspect_audit`: what happened to a plan (its preview, approval, calls and outcome) and whether
+  the audit record's hash chain is intact;
+- resources `soz://guide`, `soz://operations` (with record fields and enum values) and `soz://policy`;
+- the prompt `soz_plan_guard`: the rules for working through soz, ready to load in a client.
+
+Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
+one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
+the gateway and a pretend ERP as real processes (36 checks).
+
 ## Files
 
 | File | |
@@ -53,4 +75,5 @@ implementations receive and may return `Rational` values (or `bigint`), never fl
 | `src/exact.ts` | exact numbers (`bigint` fractions), a JSON reader that keeps numbers exact, canonical JSON, SHA-256, folding |
 | `src/checker.ts` | reader, checker, operations, the policy decided from the text |
 | `src/run.ts` | preview, execution, journal, audit record, the policy with values |
+| `src/gateway.ts`, `src/soz-mcp.ts` | the MCP gateway |
 | `test/conformance.ts` | the conformance runner |

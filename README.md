@@ -215,7 +215,7 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | [Conformance suite](conformance/): 143 language-neutral cases in JSON (109 checker, 34 preview and execution) | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | [TypeScript implementation](impl/ts/README.md) (`impl/ts/`), no dependencies | passes the suite |
-| MCP gateway over stdio, with elicitation approval; end-to-end test | available |
+| MCP gateway over stdio, in Lisp and in TypeScript (both without dependencies), with elicitation or approval-code approval, resources and a prompt; end-to-end tests | available |
 | Downstream servers over HTTP | next |
 | Policy: deny, approval by role with four eyes, sources an argument may come from | available |
 | JSON syntax, language profiles (number words), a way for the gateway to collect a second person's approval | planned |

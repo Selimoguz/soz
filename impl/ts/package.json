@@ -12,9 +12,13 @@
     "typecheck": "tsc -p .",
     "conformance": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/conformance.ts",
     "example": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/example.ts",
-    "test": "npm run typecheck && npm run conformance && npm run example"
+    "test": "npm run typecheck && npm run conformance && npm run example && npm run gateway",
+    "gateway": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/gateway.test.ts"
   },
   "devDependencies": {
     "typescript": "5.9.3"
+  },
+  "bin": {
+    "soz-mcp": "src/soz-mcp.ts"
   }
 }

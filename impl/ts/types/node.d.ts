@@ -3,25 +3,62 @@
 declare module "node:crypto" {
   interface Hash { update(data: string, encoding?: "utf8"): Hash; digest(encoding: "hex"): string }
   export function createHash(algorithm: "sha256"): Hash;
+  export function randomInt(max: number): number;
 }
 
 declare module "node:fs" {
   export function readFileSync(path: string, encoding: "utf8"): string;
+  export function writeFileSync(path: string, data: string): void;
   export function appendFileSync(path: string, data: string, encoding: "utf8"): void;
   export function existsSync(path: string): boolean;
   export function readdirSync(path: string): string[];
+  export function mkdtempSync(prefix: string): string;
+  export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
 }
 
 declare module "node:path" {
   export function join(...parts: string[]): string;
   export function dirname(path: string): string;
+  export function resolve(...parts: string[]): string;
+  export function isAbsolute(path: string): boolean;
 }
 
 declare module "node:url" {
   export function fileURLToPath(url: string): string;
 }
 
-declare const process: { argv: string[]; exit(code?: number): never };
+declare module "node:os" {
+  export function tmpdir(): string;
+}
+
+interface Readable { on(event: "data", f: (chunk: unknown) => void): void; setEncoding?(e: "utf8"): void }
+interface Writable { write(s: string): boolean; end(): void }
+
+declare module "node:child_process" {
+  interface ChildProcess {
+    stdin: Writable; stdout: Readable; stderr: Readable | null; pid?: number;
+    on(event: "error", f: (e: Error & { code?: string }) => void): ChildProcess;
+    on(event: "exit", f: (code: number | null) => void): ChildProcess;
+    kill(): boolean;
+  }
+  export function spawn(command: string, args: string[], options?: {
+    cwd?: string; env?: Record<string, string | undefined>; stdio?: ("pipe" | "ignore" | "inherit")[]; windowsHide?: boolean;
+  }): ChildProcess;
+}
+
+declare module "node:readline" {
+  interface Interface { on(event: "line", f: (line: string) => void): Interface; on(event: "close", f: () => void): Interface }
+  export function createInterface(options: { input: Readable; crlfDelay?: number }): Interface;
+}
+
+declare const process: {
+  argv: string[]; env: Record<string, string | undefined>; platform: string; execPath: string;
+  stdin: Readable; stdout: Writable; stderr: Writable;
+  cwd(): string; exit(code?: number): never;
+};
 declare const console: { log(...args: unknown[]): void; error(...args: unknown[]): void };
+declare class TextEncoder { encode(s: string): Uint8Array }
+declare function setTimeout(f: () => void, ms: number): unknown;
+declare function clearTimeout(t: unknown): void;
 
 interface ImportMeta { url: string }
