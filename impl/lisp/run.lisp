@@ -574,10 +574,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                                 (step-requires s))))
        steps))
 
-(defun preview (text &key message journal audit (policy *policy*) (actor *actor*))
-  "Dry run (SPEC 10.3): reads run, side effects become steps, POLICY is applied for ACTOR (SPEC 12).
-Returns a PREVIEW."
-  (let ((check (check-plan text :message message :policy policy :actor actor))
+(defun preview (text &key message journal audit (policy *policy*) (actor *actor*) (profile *profile*))
+  "Dry run (SPEC 10.3): reads run, side effects become steps, POLICY is applied for ACTOR (SPEC 12);
+PROFILE is the language profile for the message (SPEC 5.4). Returns a PREVIEW."
+  (let ((check (check-plan text :message message :policy policy :actor actor :profile profile))
         (*policy* policy) (*actor* actor)
         (*mode* :preview) (*steps* '()) (*journal* journal) (*audit* audit)
         (problems '()) (status nil) (reason nil))

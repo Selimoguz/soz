@@ -19,6 +19,7 @@ import {
   unmetRequirements, requirementsText,
 } from "./run.ts";
 import { planJsonSchema } from "./json-plan.ts";
+import { type Profile, profileFromJson } from "./profile.ts";
 import { type Approver, approversFromJson, requestFor, requestJson, verifyApproval } from "./approvals.ts";
 
 const log = (m: string) => process.stderr.write(`soz-gateway: ${m}\n`);
@@ -311,7 +312,7 @@ export type Gateway = {
   operations: Operations; implementations: Implementations;
   journal: Journal; audit: Audit; auditPath: string;
   approval: "auto" | "elicitation" | "code" | "client";
-  policy: Rule[]; actor: Actor | null;
+  policy: Rule[]; actor: Actor | null; profile: Profile | null;
   approvers: Approver[]; requestsDir: string; signed: Map<string, { approver: Approver; token: string }[]>;
   previews: Map<string, Preview>; codes: Map<string, { code: string | null; expires: number; wrong: number }>;
 };
@@ -331,6 +332,7 @@ export async function loadGateway(configPath: string): Promise<Gateway> {
     journal: Journal.open(at(typeof config.journal === "string" ? config.journal : "soz-journal.jsonl")),
     audit: Audit.open(auditPath), auditPath, approval,
     policy: policyFromJson(policyJson ?? []), actor: actorFromJson(config.actor),
+    profile: typeof config.profile === "string" ? profileFromJson(parseJson(readFileSync(at(config.profile), "utf8"))) : null,
     approvers: approversFromJson(config.approvers),
     requestsDir: at(typeof config.approval_requests === "string" ? config.approval_requests : "soz-approval-requests"),
     signed: new Map(), previews: new Map(), codes: new Map(),
@@ -628,7 +630,7 @@ export class GatewayServer {
     if (name === "soz_preview") {
       if (typeof args.plan !== "string") return textResult("plan is required", true);
       const p = await preview(args.plan, { message: typeof args.message === "string" ? args.message : null, operations: g.operations,
-                                           implementations: g.implementations, journal: g.journal, audit: g.audit, policy: g.policy, actor: g.actor });
+                                           implementations: g.implementations, journal: g.journal, audit: g.audit, policy: g.policy, actor: g.actor, profile: g.profile });
       if (p.hash) g.previews.set(p.hash, p);
       if (p.status === "invalid") return textResult(errorReport(p.check), true);
       if (p.status === "denied") return textResult(`${previewSummary(p)}The policy does not allow this plan. Tell the user why; do not try to get around it.`, true);

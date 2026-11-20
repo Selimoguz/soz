@@ -10,7 +10,8 @@
            #:soz-error-code #:soz-error-line #:soz-error-column #:soz-error-message
            #:error-report #:plan-summary #:fold #:name-fold #:message-numbers
            #:*max-length* #:*max-depth* #:*max-tokens* #:*max-list* #:*max-calls*
-           #:policy-from-json #:actor-from-json #:make-actor #:actor-id #:actor-roles #:*policy* #:*actor*))
+           #:policy-from-json #:actor-from-json #:make-actor #:actor-id #:actor-roles #:*policy* #:*actor*
+           #:profile-from-json #:profile-numbers #:*profile*))
 
 (in-package :soz)
 
@@ -581,7 +582,19 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 ;;; Provenance helpers (SPEC 5.1)
 ;;; ------------------------------------------------------------------
 
-(defun message-numbers (message)
+(defun digit-readings (run)
+  "The values a run like 1.250,50 may mean (SPEC 5.1)."
+  (let ((out '()))
+    (dolist (r (list (and (every #'digit-char-p run) run)
+                     (let ((r (remove #\. run))) (and (<= (count #\, r) 1) (substitute #\. #\, r)))
+                     (let ((r (remove #\, run))) (and (<= (count #\. r) 1) r))
+                     (remove-if-not #'digit-char-p run)))
+      (let ((v (and r (parse-number r))))
+        (when v (pushnew v out))))
+    (nreverse out)))
+
+(defun message-numbers (message &optional profile)
+  "The message numbers: from digits, and with a language PROFILE from number words too (SPEC 5.4)."
   (let ((out '()) (i 0) (n (length message)))
     (flet ((digit (k) (and (< -1 k n) (char<= #\0 (char message k) #\9))))
       (loop while (< i n)
@@ -589,16 +602,127 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                    (let ((start i))
                      (loop while (and (< i n) (or (digit i) (and (find (char message i) ".,") (digit (1+ i)))))
                            do (incf i))
-                     (let* ((run (subseq message start i))
-                            (readings (list (and (every #'digit-char-p run) run)
-                                            (let ((r (remove #\. run))) (and (<= (count #\, r) 1) (substitute #\. #\, r)))
-                                            (let ((r (remove #\, run))) (and (<= (count #\. r) 1) r))
-                                            (remove-if-not #'digit-char-p run))))
-                       (dolist (r readings)
-                         (let ((v (and r (parse-number r))))
-                           (when v (pushnew v out))))))
+                     (dolist (v (digit-readings (subseq message start i))) (pushnew v out)))
                    (incf i))))
+    (when profile
+      (dolist (v (profile-numbers message profile)) (pushnew v out)))
     out))
+
+;;; --- Language profiles (SPEC 5.4): number words, from data in profiles/*.json
+
+(defvar *profile* nil "The language profile in force, or NIL.")
+
+(defstruct profile language (units (make-hash-table :test #'equal)) hundred (scales (make-hash-table :test #'equal)) joiners compound)
+
+(defun profile-lower (s)
+  "NFC, each code point lowercased (full mapping: İ gives i and U+0307), U+0307 removed. Marks stay: ö is not o."
+  (remove (code-char #x307)
+          (apply #'concatenate 'string
+                 (map 'list (lambda (c) (sb-unicode:lowercase (string c))) (sb-unicode:normalize-string s :nfc)))))
+
+(defun profile-from-json (j)
+  (let ((n (and (hash-table-p j) (gethash "numbers" j))))
+    (unless (and (stringp (gethash "language" j)) (hash-table-p n) (hash-table-p (gethash "units" n)))
+      (error "a profile is {\"language\": ..., \"numbers\": {\"units\": {...}, ...}}"))
+    (let ((p (make-profile :language (gethash "language" j) :compound (eq (gethash "compound" n) :true))))
+      (flet ((word (w)
+               (unless (and (stringp w) (plusp (length w)) (string= w (profile-lower w)) (every #'alpha-char-p w))
+                 (error "profile ~a: ~s is not a lowercase word" (profile-language p) w))
+               w)
+             (int (w v)
+               (unless (and (integerp v) (>= v 0)) (error "profile ~a: ~a is not a whole number" (profile-language p) w))
+               v))
+        (maphash (lambda (w v) (setf (gethash (word w) (profile-units p)) (int w v))) (gethash "units" n))
+        (setf (profile-hundred p) (map 'list #'word (or (gethash "hundred" n) #()))
+              (profile-joiners p) (map 'list #'word (or (gethash "joiners" n) #())))
+        (when (hash-table-p (gethash "scales" n))
+          (maphash (lambda (w v) (setf (gethash (word w) (profile-scales p)) (int w v))) (gethash "scales" n))))
+      p)))
+
+(defun profile-item (p w)
+  (cond ((gethash w (profile-units p)) (cons :unit (gethash w (profile-units p))))
+        ((member w (profile-hundred p) :test #'string=) (cons :hundred 100))
+        ((gethash w (profile-scales p)) (cons :scale (gethash w (profile-scales p))))))
+
+(defun profile-items (p w)
+  "W as number words: itself, or (compound profiles) split into them, longest first; NIL if not."
+  (let ((one (profile-item p w)))
+    (cond (one (list one))
+          ((not (profile-compound p)) nil)
+          (t (let ((vocab (sort (append (loop for k being the hash-keys of (profile-units p) collect k)
+                                        (copy-list (profile-hundred p))
+                                        (loop for k being the hash-keys of (profile-scales p) collect k))
+                                #'> :key #'length)))
+               (labels ((split (rest)
+                          (if (zerop (length rest))
+                              (values '() t)
+                              (dolist (v vocab (values nil nil))
+                                (when (and (<= (length v) (length rest)) (string= v rest :end2 (length v)))
+                                  (multiple-value-bind (tail ok) (split (subseq rest (length v)))
+                                    (when ok (return (values (cons (profile-item p v) tail) t)))))))))
+                 (multiple-value-bind (items ok) (split w) (and ok items))))))))
+
+(defun profile-numbers (message p)
+  "The numbers the profile P reads in MESSAGE (besides its digits)."
+  (let* ((text (profile-lower message)) (n (length text)) (i 0) (gap-ok t) (tokens '()))
+    ;; tokens: (word digits joined), joined = only white space or hyphens since the previous token
+    (flet ((digit (k) (and (< -1 k n) (char<= #\0 (char text k) #\9))))
+      (loop while (< i n)
+            do (let ((c (char text i)))
+                 (cond ((alpha-char-p c)
+                        (let ((start i))
+                          (loop while (and (< i n) (alpha-char-p (char text i))) do (incf i))
+                          (push (list (subseq text start i) nil gap-ok) tokens) (setf gap-ok t)))
+                       ((digit i)
+                        (let ((start i))
+                          (loop while (and (< i n) (or (digit i) (and (find (char text i) ".,") (digit (1+ i))))) do (incf i))
+                          (push (list nil (subseq text start i) gap-ok) tokens) (setf gap-ok t)))
+                       (t (unless (or (char= c #\-) (sb-unicode:whitespace-p c)) (setf gap-ok nil))
+                          (incf i))))))
+    (setf tokens (coerce (nreverse tokens) 'vector))
+    (let ((out '()) (started nil) (total 0) (group 0) (last-scale nil) (prev nil))
+      (labels ((emit ()
+                 (when started (pushnew (+ total group) out))
+                 (setf started nil total 0 group 0 last-scale nil prev nil))
+               (take (it)
+                 (destructuring-bind (kind . v) it
+                   (ecase kind
+                     (:unit
+                      (let ((k (cond ((zerop v) :zero) ((and (<= 10 v 90) (zerop (mod v 10))) :tens) (t :small))))
+                        (unless (or (not started) (member prev '(:hundred :scale)) (and (eq prev :tens) (eq k :small) (< v 10)))
+                          (emit))
+                        (incf group v) (setf prev k started t)))
+                     (:hundred
+                      (unless (or (not started) (and (eq prev :small) (< 0 group 100)) (eq prev :scale))
+                        (emit))
+                      (setf group (* (if (zerop group) 1 group) 100) prev :hundred started t))
+                     (:scale
+                      (unless (or (not started) (and (plusp group) (or (null last-scale) (< v last-scale))))
+                        (emit))
+                      (incf total (* (if (zerop group) 1 group) v))
+                      (setf group 0 last-scale v prev :scale started t))))))
+        (loop with k = 0
+              while (< k (length tokens))
+              do (destructuring-bind (word digits joined) (aref tokens k)
+                   (unless joined (emit))
+                   (cond
+                     (digits
+                      (emit)
+                      ;; "2 bin", "2,5 milyon": the digits' readings times the scale that follows
+                      (let* ((next (and (< (1+ k) (length tokens)) (aref tokens (1+ k))))
+                             (s (and next (first next) (third next) (gethash (first next) (profile-scales p)))))
+                        (when s
+                          (dolist (r (digit-readings digits)) (pushnew (* r s) out))
+                          (incf k))))
+                     ((member word (profile-joiners p) :test #'string=)
+                      (let ((next (and (< (1+ k) (length tokens)) (aref tokens (1+ k)))))
+                        (unless (and started next (first next) (third next) (profile-items p (first next)))
+                          (emit))))
+                     (t (let ((items (profile-items p word)))
+                          (if items (mapc #'take items) (emit))))))
+                 (incf k))
+        (emit))
+      (nreverse out))))
 
 (defun text-in-message-p (literal message)
   (let ((f (fold (string-trim '(#\Space #\Tab #\Newline #\Return) literal)))
@@ -610,7 +734,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                thereis (or (zerop pos) (not (alphanumericp (char m (1- pos)))))))))
 
 (defun number-in-message-p (value message)
-  (and (>= value 0) (member value (message-numbers message) :test #'=)))
+  (and (>= value 0) (member value (message-numbers message *profile*) :test #'=)))
 
 ;;; ------------------------------------------------------------------
 ;;; Checker
@@ -943,10 +1067,10 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                                  (and (= (soz-error-line a) (soz-error-line b))
                                       (< (soz-error-column a) (soz-error-column b)))))))
 
-(defun check-plan (text &key message (policy *policy*) (actor *actor*))
+(defun check-plan (text &key message (policy *policy*) (actor *actor*) (profile *profile*))
   "Checks the plan in TEXT against MESSAGE (what the user wrote, or NIL), under POLICY for ACTOR.
 Runs nothing. Returns a RESULT."
-  (let ((*errors* '()) (*message* message) (*multiplier* 1) (*condition* nil) (*policy* policy) (*actor* actor)
+  (let ((*errors* (quote ())) (*message* message) (*multiplier* 1) (*condition* nil) (*policy* policy) (*actor* actor) (*profile* profile)
         (*conditional* nil) (*calls* '()) (*may-stop* nil) (title nil) (root nil))
     (handler-case
         (setf root (read-plan text))

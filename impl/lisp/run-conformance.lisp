@@ -192,8 +192,15 @@
                           (*problems* '()))
                      (if (nth-value 1 (gethash "tools" c))
                          (run-execution-case c message)
-                         (compare (gethash "expect" c) (check-plan (plan-text (gethash "plan" c)) :message message
-                                                                   :policy *case-policy* :actor *case-actor*)))
+                         (compare (gethash "expect" c)
+                                  (check-plan (plan-text (gethash "plan" c)) :message message
+                                              :policy *case-policy* :actor *case-actor*
+                                              ;; "profile": a name in profiles/, next to conformance/
+                                              :profile (let ((name (multiple-value-bind (pn here) (gethash "profile" c)
+                                                                     (if here pn (gethash "profile" suite)))))
+                                                         (and (stringp name)
+                                                              (profile-from-json
+                                                               (read-json (merge-pathnames (format nil "../profiles/~a.json" name) folder))))))))
                      (incf total)
                      (if *problems*
                          (progn (incf failed)

@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 250 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 262 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 250 conformance cases, the example, defineOperation, the stores with real processes, the gateway
+npm test          # type check (tsc, strict), the 262 conformance cases, the example, defineOperation, the stores with real processes, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -85,6 +85,14 @@ Types: `t.text()`, `t.number()`, `t.bool()`, `t.any()`, `t.list(item)`, `t.recor
 
 Implementation keys are operation names after `nameFold` (`_` becomes `-`). Numbers are exact:
 implementations receive and may return `Rational` values (or `bigint`), never floats.
+
+## Number words in the message
+
+With a language profile (SPEC 5.4) the checker reads number words in the message too: with
+`profiles/tr.json`, "yirmi koli" makes 20 a message number, "iki yüz elli" 250, "2 bin" 2000;
+"iki üç koli" is 2 and 3, never 5. Pass `profile: profileFromJson(...)` to `checkPlan` or `preview`,
+or `"profile": "path/to/tr.json"` in the gateway's configuration. A profile is data; another
+language is another JSON file.
 
 ## Plans in JSON
 
@@ -176,7 +184,7 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (67 checks, an HTTP server among them).
+the gateway and a pretend ERP as real processes (68 checks, an HTTP server among them).
 
 ### Servers on another machine
 
@@ -233,6 +241,7 @@ the gateway holds only public keys. Details: SPEC 11.5. The Lisp gateway verifie
 | `src/checker.ts` | reader, checker, operations, the policy decided from the text |
 | `src/run.ts` | preview, execution, journal, audit record, the policy with values |
 | `src/render.ts` | the preview for chat apps: Markdown, Slack, Telegram, plain text |
+| `src/profile.ts` | language profiles: number words in the message |
 | `src/json-plan.ts` | the JSON syntax: reader, `planToJson`, `planJsonSchema` |
 | `src/define.ts` | `defineOperation`: operations and implementations, typed together |
 | `src/journal-cli.ts` | resolving unresolved steps, by a person |

@@ -229,6 +229,49 @@ can be shown and reported, but cannot drive a side effect (section 5.2).
 Provenance does not catch a model that repeats a line of the message twice; every value of the
 second copy is in the message. Execution (0.2) handles that with idempotency keys.
 
+### 5.4 Language profiles
+
+A host MAY check with a **language profile**: data (`profiles/*.json`) under which number words in the
+message are message numbers too, so that "yirmi koli" puts 20 in the message. Without a profile
+nothing changes. A profile only adds message numbers; it never removes one, and texts are matched as
+in 5.1.
+
+```json
+{"language": "tr",
+ "numbers": {"units": {"bir": 1, "iki": 2, "on": 10, "yirmi": 20, "...": 0},
+             "hundred": ["yüz", "yuz"], "scales": {"bin": 1000, "milyon": 1000000},
+             "joiners": [], "compound": true}}
+```
+
+`units` are words with their values (0 to 99, as the language has them: English lists eleven to
+nineteen); `hundred` multiplies; `scales` are thousand, million, ...; `joiners` (English `and`) may
+stand between number words; with `compound`, a word may be several number words written together
+("yirmibeş", "ikiyüzelli"). Every word in a profile is lowercase.
+
+1. The message is normalized to NFC and every code point lowercased (Unicode full mapping), then
+   U+0307 is removed (so `İKİ` is `iki`). Letters keep their marks: `ön` is not `on`; a profile
+   lists spellings without them where people write so (`dort`, `bes`).
+2. Tokens are maximal runs of letters (words) and digit runs as in 5.1. Two tokens are **joined**
+   if only white space and `-` stand between them.
+3. A word is a number word if the profile has it; with `compound`, also if it splits completely into
+   profile words, trying longer words first.
+4. Joined number words are read left to right into numbers, with `group` (below the current scale)
+   and `total`. A word that cannot continue the number ends it (the number is `total + group`) and
+   starts the next:
+   - a unit `v` continues at the start, after a hundred or a scale, or after a tens word (10, 20,
+     ..., 90) when `v` is 1 to 9; it adds `v` to `group`. Zero continues nothing.
+   - a hundred continues at the start, after a scale, or after a unit when `0 < group < 100`;
+     `group` becomes `max(group, 1) × 100`.
+   - a scale `s` continues at the start, or when `group > 0` and `s` is smaller than the scale
+     before; `total += max(group, 1) × s`, `group = 0`.
+   - a joiner continues only between number words.
+   So `iki yüz elli üç` is 253, `bin iki yüz` 1200, `iki üç` is 2 and 3 (never 5).
+5. A digit run joined to a following scale word gives each of its readings times the scale
+   (`2 bin` → 2000, `2,5 milyon` → 2500000 and 25000000).
+
+Not covered, deliberately: fractions in words (`buçuk`, `yarım`, "a half") and inflected numbers
+(`beşer`, `ikisi`), which would need rules where a wrong reading would let a made-up value through.
+
 ## 6. Operations
 
 The host declares the operations a plan may call. Declaration (JSON):
@@ -516,9 +559,12 @@ gateway where the agent has no shell.
   "approval": "auto",
   "expose_reads": true,
   "journal": "soz-journal.jsonl",
-  "audit": "soz-audit.jsonl"
+  "audit": "soz-audit.jsonl",
+  "profile": "profiles/tr.json"
 }
 ```
+
+`profile` (optional) is the language profile the gateway checks plans with (section 5.4).
 
 Relative paths are relative to the configuration file, which is also the working directory of the
 servers.
@@ -653,5 +699,4 @@ in section 11.5.
 
 - **Source labels:** operations may label their results (`erp`, `crm`) so that policies can say
   which system a value came from, not just that it came from a tool.
-- **Language profiles:** optional message matching for number words ("twenty", "yirmi") and
-  inflected words.
+- **Inflected words** in language profiles (`beşer`, `ikisi`), and fractions in words (`buçuk`).

@@ -310,6 +310,14 @@ console.log("\nA server over streamable HTTP");
 
 console.log("\nA plan in the JSON syntax");
 {
+  console.log("  (and a language profile)");
+  const tr = await new Client(writeConfig("g7.json", "auto", { profile: join(here, "..", "..", "..", "profiles", "tr.json") })).init(false);
+  const yirmi = (q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "domates" quantity ${q})))`;
+  const msg = "Yılmaz Market'e yirmi koli domates";
+  const ok20 = await tr.call("soz_preview", { plan: yirmi(20), message: msg });
+  const bad21 = await tr.call("soz_preview", { plan: yirmi(21), message: msg });
+  check("with the Turkish profile, yirmi in the message is 20; 21 is still invented", !ok20.isError && !!previewId(ok20) && bad21.isError && text(bad21).includes("[invented-value]"));
+  tr.close();
   const codeFile = join(dir, "code-json.txt");
   const c = await new Client(writeConfig("g6.json", "auto", { journal: "journal-json.jsonl" }), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
   const before = await orders(c);

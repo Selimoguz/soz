@@ -1,6 +1,7 @@
 // run.ts — Preview, approval, execution, journal and audit record (SPEC 10), and the policy applied
 // with argument values (SPEC 12).
 
+import { type Profile } from "./profile.ts";
 import { readFileSync, appendFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import {
   Rational, type Json, type HostValue, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson, visible,
@@ -522,6 +523,8 @@ export type Execution = { outcome: string; steps: Step[]; message: string | null
 export type RunOptions = {
   message?: string | null; operations: Operations; implementations: Implementations;
   journal?: JournalStore; audit?: AuditSink | null; policy?: Rule[]; actor?: Actor | null;
+  /** A language profile: number words in the message count as numbers (SPEC 5.4). */
+  profile?: Profile | null;
 };
 
 const planBody = (text: string): Node[] => (readPlan(text) as { items: Node[] }).items.slice(2);
@@ -535,7 +538,7 @@ export const stepsJson = (steps: Step[]) => steps.map(s => ({
 /** Dry run (SPEC 10.3): reads run, side effects become steps, the policy applies (SPEC 12). */
 export async function preview(text: string, o: RunOptions): Promise<Preview> {
   const message = o.message ?? null, policy = o.policy ?? [], actor = o.actor ?? null, journal = o.journal ?? new Journal();
-  const check = checkPlan(text, { message, operations: o.operations, policy, actor });
+  const check = checkPlan(text, { message, operations: o.operations, policy, actor, profile: o.profile ?? null });
   const c: Ctx = { mode: "preview", steps: [], ops: o.operations, impls: o.implementations, journal, audit: o.audit ?? null,
                    previewed: [], policy, actor, approvers: [] };
   const problems: { code: string; message: string }[] = [];

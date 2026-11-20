@@ -174,7 +174,7 @@
 ;;; ------------------------------------------------------------------
 
 (defstruct gateway servers passthrough journal audit (approval "auto") (previews (make-hash-table :test #'equal))
-  (codes (make-hash-table :test #'equal)) policy actor approvers requests-dir (signed (make-hash-table :test #'equal)))
+  (codes (make-hash-table :test #'equal)) policy actor approvers requests-dir profile (signed (make-hash-table :test #'equal)))
 
 (defun resolve (path base) (and path (namestring (merge-pathnames path base))))
 
@@ -187,6 +187,10 @@
                           :journal (open-journal (resolve (or (gethash "journal" config) "soz-journal.jsonl") base))
                           :audit (open-audit (resolve (or (gethash "audit" config) "soz-audit.jsonl") base))))
          (expose-reads (not (eq (gethash "expose_reads" config) :false))))
+    (when (stringp (gethash "profile" config))   ; a language profile, SPEC 5.4
+      (setf (gateway-profile g)
+            (profile-from-json (with-open-file (s (resolve (gethash "profile" config) base) :external-format :utf-8)
+                                 (let ((text (make-string (file-length s)))) (json:json-oku (subseq text 0 (read-sequence text s))))))))
     (setf (gateway-approvers g) (approvers-from-json (gethash "approvers" config))
           (gateway-requests-dir g) (let ((d (resolve (or (gethash "approval_requests" config) "soz-approval-requests") base)))
                                      (if (char= (char d (1- (length d))) #\/) d (concatenate 'string d "/"))))
@@ -613,7 +617,7 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
            (text-result "plan is required" :error t)
            (let ((p (preview plan :message (and (stringp message) message)
                                   :journal (gateway-journal g) :audit (gateway-audit g)
-                                  :policy (gateway-policy g) :actor (gateway-actor g))))
+                                  :policy (gateway-policy g) :actor (gateway-actor g) :profile (gateway-profile g))))
              (when (preview-hash p) (setf (gethash (preview-hash p) (gateway-previews g)) p))
              (cond ((string= (preview-status p) "invalid")
                     (text-result (error-report (soz::preview-check p)) :error t))

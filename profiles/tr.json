@@ -1,0 +1,17 @@
+{
+  "language": "tr",
+  "description": "Türkçe sayı kelimeleri (SPEC 5.4). Türkçe harfsiz yazımlar (dort, bes, uc, yuz) ayrıca listelenir; 'ön' gibi kelimeler 10 sayılmasın diye harfler katlanmaz.",
+  "numbers": {
+    "units": {
+      "sıfır": 0, "sifir": 0,
+      "bir": 1, "iki": 2, "üç": 3, "uc": 3, "dört": 4, "dort": 4, "beş": 5, "bes": 5,
+      "altı": 6, "alti": 6, "yedi": 7, "sekiz": 8, "dokuz": 9,
+      "on": 10, "yirmi": 20, "otuz": 30, "kırk": 40, "kirk": 40, "elli": 50,
+      "altmış": 60, "altmis": 60, "yetmiş": 70, "yetmis": 70, "seksen": 80, "doksan": 90
+    },
+    "hundred": ["yüz", "yuz"],
+    "scales": { "bin": 1000, "milyon": 1000000, "milyar": 1000000000 },
+    "joiners": [],
+    "compound": true
+  }
+}

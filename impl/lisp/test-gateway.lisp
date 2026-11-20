@@ -296,6 +296,18 @@
                                       (search "{\"id\":\"ali\"" line) (search "{\"id\":\"ayse\"" line) (search ayse line))))))
         (close-client c))))
 
+(format t "~%A language profile~%")
+(let* ((c (connect (write-config "gateway7.json" "elicitation"
+                                 (format nil "\"profile\": ~s"
+                                         (substitute #\/ #\\ (namestring (merge-pathnames "../../profiles/tr.json" *here*)))))))
+       (plan (lambda (q) (format nil "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"domates\" quantity ~d)))" q)))
+       (msg "Yılmaz Market'e yirmi koli domates"))
+  (let ((ok (call c "soz_preview" (json:json-nesne "plan" (funcall plan 20) "message" msg)))
+        (bad (call c "soz_preview" (json:json-nesne "plan" (funcall plan 21) "message" msg))))
+    (check "with the Turkish profile, yirmi in the message is 20; 21 is still invented"
+           (and (not (error-p ok)) (preview-id ok) (error-p bad) (search "[invented-value]" (text-of bad)))))
+  (close-client c))
+
 (format t "~%A plan in the JSON syntax~%")
 (let* ((c (connect (write-config "gateway6.json" "elicitation")))
        (plan (lambda (q) (format nil "{\"plan\": \"Order\", \"body\": [{\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]}}], \"body\": [{\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}}, {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": ~d}]}]}]}" q)))

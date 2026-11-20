@@ -2,6 +2,7 @@
 // (SPEC 12). Nothing in a plan is ever evaluated here.
 
 import { readJsonPlan } from "./json-plan.ts";
+import { type Profile, profileNumbers } from "./profile.ts";
 import {
   Rational, type Json, isObject, fold, nameFold, isAlphanumeric, compareCodePoints,
 } from "./exact.ts";
@@ -298,7 +299,7 @@ export type CheckResult = {
   valid: boolean; errors: SozError[]; effects: string[]; requiresApproval: boolean;
   maxCalls: number; mayStop: boolean; calls: Call[]; title: string | null;
 };
-export type CheckOptions = { message?: string | null; operations: Operations; policy?: Rule[]; actor?: Actor | null };
+export type CheckOptions = { message?: string | null; operations: Operations; policy?: Rule[]; actor?: Actor | null; profile?: Profile | null };
 
 const uniq = <T>(xs: T[]): T[] => [...new Set(xs)];
 const val = (type: VType, extra: Partial<Val> = {}): Val => ({ type, sources: [], invented: [], ...extra });
@@ -375,27 +376,36 @@ function constantEqual(x: string | Rational, y: string | Rational): boolean {
 
 // Message matching (SPEC 5.1)
 
-export function messageNumbers(message: string): Rational[] {
+/** The values a run like 1.250,50 may mean (SPEC 5.1). */
+export function digitReadings(run: string): Rational[] {
   const out: Rational[] = [];
+  const count = (s: string, c: string) => s.split(c).length - 1;
+  const readings = [
+    /^\d+$/.test(run) ? run : null,
+    (() => { const r = run.replaceAll(".", ""); return count(r, ",") <= 1 ? r.replace(",", ".") : null; })(),
+    (() => { const r = run.replaceAll(",", ""); return count(r, ".") <= 1 ? r : null; })(),
+    run.replace(/[^0-9]/g, ""),
+  ];
+  for (const r of readings) {
+    const v = r === null ? null : parseNumber(r);
+    if (v && !out.some(x => x.eq(v))) out.push(v);
+  }
+  return out;
+}
+
+/** The message numbers: from digits, and with a language profile from number words too (SPEC 5.4). */
+export function messageNumbers(message: string, profile: Profile | null = null): Rational[] {
+  const out: Rational[] = [];
+  const add = (v: Rational) => { if (!out.some(x => x.eq(v))) out.push(v); };
   const isDigit = (k: number) => k >= 0 && k < message.length && message[k] >= "0" && message[k] <= "9";
   let i = 0;
   while (i < message.length) {
     if (!isDigit(i)) { i++; continue; }
     const start = i;
     while (i < message.length && (isDigit(i) || (".,".includes(message[i]) && isDigit(i + 1)))) i++;
-    const run = message.slice(start, i);
-    const count = (s: string, c: string) => s.split(c).length - 1;
-    const readings = [
-      /^\d+$/.test(run) ? run : null,
-      (() => { const r = run.replaceAll(".", ""); return count(r, ",") <= 1 ? r.replace(",", ".") : null; })(),
-      (() => { const r = run.replaceAll(",", ""); return count(r, ".") <= 1 ? r : null; })(),
-      run.replace(/[^0-9]/g, ""),
-    ];
-    for (const r of readings) {
-      const v = r === null ? null : parseNumber(r);
-      if (v && !out.some(x => x.eq(v))) out.push(v);
-    }
+    digitReadings(message.slice(start, i)).forEach(add);
   }
+  if (profile) profileNumbers(message, profile, digitReadings).forEach(add);
   return out;
 }
 
@@ -422,8 +432,15 @@ class Checker {
   ops: Operations;
   policy: Rule[];
   actor: Actor | null;
+  profile: Profile | null;
+  private messageNumbersCache: Rational[] | null = null;
+
+  numbers(): Rational[] {
+    return this.messageNumbersCache ??= this.message === null ? [] : messageNumbers(this.message, this.profile);
+  }
 
   constructor(o: CheckOptions) {
+    this.profile = o.profile ?? null;
     this.message = o.message ?? null;
     this.ops = o.operations;
     this.policy = o.policy ?? [];
@@ -442,7 +459,7 @@ class Checker {
   literal(node: Node & { kind: "text" | "number" }): Val {
     const type: VType = node.kind;
     const inMessage = this.message !== null && (node.kind === "number"
-      ? !node.value.isNegative() && messageNumbers(this.message).some(x => x.eq(node.value))
+      ? !node.value.isNegative() && this.numbers().some(x => x.eq(node.value))
       : textInMessage(node.value, this.message));
     return inMessage ? val(type, { sources: ["message"] }) : val(type, { sources: ["model"], invented: [node] });
   }

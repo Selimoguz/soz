@@ -13,10 +13,13 @@ import {
   type Implementations, type Preview, type Execution, type Step,
   preview, execute, Journal, OperationFailed, OperationUnknown, fromHost, stepKeyText,
 } from "../src/run.ts";
+import { profileFromJson } from "../src/profile.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const folder = process.argv[2] ?? join(here, "../../../conformance");
 const read = (p: string) => parseJson(readFileSync(p, "utf8"));
+/** A case's "profile": a name in the repository's profiles/ folder, next to conformance/. */
+const profileOf = (name: Json | undefined) => typeof name === "string" ? profileFromJson(read(join(folder, "..", "profiles", `${name}.json`))) : null;
 const ops: Operations = operationsFromJson(read(join(folder, "operations.json")));
 
 let problems: string[] = [];
@@ -157,7 +160,8 @@ for (const file of readdirSync(join(folder, "cases")).filter(f => f.endsWith(".j
     const actor = actorFromJson(has(c, "actor") ? get(c, "actor") : get(suite, "actor"));
     try {
       if (has(c, "tools")) await runExecutionCase(c, message, policy, actor);
-      else compareCheck(get(c, "expect")!, checkPlan(planText(get(c, "plan")!), { message, operations: ops, policy, actor }));
+      else compareCheck(get(c, "expect")!, checkPlan(planText(get(c, "plan")!), { message, operations: ops, policy, actor,
+                                                                                  profile: profileOf(has(c, "profile") ? get(c, "profile") : get(suite, "profile")) }));
     } catch (e) { problem(`crashed: ${(e as Error).stack}`); }
     total++;
     if (problems.length) { failed++; console.log(`  FAIL  ${get(c, "name")}\n${problems.map(p => "          " + p).join("\n")}`); }

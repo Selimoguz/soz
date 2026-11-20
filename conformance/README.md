@@ -10,6 +10,8 @@ specification when it passes every case here.
   `13-json-equivalents.json` is generated (`impl/ts/test/make-json-cases.ts`): the checker cases of
   files 01 to 08 in the JSON syntax (SPEC 2.1), expecting what the s-expression gives, positions left
   out. `14-json.json` has the JSON syntax's own cases, with positions.
+- A file or a case may set `"profile"`: the name of a language profile in `profiles/` (next to this
+  folder), for SPEC 5.4; a case's own value wins, and `null` means none (`15-profiles.json`).
 
 ```json
 {
