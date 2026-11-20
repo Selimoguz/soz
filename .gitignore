@@ -2,3 +2,5 @@
 examples/*/demo-*.jsonl
 examples/gateway/soz-*.jsonl
 node_modules/
+guard/dist/
+*.tgz

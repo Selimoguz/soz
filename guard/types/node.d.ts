@@ -7,6 +7,7 @@ declare module "node:fs" {
   export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
   export function mkdtempSync(prefix: string): string;
   export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
+  export function readdirSync(path: string): string[];
 }
 
 declare module "node:path" {
@@ -27,9 +28,10 @@ declare module "node:child_process" {
     cwd?: string; encoding: "utf8"; maxBuffer?: number; input?: string; env?: Record<string, string | undefined>;
     stdio?: ("pipe" | "ignore")[];
   }): string;
-  export function spawnSync(file: string, args: string[], options: { cwd?: string; encoding: "utf8"; input?: string }): {
-    status: number | null; stdout: string; stderr: string;
-  };
+  type SpawnResult = { status: number | null; stdout: string; stderr: string };
+  export function spawnSync(file: string, args: string[], options: { cwd?: string; encoding: "utf8"; input?: string }): SpawnResult;
+  /** A whole command line, run through a shell (as Claude Code runs a hook command). */
+  export function spawnSync(command: string, options: { cwd?: string; encoding: "utf8"; input?: string; shell: true }): SpawnResult;
 }
 
 declare const process: {

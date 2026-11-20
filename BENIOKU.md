@@ -47,11 +47,15 @@ der. [soz-guard](guard/README.md) bir Claude Code kancasıdır: model bitirmeye 
 değişikliklerde yarım iş varsa satır satır gösterir ve bitirmesini ya da bilerek bırakılanı **beyan
 etmesini** (`soz-guard: ignore <neden>`) ister. Yarım bırakmak serbest; söylemeden bırakmak değil.
 
-Projede bir kez kurulur (Node 22.6+ ve git gerekir), sonra VS Code dahil her sekmede çalışır:
+Bağımlılığı olmayan tek bir dosya olarak dağıtılır (Node 18+ ve git gerekir). `guard/` klasöründe
+`npm pack` ile `soz-guard-0.1.0.tgz` üretilir; kullanacak kişi projesinde:
 
 ```sh
-node --experimental-strip-types --disable-warning=ExperimentalWarning C:/ml/soz/guard/src/cli.ts init
+npm install --save-dev soz-guard-0.1.0.tgz
+npx soz-guard init
 ```
+
+Bir kez kurulur, sonra VS Code dahil her sekmede çalışır.
 
 Yalnızca değişen satırlara bakar; eski TODO'larla uğraşmaz. Mantık hatasını yakalamaz, onu testler
 yakalar.

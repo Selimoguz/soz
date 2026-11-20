@@ -14,19 +14,32 @@ agent writes rather than to actions an agent takes. It does not depend on soz.
 
 ## Set up (Claude Code, also in VS Code)
 
-Requires Node 22.6 or newer and git.
+Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file built from this
+folder, with no dependencies:
 
 ```sh
-node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts init
+npm pack                                   # here, in guard/: makes soz-guard-0.1.0.tgz
 ```
 
-in your project adds, without touching what is already there:
+and on the machine that will use it, in the project:
+
+```sh
+npm install --save-dev path/to/soz-guard-0.1.0.tgz
+npx soz-guard init
+```
+
+(From a checkout of this repository, without installing: `node --experimental-strip-types
+--disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts init`, Node 22.6 or newer.)
+
+`init` adds, without touching what is already there:
 
 - a `Stop` hook in `.claude/settings.json`;
 - a `.soz-guard.json` for your own settings;
 - a short "Finished means finished" section in `CLAUDE.md`.
 
 Every Claude Code session in that project, in every tab, then runs it when the agent tries to stop.
+The hook calls this Node by its full path, because a desktop app's PATH may not include it; after
+moving Node or the package, run `init` again.
 
 ## What it looks at
 
@@ -86,9 +99,9 @@ A rule with the id of a built-in rule replaces it.
 ## Also by hand
 
 ```sh
-node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts scan           # exit 1 if anything is open
-node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts scan --json
-node --experimental-strip-types --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts scan --base main   # everything since main, e.g. in CI
+npx soz-guard scan               # exit 1 if anything is open
+npx soz-guard scan --json
+npx soz-guard scan --base main   # everything since main, e.g. in CI
 ```
 
 ## What it is not

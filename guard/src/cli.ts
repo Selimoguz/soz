@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // cli.ts — soz-guard: unfinished work, said out loud.
 //
 //   soz-guard scan [--json] [--base REF]   what changed, scanned; exit 1 if anything is unfinished
@@ -10,8 +11,17 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { scan, report, repoRoot, CONFIG_FILE, type Finding } from "./scan.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const self = fileURLToPath(import.meta.url);
+const here = dirname(self);
 const MARK = "<!-- soz-guard -->";
+
+/** How to run this very file again from anywhere: this Node, by full path (a desktop app's PATH may
+ * not have node), with type stripping only when running the TypeScript source rather than the
+ * compiled package. */
+const selfCommand = (sub: string) =>
+  `"${process.execPath}" ${self.endsWith(".ts") ? "--experimental-strip-types --disable-warning=ExperimentalWarning " : ""}"${self}" ${sub}`;
+const isOurHook = (command: string | undefined) =>
+  !!command && (command.includes(self) || /soz-guard/.test(command) || /cli\.(ts|js)" hook$/.test(command));
 
 function hookMessage(findings: Finding[], attempt: number, max: number): string {
   return `soz-guard: you are about to finish, but your changes leave work unfinished without saying so:
@@ -50,7 +60,7 @@ function init(dir: string): number {
   if (!root) {
     process.stderr.write(`${dir} is not a git repository.\n`
       + `soz-guard is set up per project and looks at what changed, so run init inside your project's folder:\n`
-      + `  cd path/to/your/project\n  node --experimental-strip-types --disable-warning=ExperimentalWarning "${join(here, "cli.ts")}" init\n`
+      + `  cd path/to/your/project\n  ${selfCommand("init")}\n`
       + `(A project that is not under git yet: git init there first.)\n`);
     return 1;
   }
@@ -59,10 +69,10 @@ function init(dir: string): number {
   const settingsPath = join(root, ".claude", "settings.json");
   let settings: { hooks?: { Stop?: { hooks: { type: string; command: string }[] }[] } } = {};
   if (existsSync(settingsPath)) settings = JSON.parse(readFileSync(settingsPath, "utf8"));   // a broken file stops here, untouched
-  const command = `node --experimental-strip-types --disable-warning=ExperimentalWarning "${join(here, "cli.ts")}" hook`;
+  const command = selfCommand("hook");
   settings.hooks ??= {};
   settings.hooks.Stop ??= [];
-  if (settings.hooks.Stop.some(m => m.hooks?.some(h => h.command?.includes("soz-guard") || h.command?.includes("cli.ts\" hook"))))
+  if (settings.hooks.Stop.some(m => m.hooks?.some(h => isOurHook(h.command))))
     done.push(".claude/settings.json: the Stop hook is already there");
   else {
     settings.hooks.Stop.push({ hooks: [{ type: "command", command }] });
