@@ -39,5 +39,22 @@ plan yazar, kullanıcı önizlemeyi kendi istemcisinde (MCP elicitation) onaylar
 **İki uygulama:** Common Lisp referans uygulaması ve bağımlılıksız TypeScript uygulaması
 (`impl/ts/`) aynı 143 uyumluluk vakasını geçer.
 
+## soz-guard: modele kod yazdıranlar için
+
+Model çok sekmede hızla kod yazarken işi **söylemeden** yarım bırakır: bir `TODO`, hiçbir şey yapmayan
+bir buton, yutulan bir hata, `// ... ekranın kalanı`, gerçek veri yerine `example.com`. Sonra "bitti"
+der. [soz-guard](guard/README.md) bir Claude Code kancasıdır: model bitirmeye çalıştığında bu
+değişikliklerde yarım iş varsa satır satır gösterir ve bitirmesini ya da bilerek bırakılanı **beyan
+etmesini** (`soz-guard: ignore <neden>`) ister. Yarım bırakmak serbest; söylemeden bırakmak değil.
+
+Projede bir kez kurulur (Node 22.6+ ve git gerekir), sonra VS Code dahil her sekmede çalışır:
+
+```sh
+node --experimental-strip-types C:/ml/soz/guard/src/cli.ts init
+```
+
+Yalnızca değişen satırlara bakar; eski TODO'larla uğraşmaz. Mantık hatasını yakalamaz, onu testler
+yakalar.
+
 Ayrıntılar için [README.md](README.md) (İngilizce), dilin tanımı için [SPEC.md](SPEC.md), başka
 dillerde yazılacak uygulamalar için [conformance/](conformance/README.md).

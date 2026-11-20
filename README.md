@@ -236,6 +236,13 @@ Two implementations in two very different languages pass the same 143 cases, inc
 pins the preview hash computed independently in Python: the suite, not either implementation, is
 what defines soz.
 
+## soz-guard: the same idea, for code an agent writes
+
+[soz-guard](guard/README.md) is a sibling tool: a Claude Code hook that does not let a coding agent
+say "done" while its changes still leave a `TODO`, an empty button handler, a swallowed error, a
+`// ... rest of the code` or made-up data unsaid. It shows the agent what is open and asks it to
+finish or to declare what has to stay. One command sets it up in a project.
+
 ## Prior art
 
 None of the ideas is new on its own, and soz owes them:
