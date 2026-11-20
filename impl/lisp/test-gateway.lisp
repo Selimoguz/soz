@@ -296,6 +296,16 @@
                                       (search "{\"id\":\"ali\"" line) (search "{\"id\":\"ayse\"" line) (search ayse line))))))
         (close-client c))))
 
+(format t "~%Source labels: a server's results are labelled with its name~%")
+(let* ((c (connect (write-config "gateway8.json" "elicitation"
+                                 "\"policy\": {\"rules\": [{\"name\": \"customer codes come from the ERP\", \"when\": {\"operation\": \"erp.add_order_line\"}, \"then\": {\"args_from\": {\"customer\": [\"tool:erp\"]}}}]}")))
+       (msg "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.")
+       (from-erp (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20)))" "message" msg)))
+       (typed (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))" "message" msg))))
+  (check "args_from tool:erp: the customer from the ERP passes, one from the message does not"
+         (and (not (error-p from-erp)) (preview-id from-erp) (error-p typed) (search "[policy-source]" (text-of typed)) (search "tool:erp" (text-of typed))))
+  (close-client c))
+
 (format t "~%A language profile~%")
 (let* ((c (connect (write-config "gateway7.json" "elicitation"
                                  (format nil "\"profile\": ~s"

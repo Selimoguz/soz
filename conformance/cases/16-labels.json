@@ -1,0 +1,52 @@
+{
+  "description": "Source labels (SPEC 5.2, 12.1): a labelled operation's results come from tool:LABEL, and args_from can require one system.",
+  "message": "Pay Demir Tekstil 12450.75 for the March invoice.",
+  "policy": {
+    "rules": [
+      {
+        "name": "IBANs come from the ERP, never from the CRM, a message or another tool",
+        "when": {"operation": "bank.transfer"},
+        "then": {"args_from": {"iban": ["tool:erp"], "amount": ["tool", "message"]}}
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "the IBAN from the ERP",
+      "plan": "(plan \"x\" (let ((s (erp.find_supplier name \"Demir Tekstil\"))) (bank.transfer iban (get s iban) amount 12450.75)))",
+      "expect": {"valid": true, "effects": ["read", "money"]}
+    },
+    {
+      "name": "the IBAN from the CRM is refused",
+      "plan": "(plan \"x\" (let ((s (crm.find_contact name \"Demir Tekstil\"))) (bank.transfer iban (get s iban) amount 12450.75)))",
+      "expect": {"valid": false, "errors": [{"code": "policy-source", "line": 1, "column": 82}], "only": true}
+    },
+    {
+      "name": "an unlabelled tool is not the ERP",
+      "plan": "(plan \"x\" (let ((s (lookup name \"Demir Tekstil\"))) (bank.transfer iban (get s iban) amount 12450.75)))",
+      "expect": {"valid": false, "errors": [{"code": "policy-source", "line": 1, "column": 72}], "only": true}
+    },
+    {
+      "name": "an IBAN typed in the message is not the ERP's either",
+      "message": "Pay TR33 0006 1005 1978 6457 8413 26 12450.75",
+      "plan": "(plan \"x\" (bank.transfer iban \"TR33 0006 1005 1978 6457 8413 26\" amount 12450.75))",
+      "expect": {"valid": false, "errors": [{"code": "policy-source", "line": 1, "column": 31}], "only": true}
+    },
+    {
+      "name": "tool admits every tool: an amount from the CRM is allowed",
+      "plan": "(plan \"x\" (let ((s (erp.find_supplier name \"Demir Tekstil\")) (c (crm.find_contact name \"Demir Tekstil\"))) (bank.transfer iban (get s iban) amount (get c credit))))",
+      "expect": {"valid": true}
+    },
+    {
+      "name": "a value made from the ERP's and the CRM's comes from both, so it is not only the ERP's",
+      "plan": "(plan \"x\" (let ((s (erp.find_supplier name \"Demir Tekstil\")) (c (crm.find_contact name \"Demir Tekstil\"))) (bank.transfer iban (if (= (get s name) (get c name)) (get s iban) (get c iban)) amount 12450.75)))",
+      "expect": {"valid": false, "errors": [{"code": "policy-source"}], "only": true}
+    },
+    {
+      "name": "without a policy, a label changes nothing",
+      "policy": {"rules": []},
+      "plan": "(plan \"x\" (let ((s (crm.find_contact name \"Demir Tekstil\"))) (bank.transfer iban (get s iban) amount 12450.75)))",
+      "expect": {"valid": true}
+    }
+  ]
+}

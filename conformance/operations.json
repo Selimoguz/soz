@@ -213,5 +213,82 @@
         "type": "text"
       }
     }
+  },
+  {
+    "name": "erp.find_supplier",
+    "effect": "read",
+    "label": "erp",
+    "params": {
+      "name": {
+        "type": "text"
+      }
+    },
+    "returns": {
+      "type": "record",
+      "fields": {
+        "name": {
+          "type": "text"
+        },
+        "iban": {
+          "type": "text"
+        }
+      }
+    }
+  },
+  {
+    "name": "crm.find_contact",
+    "effect": "read",
+    "label": "crm",
+    "params": {
+      "name": {
+        "type": "text"
+      }
+    },
+    "returns": {
+      "type": "record",
+      "fields": {
+        "name": {
+          "type": "text"
+        },
+        "iban": {
+          "type": "text"
+        },
+        "credit": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  {
+    "name": "lookup",
+    "effect": "read",
+    "params": {
+      "name": {
+        "type": "text"
+      }
+    },
+    "returns": {
+      "type": "record",
+      "fields": {
+        "name": {
+          "type": "text"
+        },
+        "iban": {
+          "type": "text"
+        }
+      }
+    }
+  },
+  {
+    "name": "bank.transfer",
+    "effect": "money",
+    "params": {
+      "iban": {
+        "type": "text"
+      },
+      "amount": {
+        "type": "number"
+      }
+    }
   }
 ]

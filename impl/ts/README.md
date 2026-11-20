@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 262 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 269 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 262 conformance cases, the example, defineOperation, the stores with real processes, the gateway
+npm test          # type check (tsc, strict), the 269 conformance cases, the example, defineOperation, the stores with real processes, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -184,7 +184,11 @@ journal, audit). Beyond the tools `soz_guide`, `soz_preview` and `soz_execute` i
 
 Approval works as in the Lisp gateway: MCP elicitation when the client supports it, otherwise a
 one-time code shown to the person in a window outside the chat. `npm run gateway` runs the client,
-the gateway and a pretend ERP as real processes (68 checks, an HTTP server among them).
+the gateway and a pretend ERP as real processes (70 checks, an HTTP server among them).
+
+Every value a server returns is labelled with the server's name (SPEC 5.2), so a policy can say which
+system an argument must come from: `{"args_from": {"iban": ["tool:erp"]}}` takes an IBAN from the
+`erp` server only, never from the CRM or the message. `defineOperation` takes `label` too.
 
 ### Servers on another machine
 

@@ -308,6 +308,19 @@ console.log("\nA server over streamable HTTP");
   plain.close();
 }
 
+console.log("\nSource labels: a server's results are labelled with its name");
+{
+  const c = await new Client(writeConfig("g8.json", "auto", { policy: { rules: [
+    { name: "customer codes come from the ERP", when: { operation: "erp.add_order_line" }, then: { args_from: { customer: ["tool:erp"] } } }] } })).init(false);
+  const ops = JSON.parse((await c.request("resources/read", { uri: "soz://operations" })).contents?.[0]?.text ?? "[]") as Obj[];
+  check("soz://operations shows the label", ops.find(o => o.name === "erp.find_customer")?.label === "erp");
+  const fromErp = await c.call("soz_preview", { plan: `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "tomatoes" quantity 20)))`, message: MESSAGE });
+  const typed = await c.call("soz_preview", { plan: `(plan "x" (erp.add_order_line customer "Yilmaz Market" product "tomatoes" quantity 20))`, message: MESSAGE });
+  check("args_from tool:erp: the customer from the ERP passes, one from the message does not",
+        !fromErp.isError && !!previewId(fromErp) && typed.isError && text(typed).includes("[policy-source]") && text(typed).includes("tool:erp"));
+  c.close();
+}
+
 console.log("\nA plan in the JSON syntax");
 {
   console.log("  (and a language profile)");

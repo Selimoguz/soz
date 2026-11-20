@@ -144,7 +144,12 @@
                          :returns (cond ((and o (gethash "returns" o)) (type-spec (gethash "returns" o)))
                                         ((gethash "outputSchema" tool) (schema-type (gethash "outputSchema" tool) :output t))
                                         (t :any))
-                         :key (and o (gethash "key" o) (coerce (gethash "key" o) 'list)))))
+                         :key (and o (gethash "key" o) (coerce (gethash "key" o) 'list))
+                         ;; what its results are labelled with: the server's name, unless the config says otherwise
+                         :label (let ((l (and o (gethash "label" o))))
+                                  (cond ((null l) (and (soz::label-p (server-name server)) (server-name server)))
+                                        ((soz::label-p l) l)
+                                        (t (error "~a: bad label ~s" name l)))))))
 
 (defun tool-result-value (r)
   "The value of a tools/call result: structuredContent, else the text parsed as JSON, else the text."

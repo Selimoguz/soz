@@ -382,7 +382,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 ;;; Operations (SPEC 6). Types: :text :number :bool :any (:list T) (:record (name . T) ...)
 ;;; ------------------------------------------------------------------
 
-(defstruct (operation (:conc-name op-)) name effect params returns key)
+(defstruct (operation (:conc-name op-)) name effect params returns key
+  label)   ; what its results are labelled with (SPEC 5.2): their source is tool:LABEL
 (defstruct (param (:conc-name pa-)) name type required model-allowed)
 
 (defvar *operations* (make-hash-table :test #'equal) "name-fold -> OPERATION")
@@ -425,6 +426,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
          (effect (gethash "effect" j "write"))
          (params '()))
     (unless (effect-name-p effect) (error "bad effect name ~s in operation ~a" effect name))
+    (when (and (gethash "label" j) (not (label-p (gethash "label" j))))
+      (error "bad label ~s in operation ~a: lowercase letters, digits, _ and -" (gethash "label" j) name))
     (let ((ps (gethash "params" j)))
       (when ps
         (maphash (lambda (k v)
@@ -436,7 +439,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
     (setf (gethash (name-fold name) *operations*)
           (make-operation :name name :effect effect :params (nreverse params)
                           :returns (type-from-json (gethash "returns" j))
-                          :key (and (gethash "key" j) (coerce (gethash "key" j) 'list))))))
+                          :key (and (gethash "key" j) (coerce (gethash "key" j) 'list))
+                          :label (gethash "label" j)))))
 
 (defun lisp-type (spec)
   (cond ((member spec '(:text :number :bool :any)) spec)
@@ -477,6 +481,25 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 (defparameter *condition-ops* '("=" "!=" "<" "<=" ">" ">=" "in" "not_in"))
 (defparameter *source-names* '(("message" . :message) ("tool" . :tool) ("model" . :model) ("schema" . :schema)))
 
+(defun label-p (x)
+  "A label: [a-z][a-z0-9_-]*."
+  (and (stringp x) (plusp (length x)) (lower-letter-p (char x 0))
+       (every (lambda (c) (or (lower-letter-p c) (char<= (code-char 48) c (code-char 57)) (find c "_-"))) x)))
+
+(defun labelled-source (label)
+  "The source of a labelled operation's results, tool:LABEL, as a keyword (labels come from declarations, never from plans)."
+  (intern (format nil "tool:~a" label) :keyword))
+
+(defun source-keyword (name)
+  (or (cdr (assoc name *source-names* :test #'string=))
+      (and (stringp name) (> (length name) 5) (string= "tool:" name :end2 5) (label-p (subseq name 5))
+           (labelled-source (subseq name 5)))))
+
+(defun source-allowed-p (source allowed)
+  "A value from SOURCE may go where ALLOWED is required: tool admits every tool, labelled or not."
+  (or (member source allowed)
+      (and (not (member source '(:message :tool :model :schema))) (member :tool allowed))))
+
 (defun as-list (x)
   (cond ((null x) nil) ((stringp x) (list x)) ((vectorp x) (coerce x 'list)) (t x)))
 
@@ -512,7 +535,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                           (when args (policy-error "~a: args_from is decided from the plan's text; it cannot depend on argument values" name))
                           (list :args-from
                                 (loop for param being the hash-keys of (gethash "args_from" then) using (hash-value srcs)
-                                      collect (cons param (mapcar (lambda (x) (or (cdr (assoc x *source-names* :test #'string=))
+                                      collect (cons param (mapcar (lambda (x) (or (source-keyword x)
                                                                                  (policy-error "~a: unknown source ~s" name x)))
                                                                   (as-list srcs))))))
                          (t (policy-error "~a: then must be \"deny\", {\"deny\": ...}, {\"approve_by\": ...} or {\"args_from\": ...}" name)))))
@@ -559,7 +582,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
          (rule-args rule)))
 
 (defun source-names (sources)
-  (mapcar (lambda (k) (car (rassoc k *source-names*))) sources))
+  (mapcar (lambda (k) (or (car (rassoc k *source-names*)) (symbol-name k))) sources))
 
 (defun check-policy (node op given given-nodes)
   "Rules that do not depend on argument values are decided here, from the plan's text."
@@ -572,7 +595,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
          (loop for (param . allowed) in (second (rule-decision r))
                for k = (name-fold param)
                for v = (cdr (assoc k given :test #'string=))
-               for bad = (and v (set-difference (v-sources v) allowed))
+               for bad = (and v (remove-if (lambda (s) (source-allowed-p s allowed)) (v-sources v)))
                when bad
                  do (err (cdr (assoc k given-nodes :test #'string=)) "policy-source"
                          "parameter ~a of ~a must come from ~{~a~^ or ~} (rule \"~a\"); this value comes from ~{~a~^ and ~}"
@@ -795,14 +818,14 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                                    (t (or (join (v-item a) (v-item b)) (return-from join nil))))))
             (t (make-val :type ta :sources s :invented i))))))
 
-(defun val-of-type (type)
-  "Value returned by an operation: everything in it comes from the tool."
-  (let ((s (list :tool)))
+(defun val-of-type (type &optional (source :tool))
+  "Value returned by an operation: everything in it comes from the tool (tool:LABEL for a labelled one)."
+  (let ((s (list source)))
     (cond ((keywordp type) (make-val :type type :sources s))
           ((eq (first type) :enum) (make-val :type (second type) :sources s :allowed (third type)))
-          ((eq (first type) :list) (make-val :type :list :sources s :item (val-of-type (second type))))
+          ((eq (first type) :list) (make-val :type :list :sources s :item (val-of-type (second type) source)))
           (t (make-val :type :record :sources s
-                       :fields (mapcar (lambda (f) (cons (car f) (val-of-type (cdr f)))) (rest type)))))))
+                       :fields (mapcar (lambda (f) (cons (car f) (val-of-type (cdr f) source))) (rest type)))))))
 
 (defun fits-p (type v)
   (let ((g (v-type v)))
@@ -1046,7 +1069,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                       (loop for p in params
                             for v = (cdr (assoc (name-fold (pa-name p)) given :test #'string=))
                             when (and v (not (pa-model-allowed p))) append (v-invented v)))))
-      (taint (val-of-type (op-returns op)) inherited))))
+      (taint (val-of-type (op-returns op) (if (op-label op) (labelled-source (op-label op)) :tool)) inherited))))
 
 (defun taint (v literals)
   "V and every part of it also carry LITERALS (invented) and so the source model."

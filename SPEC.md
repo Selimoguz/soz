@@ -205,7 +205,9 @@ changes something is still a value the model chose.
 
 Arithmetic, comparisons, logic, `list` and `record` have the union of their parts' sources and
 invented literals. `get` yields the field's own value. A value returned by an operation has source
-`tool`, and so does every part of it. **What an operation returns depends on what it was asked:** if
+`tool`, and so does every part of it; for an operation declared with a **label** (section 6) the
+source is `tool:LABEL` (`tool:erp`), so that a policy can say which system a value must come from
+(section 12.1). **What an operation returns depends on what it was asked:** if
 an argument of a parameter that does not declare `model_allowed` has invented literals, the result
 and every part of it carry those invented literals too (and source `model`). Looking up a customer,
 a server or an invoice the model made up does not turn the answer into trusted data. A parameter
@@ -299,6 +301,9 @@ The host declares the operations a plan may call. Declaration (JSON):
 - `required` defaults to true, `model_allowed` to false, `returns` to `{"type": "any"}`.
 - `key` (0.2) lists the parameters that make up the operation's idempotency key (section 10.3);
   default: all of them.
+- `label` (optional) names the system its results come from, matching `[a-z][a-z0-9_-]*`
+  (`"label": "erp"`); their source is then `tool:erp` (section 5.2). The gateway labels a server's
+  tools with the server's name unless the configuration says otherwise (section 11.1).
 - Types: `{"type": "text" | "number" | "bool" | "any"}`, `{"type": "list", "items": T}`,
   `{"type": "record", "fields": {"name": T, ...}}`. A `text` or `number` type may list the only
   values it takes: `{"type": "text", "enum": ["open", "shipped", "cancelled"]}`. For a value an
@@ -501,9 +506,11 @@ Every tool of every configured server becomes the operation `SERVER.TOOL`:
 - **effect** `read` only if the tool is annotated `readOnlyHint: true`, otherwise `write`.
   Annotations are hints from the server; the configuration may override them, and a tool without
   annotations is a write.
+- **label** the server's name, if it is a label (section 6): every value from the `erp` server has
+  source `tool:erp`.
 
-The configuration may override, per operation, `effect`, `returns`, `key` and `model_allowed` (a
-list of parameter names).
+The configuration may override, per operation, `effect`, `returns`, `key`, `label` and
+`model_allowed` (a list of parameter names).
 
 A tool call that returns `isError` is **failed**; a server that does not answer in time gives
 **unknown**. The value of a result is its `structuredContent`, else its text content parsed as JSON,
@@ -670,8 +677,10 @@ no rules, nothing in this section applies.
 - `{"approve_by": ROLE, "four_eyes": BOOL}`: the step also needs the approval of someone with ROLE;
   with `four_eyes`, someone other than the actor. It applies to side-effect operations only;
 - `{"args_from": {"param": [SOURCE, ...]}}`: the argument's sources (section 5) must all be among
-  these (`message`, `tool`, `model`, `schema`). `["tool"]` means: read from a record, never typed,
-  not even from the message. It may not be combined with `args` conditions.
+  these (`message`, `tool`, `model`, `schema`, or `tool:LABEL`). `["tool"]` means: read from a
+  record, never typed, not even from the message; `tool` admits every tool, labelled or not.
+  `["tool:erp"]` means: read from the ERP, not from the CRM or any other system (section 5.2). It
+  may not be combined with `args` conditions.
 
 A rule a host cannot read (an unknown comparison, source or `then`) is a configuration error; the
 host MUST NOT start with it.
@@ -697,6 +706,4 @@ in section 11.5.
 
 ## 13. Planned
 
-- **Source labels:** operations may label their results (`erp`, `crm`) so that policies can say
-  which system a value came from, not just that it came from a tool.
 - **Inflected words** in language profiles (`beşer`, `ikisi`), and fractions in words (`buçuk`).

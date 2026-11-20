@@ -11,7 +11,7 @@ import { randomInt } from "node:crypto";
 import { Rational, type Json, type HostValue, isObject, newObject, canonicalJson, parseJson, nameFold, visible } from "./exact.ts";
 import {
   type Operation, type Operations, type Param, type Type, type Rule, type Actor,
-  typeFromJson, typeName, typeToJson, isSideEffect, policyFromJson, actorFromJson, errorReport,
+  typeFromJson, typeName, typeToJson, isSideEffect, LABEL, policyFromJson, actorFromJson, errorReport,
 } from "./checker.ts";
 import {
   type Implementations, type Preview, type Execution, type Requirement,
@@ -292,6 +292,10 @@ function toolOperation(server: string, tool: Tool, overrides: Json | undefined):
     effect: typeof o?.effect === "string" ? o.effect : readOnly ? "read" : "write",
     returns: o?.returns !== undefined ? typeFromJson(o.returns) : tool.outputSchema ? schemaType(tool.outputSchema, true) : "any",
     key: Array.isArray(o?.key) ? o!.key as string[] : null,
+    // what its results are labelled with: the server's name, unless the config says otherwise
+    label: typeof o?.label === "string"
+      ? (LABEL.test(o.label) ? o.label : (() => { throw new Error(`${name}: bad label ${JSON.stringify(o!.label)}`); })())
+      : LABEL.test(server) ? server : null,
   };
 }
 
@@ -541,7 +545,7 @@ export class GatewayServer {
     if (uri === "soz://guide") return { mimeType: "text/plain", text: guideText(this.g) };
     if (uri === "soz://plan-schema") return { mimeType: "application/schema+json", text: JSON.stringify(planJsonSchema(), null, 2) };
     if (uri === "soz://operations") return { mimeType: "application/json", text: canonicalJson([...this.g.operations.values()].map(op => ({
-      name: op.name, effect: op.effect, returns: typeToJson(op.returns), key: op.key,
+      name: op.name, effect: op.effect, returns: typeToJson(op.returns), key: op.key, label: op.label ?? null,
       params: op.params.map(p => ({ name: p.name, type: typeToJson(p.type), required: p.required, model_allowed: p.modelAllowed })) }))) };
     if (uri === "soz://policy") return { mimeType: "application/json", text: canonicalJson({ actor: this.g.actor,
       rules: this.g.policy.map(r => ({ name: r.name, operations: r.operations, effects: r.effects, actor_role: r.actorRoles,

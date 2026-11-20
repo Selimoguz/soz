@@ -3,7 +3,7 @@
 // and what `run` returns must fit the declared result. No schema library: `t` is enough for soz types.
 
 import { Rational, type Json, type HostValue, nameFold } from "./exact.ts";
-import type { Type, Operation, Operations } from "./checker.ts";
+import { type Type, type Operation, type Operations, LABEL } from "./checker.ts";
 import type { Implementation, Implementations } from "./run.ts";
 
 /** A soz type (SPEC 6), carrying the TypeScript type of its values and whether it is optional. */
@@ -64,6 +64,8 @@ export type OperationSpec<P extends Fields, R> = {
   returns?: Schema<R, boolean>;
   /** The parameters that make up the idempotency key (SPEC 10.3); default all. */
   key?: (keyof P & string)[];
+  /** The system its results come from, for policies (SPEC 5.2): their source is tool:LABEL. */
+  label?: string;
   /** Its result type comes from `returns` only (NoInfer): what run returns cannot widen the declaration. */
   run: (args: Args<P>) => NoInfer<HostOut<R>> | Promise<NoInfer<HostOut<R>>>;
 };
@@ -73,11 +75,13 @@ export type Defined = { operation: Operation; implementation: Implementation };
 export function defineOperation<P extends Fields, R = Json>(spec: OperationSpec<P, R>): Defined {
   const effect = spec.effect ?? "write";
   if (!/^[a-z][a-z0-9._-]*$/.test(effect)) throw new Error(`bad effect name ${JSON.stringify(effect)} in operation ${spec.name}`);
+  if (spec.label !== undefined && !LABEL.test(spec.label)) throw new Error(`bad label ${JSON.stringify(spec.label)} in operation ${spec.name}`);
   const operation: Operation = {
     name: spec.name, effect,
     params: Object.entries(spec.params).map(([name, s]) => ({ name, type: s.type, required: s.required, modelAllowed: s.allowModel })),
     returns: spec.returns?.type ?? "any",
     key: spec.key ?? null,
+    label: spec.label ?? null,
   };
   const implementation: Implementation = args => spec.run(args as unknown as Args<P>) as HostValue | Promise<HostValue>;
   return { operation, implementation };

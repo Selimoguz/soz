@@ -124,7 +124,11 @@ export type Type =
   | { kind: "enum"; base: "text" | "number"; values: (string | Rational)[] };
 
 export type Param = { name: string; type: Type; required: boolean; modelAllowed: boolean };
-export type Operation = { name: string; effect: string; params: Param[]; returns: Type; key: string[] | null };
+export type Operation = {
+  name: string; effect: string; params: Param[]; returns: Type; key: string[] | null;
+  /** What its results are labelled with (SPEC 5.2): their source is tool:LABEL. */
+  label?: string | null;
+};
 export type Operations = Map<string, Operation>;
 
 export const builtinEffects = ["read", "write", "external", "money"];
@@ -154,9 +158,12 @@ export function operationFromJson(j: Json): Operation {
     required: !(isObject(p) && p.required === false),
     modelAllowed: isObject(p) && p.model_allowed === true,
   })) : [];
+  if (j.label !== undefined && (typeof j.label !== "string" || !LABEL.test(j.label)))
+    throw new Error(`bad label ${JSON.stringify(j.label)} in operation ${j.name}: lowercase letters, digits, _ and -`);
   return {
     name: j.name, effect, params, returns: typeFromJson(j.returns),
     key: Array.isArray(j.key) ? (j.key as string[]) : null,
+    label: typeof j.label === "string" ? j.label : null,
   };
 }
 
@@ -179,7 +186,8 @@ export function operationToJson(op: Operation): { [k: string]: unknown } {
   const params = Object.fromEntries(op.params.map(p => [p.name, {
     ...typeToJson(p.type), ...(p.required ? {} : { required: false }), ...(p.modelAllowed ? { model_allowed: true } : {}),
   }]));
-  return { name: op.name, effect: op.effect, params, returns: typeToJson(op.returns), ...(op.key ? { key: op.key } : {}) };
+  return { name: op.name, effect: op.effect, params, returns: typeToJson(op.returns), ...(op.key ? { key: op.key } : {}),
+           ...(op.label ? { label: op.label } : {}) };
 }
 
 export function typeName(t: Type): string {
@@ -192,7 +200,12 @@ export function typeName(t: Type): string {
 // --- Policy (SPEC 12) ----------------------------------------------------------------------------------
 
 export type Actor = { id: string; roles: string[] };
-export type Source = "message" | "tool" | "model" | "schema";
+/** message, tool, model, schema, or tool:LABEL for the result of a labelled operation (SPEC 5.2). */
+export type Source = string;
+export const LABEL = /^[a-z][a-z0-9_-]*$/;
+/** A value from SOURCE may go where ALLOWED is required: "tool" admits every tool, labelled or not. */
+export const sourceAllowed = (source: string, allowed: string[]) =>
+  allowed.includes(source) || (source.startsWith("tool:") && allowed.includes("tool"));
 export type Decision =
   | { deny: string | null }
   | { approve: string; fourEyes: boolean }
@@ -232,7 +245,7 @@ export function policyFromJson(j: Json | undefined): Rule[] {
     else if (isObject(then) && isObject(then.args_from)) {
       if (args.length) throw new Error(`policy: ${name}: args_from is decided from the plan's text; it cannot depend on argument values`);
       decision = { argsFrom: Object.entries(then.args_from).map(([p, srcs]) => [p, asList(srcs).map(s => {
-        if (!sourceNames.includes(s as Source)) throw new Error(`policy: ${name}: unknown source ${JSON.stringify(s)}`);
+        if (!sourceNames.includes(s as Source) && !(typeof s === "string" && s.startsWith("tool:") && LABEL.test(s.slice(5)))) throw new Error(`policy: ${name}: unknown source ${JSON.stringify(s)}`);
         return s as Source;
       })]) };
     } else throw new Error(`policy: ${name}: then must be "deny", {"deny": ...}, {"approve_by": ...} or {"args_from": ...}`);
@@ -339,12 +352,12 @@ function join(a: Val, b: Val): Val | null {
   return val(a.type, { sources: s, invented: i });
 }
 
-function valOfType(t: Type): Val {
-  const s: Source[] = ["tool"];
+function valOfType(t: Type, source: Source = "tool"): Val {
+  const s: Source[] = [source];
   if (typeof t === "string") return val(t, { sources: s });
   if (t.kind === "enum") return val(t.base, { sources: s, allowed: t.values });
-  if (t.kind === "list") return val("list", { sources: s, item: valOfType(t.item) });
-  return val("record", { sources: s, fields: t.fields.map(([k, ft]) => [k, valOfType(ft)]) });
+  if (t.kind === "list") return val("list", { sources: s, item: valOfType(t.item, source) });
+  return val("record", { sources: s, fields: t.fields.map(([k, ft]) => [k, valOfType(ft, source)]) });
 }
 
 function taint(v: Val, literals: Node[]): Val {
@@ -651,7 +664,7 @@ class Checker {
       const g = given.find(x => x[0] === nameFold(p.name));
       return g && !p.modelAllowed ? g[1].invented : [];
     }));
-    return taint(valOfType(op.returns), inherited);
+    return taint(valOfType(op.returns, op.label ? `tool:${op.label}` : "tool"), inherited);
   }
 
   checkPolicy(node: Node, op: Operation, given: [string, Val][], givenNodes: [string, Node][]) {
@@ -662,7 +675,7 @@ class Checker {
       else if ("argsFrom" in d) for (const [param, allowed] of d.argsFrom) {
         const k = nameFold(param);
         const v = given.find(g => g[0] === k)?.[1];
-        if (v && v.sources.some(s => !allowed.includes(s)))
+        if (v && v.sources.some(s => !sourceAllowed(s, allowed)))
           this.err(givenNodes.find(g => g[0] === k)![1], "policy-source",
             `parameter ${param} of ${op.name} must come from ${allowed.join(" or ")} (rule "${r.name}"); this value comes from ${v.sources.join(" and ")}`);
       }
