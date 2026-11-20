@@ -12,3 +12,5 @@ export {
 } from "./run.ts";
 export { t, defineOperation, defineOperations, Schema, type Args, type HostOut, type OperationSpec, type Defined } from "./define.ts";
 export { main as runGateway, loadGateway, GatewayServer } from "./gateway.ts";
+export { renderPreview, type RenderFormat } from "./render.ts";
+export { visible } from "./exact.ts";

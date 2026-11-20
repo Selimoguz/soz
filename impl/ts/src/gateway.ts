@@ -8,7 +8,7 @@ import { createInterface } from "node:readline";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, resolve, isAbsolute } from "node:path";
 import { randomInt } from "node:crypto";
-import { Rational, type Json, type HostValue, isObject, newObject, canonicalJson, parseJson, nameFold } from "./exact.ts";
+import { Rational, type Json, type HostValue, isObject, newObject, canonicalJson, parseJson, nameFold, visible } from "./exact.ts";
 import {
   type Operation, type Operations, type Param, type Type, type Rule, type Actor,
   typeFromJson, typeName, typeToJson, isSideEffect, policyFromJson, actorFromJson, errorReport,
@@ -443,7 +443,7 @@ export class GatewayServer {
       if (g.approval === "client") return textResult(this.executionText(await this.run(p, "user (client tool approval)")));
       if (!this.elicits()) return textResult("This client cannot ask the user for approval (MCP elicitation), and this gateway requires it. Nothing ran.", true);
       const r = await this.client.request("elicitation/create", {
-        message: `${previewSummary(p)}The assistant based this on your message:\n  ${p.message ?? "(no message)"}\n\nApprove these steps?`,
+        message: `${previewSummary(p)}The assistant based this on your message:\n  ${visible(p.message ?? "(no message)")}\n\nApprove these steps?`,
         requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Approve", description: "Run exactly these steps" } }, required: ["approve"] },
       }, 10 * 60 * 1000).catch(() => null);
       const res = r && isObject(r.result) ? r.result : null;
@@ -465,7 +465,7 @@ export class GatewayServer {
     if (pending && pending.code === null) return textResult("Too many wrong approval codes for this preview; it is locked. Preview the plan again.", true);
     if (!normalizeCode(given)) {
       const code = newCode();
-      const window = `Approval code: ${code}\n\n${previewSummary(p)}\nThe assistant based this on your message:\n  ${p.message ?? "(no message)"}\n\nIf you agree, type this code in the chat. If not, ignore it.\nThe code works once and expires in ${CODE_LIFETIME / 60} minutes.`;
+      const window = `Approval code: ${code}\n\n${previewSummary(p)}\nThe assistant based this on your message:\n  ${visible(p.message ?? "(no message)")}\n\nIf you agree, type this code in the chat. If not, ignore it.\nThe code works once and expires in ${CODE_LIFETIME / 60} minutes.`;
       if (!showToUser("soz: approve these steps?", window)) return textResult("Could not show the approval code to the user on this system. Nothing ran.", true);
       g.codes.set(key, { code, expires: now + CODE_LIFETIME, wrong: 0 });
       return textResult("An approval code is now shown to the user in a window outside this chat. Ask them to read the steps there and, if they agree, to tell you the code. Then call soz_execute again with preview_id and approval_code. Nothing has run.");

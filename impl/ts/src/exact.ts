@@ -196,5 +196,21 @@ export function fold(s: string): string {
 
 export function nameFold(s: string): string { return fold(s).replaceAll("_", "-"); }
 
+/**
+ * Text as a person approving it must see it: control characters written out (a newline in a value
+ * must not look like a new step: "\n"), and invisible or direction-changing characters named
+ * (U+202E can make an IBAN read differently: "⟨U+202E⟩"). Everything else, Turkish letters
+ * included, stays as it is.
+ */
+export function visible(s: string): string {
+  return s.replace(/[\\\p{Cc}\p{Cf}\p{Zl}\p{Zp}͏ᅟᅠ឴឵ㅤ︀-️ﾠ]/gu, c => {
+    if (c === "\\") return "\\\\";
+    if (c === "\n") return "\\n";
+    if (c === "\r") return "\\r";
+    if (c === "\t") return "\\t";
+    return `⟨U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`;
+  });
+}
+
 /** Unicode letters and decimal digits (Common Lisp's alphanumericp on SBCL). */
 export function isAlphanumeric(c: string): boolean { return /^[\p{L}\p{Nd}]$/u.test(c); }

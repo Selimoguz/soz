@@ -3,11 +3,11 @@
 
 import { readFileSync, appendFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import {
-  Rational, type Json, type HostValue, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson,
+  Rational, type Json, type HostValue, isObject, newObject, canonicalJson, compareCodePoints, sha256Hex, fold, nameFold, parseJson, visible,
 } from "./exact.ts";
 import {
   type Node, type Operation, type Operations, type Type, type Rule, type Actor, type CheckResult,
-  readPlan, checkPlan, typeName, isSideEffect, ruleConcerns, ruleArgsMatch, UNKNOWN, limits, errorReport,
+  readPlan, checkPlan, typeName, isSideEffect, ruleConcerns, ruleArgsMatch, UNKNOWN, limits,
 } from "./checker.ts";
 
 // --- Run-time values ----------------------------------------------------------------------------------
@@ -589,19 +589,22 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
   return { outcome, steps: all, message, stopReason: reason };
 }
 
+/** What the person approves. Everything the model or a tool wrote goes through visible(). */
 export function previewSummary(p: Preview): string {
-  let o = `Plan: ${p.check.title}\n`;
-  if (p.status === "invalid") return o + errorReport(p.check);
+  let o = `Plan: ${visible(p.check.title ?? "")}\n`;
+  if (p.status === "invalid")
+    return o + "The plan did not run:\n" + p.check.errors.map((e, i) =>
+      `${i + 1}. line ${e.line}, column ${e.column} [${e.code}]: ${visible(e.message)}\n`).join("");
   if (p.steps.length) {
     o += "If you approve, these will happen:\n";
     for (const s of p.steps) {
-      o += `  ${s.index}. ${s.operation.name}` + s.args.fields.map(([k, v]) => ` ${k}=${valueText(v)}`).join("")
+      o += `  ${s.index}. ${s.operation.name}` + s.args.fields.map(([k, v]) => ` ${k}=${visible(valueText(v))}`).join("")
         + (s.alreadyDone ? " (already done before; will not run again)" : "") + "\n";
       if (s.requires.length && !s.alreadyDone) o += `     needs ${requirementsText(s.requires, p.actor)}\n`;
     }
   }
-  if (p.stopReason) o += `The plan stops: ${p.stopReason}\n`;
-  for (const pr of p.problems) o += `Cannot run: ${pr.message}\n`;
+  if (p.stopReason) o += `The plan stops: ${visible(p.stopReason)}\n`;
+  for (const pr of p.problems) o += `Cannot run: ${visible(pr.message)}\n`;
   if (p.status === "nothing") o += "Nothing to do.\n";
   if (p.hash) o += `Preview: ${p.hash.slice(0, 12)}\n`;
   return o;

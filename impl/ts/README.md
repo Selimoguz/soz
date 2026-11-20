@@ -86,6 +86,24 @@ Types: `t.text()`, `t.number()`, `t.bool()`, `t.any()`, `t.list(item)`, `t.recor
 Implementation keys are operation names after `nameFold` (`_` becomes `-`). Numbers are exact:
 implementations receive and may return `Rational` values (or `bigint`), never floats.
 
+## Showing a preview in a chat app
+
+`previewSummary(p)` is plain text; `renderPreview(p, format)` writes the same preview for a chat app or
+an approval screen, with `format` one of `"text"`, `"markdown"`, `"slack"` or `"telegram"` (Telegram's
+HTML parse mode):
+
+```ts
+await slack.chat.postMessage({ channel, text: renderPreview(p, "slack") });
+```
+
+What the model or a tool wrote (the title, the message, argument values, the stop reason) is untrusted
+text on an approval screen, so both functions pass it through `visible()`: a newline in a value is
+written as `
+` and cannot pose as an extra step, and control, invisible and bidirectional characters
+are named (`⟨U+202E⟩`) instead of turning an IBAN around. The renderers also put the steps in a code
+block and escape everything else for the format, so `*bold*`, `<b>` or `[click](https://...)` in a
+value is shown as written and never becomes formatting or a link.
+
 ## Journal and audit stores
 
 `preview` and `execute` take any `JournalStore` and `AuditSink` (SPEC 10.8), so a host can keep them
@@ -151,6 +169,7 @@ the gateway and a pretend ERP as real processes (36 checks).
 | `src/exact.ts` | exact numbers (`bigint` fractions), a JSON reader that keeps numbers exact, canonical JSON, SHA-256, folding |
 | `src/checker.ts` | reader, checker, operations, the policy decided from the text |
 | `src/run.ts` | preview, execution, journal, audit record, the policy with values |
+| `src/render.ts` | the preview for chat apps: Markdown, Slack, Telegram, plain text |
 | `src/define.ts` | `defineOperation`: operations and implementations, typed together |
 | `src/journal-cli.ts` | resolving unresolved steps, by a person |
 | `src/gateway.ts`, `src/soz-mcp.ts` | the MCP gateway |

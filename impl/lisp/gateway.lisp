@@ -361,7 +361,7 @@ Example:
 
 (defun approval-message (p)
   (format nil "~a~%The assistant based this on your message:~%  ~a~%~%Approve these steps?"
-          (preview-summary p) (or (soz::preview-message p) "(no message)")))
+          (preview-summary p) (soz::visible (or (soz::preview-message p) "(no message)"))))
 
 ;;; --- Approval codes: shown to the user outside the chat, typed back by the user
 
@@ -431,7 +431,7 @@ SOZ_TEST_CODE_FILE (tests only) writes the text to that file instead."
 
 (defun code-window-text (p code)
   (format nil "Approval code: ~a~%~%~a~%~%The assistant based this on your message:~%  ~a~%~%If you agree, type this code in the chat. If not, ignore it.~%The code works once and expires in ~d minutes."
-          code (preview-summary p) (or (soz::preview-message p) "(no message)") (floor *code-lifetime* 60)))
+          code (preview-summary p) (soz::visible (or (soz::preview-message p) "(no message)")) (floor *code-lifetime* 60)))
 
 (defun execute-with-code (g p given)
   (let ((pending (gethash (preview-hash p) (gateway-codes g)))

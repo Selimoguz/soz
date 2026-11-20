@@ -658,23 +658,44 @@ people who approved it; by default the person who asked. Returns an EXECUTION."
                                              "status" (step-status s)))
                     (execution-steps e))))
 
-(defun preview-summary (p)
-  "What the person approves."
+(defun visible (s)
+  "Text as a person approving it must see it: control characters written out (a newline in a value
+must not look like a new step), invisible or direction-changing characters named (U+202E can make
+an IBAN read differently). Everything else stays as it is."
   (with-output-to-string (o)
-    (format o "Plan: ~a~%" (result-title (preview-check p)))
-    (cond ((string= (preview-status p) "invalid") (write-string (error-report (preview-check p)) o))
+    (loop for c across s
+          for code = (char-code c)
+          do (cond ((char= c #\\) (write-string "\\\\" o))
+                   ((char= c #\Newline) (write-string "\\n" o))
+                   ((= code 13) (write-string "\\r" o))
+                   ((= code 9) (write-string "\\t" o))
+                   ((or (member (sb-unicode:general-category c) '(:cc :cf :zl :zp))
+                        (member code '(#x34f #x115f #x1160 #x17b4 #x17b5 #x3164 #xffa0))
+                        (<= #xfe00 code #xfe0f))
+                    (format o "⟨U+~4,'0X⟩" code))
+                   (t (write-char c o))))))
+
+(defun preview-summary (p)
+  "What the person approves. Everything the model or a tool wrote goes through VISIBLE."
+  (with-output-to-string (o)
+    (format o "Plan: ~a~%" (visible (or (result-title (preview-check p)) "")))
+    (cond ((string= (preview-status p) "invalid")
+           (format o "The plan did not run:~%")
+           (loop for e in (result-errors (preview-check p)) for i from 1
+                 do (format o "~d. line ~d, column ~d [~a]: ~a~%" i (soz-error-line e) (soz-error-column e)
+                            (soz-error-code e) (visible (soz-error-message e)))))
           (t
            (when (preview-steps p)
              (format o "If you approve, these will happen:~%")
              (dolist (s (preview-steps p))
                (format o "  ~d. ~a~{ ~a~}~:[~; (already done before; will not run again)~]~%"
                        (step-index s) (op-name (step-operation s))
-                       (loop for (k . v) in (cdr (step-args s)) collect (format nil "~a=~a" k (value-text v)))
+                       (loop for (k . v) in (cdr (step-args s)) collect (format nil "~a=~a" k (visible (value-text v))))
                        (step-already-done s))
                (when (and (step-requires s) (not (step-already-done s)))
                  (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))))
-           (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (preview-stop-reason p)))
-           (dolist (pr (preview-problems p)) (format o "Cannot run: ~a~%" (cdr (assoc "message" (cdr pr) :test #'string=))))
+           (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (visible (preview-stop-reason p))))
+           (dolist (pr (preview-problems p)) (format o "Cannot run: ~a~%" (visible (cdr (assoc "message" (cdr pr) :test #'string=)))))
            (when (string= (preview-status p) "nothing") (format o "Nothing to do.~%"))
            (when (preview-hash p) (format o "Preview: ~a~%" (subseq (preview-hash p) 0 12)))))))
 

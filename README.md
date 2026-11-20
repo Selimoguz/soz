@@ -128,6 +128,9 @@ Ali's approval alone pays nothing; Ali and Ayşe from finance together pay once.
 - **Preview.** Reads run; every operation with a side effect becomes a numbered step with its
   arguments, and nothing is written. A step's result is *pending* and can feed later steps (create
   an order, then add lines to it).
+- **An approval text that cannot be forged from inside**: newlines, control, invisible and bidirectional
+  characters in values are shown as escapes, so a value cannot pose as an extra step or turn an IBAN
+  around; the TypeScript implementation renders it for Markdown, Slack and Telegram too.
 - **One approval** for the whole preview, bound to it by a SHA-256 hash, and good for one execution.
 - **Execution** evaluates the plan again with live reads and stops before any step whose operation or
   arguments differ from what was approved (the balance moved, the customer changed).
