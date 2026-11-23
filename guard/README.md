@@ -37,12 +37,12 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.3.0.tgz`, attached to this repository's
+dependencies, `soz-guard-0.3.1.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
 On the machine that will use it, in the project:
 
 ```sh
-npm install --save-dev path/to/soz-guard-0.3.0.tgz
+npm install --save-dev path/to/soz-guard-0.3.1.tgz
 npx soz-guard init
 ```
 
@@ -200,6 +200,36 @@ Without one (soz-guard installed in the middle of a session), the verdict is abo
 
 One limit: what a person changes in the same folder while the agent works counts as the agent's
 change. Git cannot tell the two apart.
+
+## Several sessions in one folder
+
+Some people run many Claude Code sessions in the same project at once (one for the ERP part, one for
+the CRM, one that coordinates them). Then the difference from one session's snapshot holds the others'
+work too, and a gap one session left would stop all of them. With
+
+```sh
+npx soz-guard init --sessions
+```
+
+each session answers for the files it touched. A `PostToolUse` hook records the files a session edits
+(Edit, Write, MultiEdit, NotebookEdit), and for a shell command (Bash, PowerShell) the files that changed
+while it ran, from a snapshot before and after it. When the session tries to finish, only those files
+are judged; the verdict in `last.json` lists the rest under `foreign`, left to the sessions that made
+them. A session that touched nothing answers for nothing.
+
+What it cannot separate, plainly:
+
+- **The checks run on the whole folder.** A test another session broke fails for this one too. The
+  agent is then told which files other sessions changed and not to edit them; it says so and stops.
+  Separate folders (a git worktree per session) are the only full isolation.
+- **A shell command's window.** What another session changes while this one's command runs counts as
+  this one's: it judges more, never less. A command left running in the background is not followed.
+- **Changes made some other way** (an MCP tool that writes files, an editor) are nobody's, so they are
+  not judged. That is why this is a choice (`--sessions`), not the default. Each shell command also
+  costs two snapshots, well under a second each in a project of a few thousand files.
+
+Sessions already open when it is installed do not have the hooks yet: Claude Code reads hooks when a
+session starts. Close them and open them again from the conversation history; nothing is lost.
 
 ## The hook
 

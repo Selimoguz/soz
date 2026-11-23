@@ -32,6 +32,9 @@ export type State = "verified" | "unchecked" | "unverified" | "open";
 export type Verdict = {
   state: State; change: string; config: string; at: string; range: Range;
   findings: Finding[]; criteria: CriteriaChange[]; criteriaAccepted: string | null; checks: CheckResult[];
+  /** With several sessions in one folder: files changed since the baseline that this session did not touch,
+   * left to the sessions that did (they are not judged here, but the checks run on them too). */
+  foreign?: string[];
 };
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
@@ -108,6 +111,8 @@ export type EvaluateOptions = {
   /** The hooks and instructions as they were at the session's start (see guard.ts); without it, as they
    * are at the range's base in git. */
   guardBase?: GuardState;
+  /** Judge only these files (the ones this session touched); the rest of the change is another session's. */
+  only?: Set<string>;
   /** For the log: which session, and what asked for the verdict. */
   session?: string;
   source?: string;
@@ -153,6 +158,12 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   const config = loadConfig(root);
   const configText = existsSync(join(root, CONFIG_FILE)) ? readFileSync(join(root, CONFIG_FILE), "utf8") : "";
   const diff = readDiff(root, range, config.exclude);
+  let foreign: string[] | undefined;
+  if (o.only) {
+    const only = o.only;
+    foreign = [...diff.status.keys()].filter(f => !only.has(f)).sort();
+    for (const m of [diff.added, diff.removed, diff.status]) for (const f of [...m.keys()]) if (!only.has(f)) m.delete(f);
+  }
   const change = sha256(diff.fingerprint), configHash = sha256(configText);
   const findings = scanLines(diff.added, config);
   // the hooks and soz-guard's instructions: against the session's start if known, else against the base in
@@ -189,13 +200,14 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     : checks.some(c => c.status === "timeout" || c.status === "error") ? "unverified"
     : todo.length && o.checks !== false ? "verified"
     : "unchecked";
-  const verdict: Verdict = { state, change, config: configHash, at: new Date().toISOString(), range, findings, criteria, criteriaAccepted, checks };
+  const verdict: Verdict = { state, change, config: configHash, at: new Date().toISOString(), range, findings, criteria, criteriaAccepted, checks,
+                            ...(foreign ? { foreign } : {}) };
   if (o.record !== false) {
     writeOwn(root, "last.json", verdict);
     appendLog(root, {
       event: "verdict", source: o.source ?? "check", session: o.session ?? null, state, change, config: configHash,
       base: range.base, findings: findings.map(f => `${f.file}:${f.line} ${f.rule}`),
-      criteria: criteria.map(c => `${c.file} ${c.kind}`), criteriaAccepted,
+      criteria: criteria.map(c => `${c.file} ${c.kind}`), criteriaAccepted, ...(foreign ? { foreign: foreign.length } : {}),
       checks: checks.map(c => ({ name: c.name, status: c.status, seconds: c.seconds, reused: !!c.reused })),
     });
   }
@@ -223,6 +235,10 @@ export function verdictReport(v: Verdict, forAgent: boolean): string {
     parts.push(`Check "${c.name}" (${c.run}) ${c.status === "failed" ? `failed (exit ${c.exitCode})` : c.status === "timeout" ? "did not finish in time" : "could not run"}${c.reused ? ", on this same change before" : ""}:\n`
       + c.tail.split("\n").map(l => "    " + l).join("\n")
       + (forAgent && c.status === "failed" ? "\nMake it pass by fixing the code, not the check." : ""));
+  if (v.foreign?.length && v.checks.some(c => c.status !== "passed"))
+    parts.push(`Other sessions in this folder have changed ${v.foreign.length} file(s) you did not touch (${v.foreign.slice(0, 5).join(", ")}${v.foreign.length > 5 ? ", ..." : ""}).\n`
+      + `The checks ran on the whole folder, their work included.`
+      + (forAgent ? ` If the failure is in their files, do not edit them: say so in your final message\nand stop; fix only what is yours.` : ""));
   const passed = v.checks.filter(c => c.status === "passed");
   if (passed.length) parts.push(`Passed: ${passed.map(c => `${c.name} (${c.seconds}s${c.reused ? ", same change as before" : ""})`).join(", ")}`);
   const head = { verified: "Verified: the checks ran on this change and passed.", unchecked: "Nothing open; no check applies to this change.",

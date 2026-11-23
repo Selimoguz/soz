@@ -11,7 +11,8 @@
 //   soz-guard log [--verify]           the chained log of verdicts and acceptances
 //   soz-guard scan [--json] [--base REF]   only the static scan, as in 0.1
 //   soz-guard pre-commit [--checks]    a git pre-commit hook: the verdict on what is being committed
-//   soz-guard init [DIR] [--claude] [--codex] [--git [--checks]]
+//   soz-guard track                    PreToolUse/PostToolUse: the files this session touched (init --sessions)
+//   soz-guard init [DIR] [--claude] [--sessions] [--codex] [--git [--checks]]
 //                                      installs the hooks (Claude Code by default), a .soz-guard.json and
 //                                      soz-guard's section in CLAUDE.md / AGENTS.md
 
@@ -23,7 +24,7 @@ import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { scan, report, repoRoot, loadConfig, CONFIG_FILE, OWN_DIR } from "./scan.ts";
 import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog } from "./verdict.ts";
-import { startSession, readBaseline, snapshotTree } from "./session.ts";
+import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
 import { MARK } from "./guard.ts";
 
 const self = fileURLToPath(import.meta.url);
@@ -39,7 +40,47 @@ const isOurHook = (command: string | undefined) =>
 
 const finished = (state: string) => state === "verified" || state === "unchecked";
 
-type HookInput = { cwd?: string; session_id?: string; source?: string };
+type HookInput = {
+  cwd?: string; session_id?: string; source?: string; hook_event_name?: string;
+  tool_name?: string; tool_use_id?: string; tool_input?: { file_path?: string; notebook_path?: string };
+};
+
+const FILE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+const SHELL_TOOLS = ["Bash", "PowerShell"];
+const TRACK_MATCHER = [...FILE_TOOLS, ...SHELL_TOOLS].join("|");
+
+/** Whether the project's Claude Code settings run soz-guard's tracking hook (see session.ts). */
+function trackingInstalled(root: string): boolean {
+  for (const f of [".claude/settings.json", ".claude/settings.local.json"]) {
+    try {
+      const j = JSON.parse(readFileSync(join(root, f), "utf8")) as { hooks?: Record<string, { hooks?: { command?: string }[] }[]> };
+      if ((j.hooks?.PostToolUse ?? []).some(m => m.hooks?.some(h => /soz-guard|cli\.(ts|js)"/.test(h.command ?? "") && (h.command ?? "").trimEnd().endsWith(" track"))))
+        return true;
+    } catch { /* not there, or not JSON */ }
+  }
+  return false;
+}
+
+/** Claude Code PreToolUse / PostToolUse hook: records the files this session touches, so that with several
+ * sessions in one folder each answers for its own (session.ts). Never blocks a tool. */
+function track(): number {
+  const input = hookInput();
+  const root = repoRoot(input.cwd ?? process.cwd());
+  const sid = input.session_id;
+  if (!root || !sid || !readBaseline(root, sid)) return 0;      // no baseline: the verdict is against HEAD anyway
+  const tool = input.tool_name ?? "";
+  const pre = input.hook_event_name === "PreToolUse";
+  if (FILE_TOOLS.includes(tool)) {
+    const p = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
+    const f = p ? repoPath(root, p) : null;
+    if (f) recordTouched(root, sid, [f]);
+  } else if (SHELL_TOOLS.includes(tool)) {
+    const exclude = loadConfig(root).exclude;
+    const key = input.tool_use_id ?? "shell";
+    if (pre) beforeShell(root, sid, key, exclude); else afterShell(root, sid, key, exclude);
+  }
+  return 0;
+}
 const hookInput = (): HookInput => { try { return JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { return {}; } };
 
 /** Claude Code SessionStart hook: records the working tree as it is, so that the verdict at the end is about
@@ -62,7 +103,10 @@ function hook(): number {
   if (!root) return 0;                                            // not a git repository: nothing to compare
   const baseline = readBaseline(root, input.session_id);
   const range = baseline ? { base: baseline.tree, head: snapshotTree(root, loadConfig(root).exclude) } : undefined;
-  const { verdict, config } = evaluate(dir, { range, guardBase: baseline?.guard, session: input.session_id, source: "hook" });
+  // with the tracking hooks installed, a session answers only for the files it touched (several sessions,
+  // one folder); a session that touched nothing answers for nothing
+  const only = baseline && input.session_id && trackingInstalled(root) ? (readTouched(root, input.session_id) ?? new Set<string>()) : undefined;
+  const { verdict, config } = evaluate(dir, { range, only, guardBase: baseline?.guard, session: input.session_id, source: "hook" });
   const stateFile = join(tmpdir(), `soz-guard-${(input.session_id ?? "default").replace(/[^\w-]/g, "")}.json`);
   const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number } : { blocks: 0 };
   const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
@@ -288,7 +332,7 @@ function addSection(root: string, name: string): string {
 
 function init(dir: string, args: string[] = []): number {
   const codex = args.includes("--codex"), gitHook = args.includes("--git");
-  const claude = args.includes("--claude") || (!codex && !gitHook);
+  const claude = args.includes("--claude") || args.includes("--sessions") || (!codex && !gitHook);
   const root = repoRoot(dir);
   if (!root) {
     process.stderr.write(`${dir} is not a git repository.\n`
@@ -316,6 +360,20 @@ function init(dir: string, args: string[] = []): number {
       list.push({ hooks: [{ type: "command", command: selfCommand(sub) }] });
       changed = true;
       done.push(`.claude/settings.json: ${event} hook added`);
+    }
+  }
+  // several sessions in one folder: each answers for the files it touched (opt-in: a shell command costs two
+  // snapshots, and a change made some way the hooks do not see is then nobody's)
+  if (args.includes("--sessions")) {
+    for (const event of ["PreToolUse", "PostToolUse"] as const) {
+      const list = (settings.hooks[event] ??= []) as { matcher?: string; hooks: { type: string; command: string }[] }[];
+      if (list.some(m => m.hooks?.some(h => /soz-guard|cli\.(ts|js)"/.test(h.command ?? "") && h.command.trimEnd().endsWith(" track"))))
+        done.push(`.claude/settings.json: the ${event} tracking hook is already there`);
+      else {
+        list.push({ matcher: event === "PreToolUse" ? SHELL_TOOLS.join("|") : TRACK_MATCHER, hooks: [{ type: "command", command: selfCommand("track") }] });
+        changed = true;
+        done.push(`.claude/settings.json: ${event} tracking hook added (each session answers for the files it touched)`);
+      }
     }
   }
   if (changed) {
@@ -355,6 +413,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "session-start") return sessionStart();
   if (cmd === "init") return init(rest.find(a => !a.startsWith("--")) ?? process.cwd(), rest);
   if (cmd === "pre-commit") return preCommit(rest);
+  if (cmd === "track") return track();
   if (cmd === "check") return check(rest);
   if (cmd === "ci") return ci(rest);
   if (cmd === "replay") return replay(rest);
@@ -367,7 +426,7 @@ async function main(argv: string[]): Promise<number> {
     else process.stdout.write(findings.length ? `Unfinished work in what changed:\n${report(findings)}\n` : "Nothing unfinished in what changed.\n");
     return findings.length ? 1 : 0;
   }
-  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--codex] [--git [--checks]]\n');
+  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--sessions] [--codex] [--git [--checks]]\n');
   return 2;
 }
 

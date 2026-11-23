@@ -76,4 +76,62 @@ function pruneSessions(root: string) {
   }
 }
 
+// --- Several sessions in one folder: each answers for the files it touched ----------------------------------
+//
+// With several agent sessions working in the same folder, the difference from a session's baseline holds
+// the other sessions' work too. A PostToolUse hook records the files a session edits (Edit, Write,
+// MultiEdit, NotebookEdit name them), and for a shell command the files that changed while it ran: a
+// snapshot before (PreToolUse) and after (PostToolUse). What another session changes while this one's
+// command runs is counted as this one's, which errs on the side of judging more, not less.
+
+const touchedPath = (root: string, session: string) => file(root, session).replace(/\.json$/, ".touched.json");
+const pendingPath = (root: string, session: string, key: string) =>
+  file(root, session).replace(/\.json$/, `.pending-${key.replace(/[^\w-]/g, "").slice(0, 80) || "shell"}.json`);
+
+/** The files this session touched, repository-relative with forward slashes, or null if none recorded. */
+export function readTouched(root: string, session: string | undefined): Set<string> | null {
+  if (!session) return null;
+  try {
+    const p = touchedPath(root, session);
+    return existsSync(p) ? new Set((JSON.parse(readFileSync(p, "utf8")) as { files: string[] }).files) : null;
+  } catch { return null; }
+}
+
+/** A path from a tool's input as soz-guard names files: relative to the repository, forward slashes; null if
+ * it is outside the repository. */
+export function repoPath(root: string, path: string): string | null {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const r = norm(root), p = norm(isAbsolute(path) ? path : join(root, path));
+  const same = process.platform === "win32" ? p.toLowerCase().startsWith(r.toLowerCase() + "/") : p.startsWith(r + "/");
+  return same ? p.slice(r.length + 1) : null;
+}
+
+export function recordTouched(root: string, session: string, files: string[]) {
+  const have = readTouched(root, session) ?? new Set<string>();
+  const before = have.size;
+  for (const f of files) have.add(f);
+  if (have.size === before && existsSync(touchedPath(root, session))) return;
+  mkdirSync(join(root, OWN_DIR, SESSIONS), { recursive: true });
+  writeFileSync(touchedPath(root, session), JSON.stringify({ files: [...have].sort() }, null, 2) + "\n");
+}
+
+/** Before a shell command: the working tree as it is. */
+export function beforeShell(root: string, session: string, key: string, exclude: string[]) {
+  mkdirSync(join(root, OWN_DIR, SESSIONS), { recursive: true });
+  writeFileSync(pendingPath(root, session, key), JSON.stringify({ tree: snapshotTree(root, exclude) }) + "\n");
+}
+
+/** After it: the files that changed while it ran are this session's. */
+export function afterShell(root: string, session: string, key: string, exclude: string[]): string[] {
+  const p = pendingPath(root, session, key);
+  if (!existsSync(p)) { recordTouched(root, session, []); return []; }
+  let before: string;
+  try { before = (JSON.parse(readFileSync(p, "utf8")) as { tree: string }).tree; } finally { rmSync(p, { force: true }); }
+  const after = snapshotTree(root, exclude);
+  const files = before === after ? [] : git(root, ["-c", "core.quotepath=false", "diff-tree", "-r", "--name-only", "--no-renames", before, after])
+    .split("\n").filter(Boolean);
+  recordTouched(root, session, files);
+  return files;
+}
+
 export { CONFIG_FILE };
