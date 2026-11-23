@@ -1,6 +1,6 @@
 {
   "name": "soz-guard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Work is finished when the checks say so, not when the agent does: a Claude Code hook and CI check that runs the checks the repository owner requires, guards the tests from being weakened, and stops a coding agent from finishing with TODOs, empty handlers, swallowed errors or made-up data.",
   "license": "Apache-2.0",
   "type": "module",

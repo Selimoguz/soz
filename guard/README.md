@@ -36,17 +36,13 @@ before it counts as done. It does not depend on soz.
 
 ## Set up (Claude Code, also in VS Code)
 
-Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file built from this
-folder, with no dependencies:
+Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
+dependencies, `soz-guard-0.3.0.tgz`, attached to this repository's
+[releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
+On the machine that will use it, in the project:
 
 ```sh
-npm pack                                   # here, in guard/: makes soz-guard-0.2.0.tgz
-```
-
-and on the machine that will use it, in the project:
-
-```sh
-npm install --save-dev path/to/soz-guard-0.2.0.tgz
+npm install --save-dev path/to/soz-guard-0.3.0.tgz
 npx soz-guard init
 ```
 
