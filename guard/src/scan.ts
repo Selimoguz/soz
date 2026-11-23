@@ -1,7 +1,8 @@
 // scan.ts — Finds unfinished work in what changed: the lines a diff adds, and new files whole.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { type Rule, defaultRules, defaultExclude, IGNORE_MARK, matchesAny } from "./rules.ts";
 
@@ -82,6 +83,9 @@ export function repoRoot(dir: string): string | null {
 
 /** soz-guard's own folder (verdicts, caches, acceptances): never a change of the project. */
 export const OWN_DIR = ".soz-guard";
+
+/** An exclude pattern that would hide soz-guard's own config is not applied: a change to it is always seen. */
+export const excludesConfig = (glob: string) => matchesAny(CONFIG_FILE, [glob]);
 const own = (file: string) => file === OWN_DIR || file.startsWith(OWN_DIR + "/");
 
 /** What is compared: BASE against HEAD (a commit), or, without HEAD, against the working tree and its
@@ -98,35 +102,47 @@ export type Diff = {
   fingerprint: string;
 };
 
-export function readDiff(root: string, range: Range = { base: "HEAD" }): Diff {
+/** Untracked files larger than this are not read: they are data (caches, databases, archives), not
+ * code to scan; the fingerprint takes their size and modification time instead. */
+const LARGE = 2 * 1024 * 1024;
+
+/** EXCLUDE (glob patterns) is left out of the diff altogether, in git itself: a project that committed
+ * node_modules does not make soz-guard read every package's every line. soz-guard's config file is never
+ * left out, whatever EXCLUDE says, so a change to it is always seen. */
+export function readDiff(root: string, range: Range = { base: "HEAD" }, exclude: string[] = []): Diff {
   const added = new Map<string, [number, string][]>(), removed = new Map<string, [number, string][]>(), status = new Map<string, string>();
   const push = (m: Map<string, [number, string][]>, file: string, n: number, text: string) => {
     if (own(file)) return;
     if (!m.has(file)) m.set(file, []);
     m.get(file)!.push([n, text]);
   };
-  let fingerprint = "";
+  const hash = createHash("sha256");
+  const paths = ["--", ".", ...exclude.filter(g => !excludesConfig(g)).map(g => `:(exclude,glob)${g}`)];
   const whole = (file: string) => {
     if (own(file)) return;
     const path = join(root, file);
     if (!existsSync(path)) return;
-    const text = readFileSync(path, "utf8");
-    fingerprint += `\nuntracked ${file}\n${text}`;
     status.set(file, "A");
+    const st = statSync(path);
+    if (st.size > LARGE) { hash.update(`\nuntracked ${file} size ${st.size} modified ${st.mtimeMs}\n`, "utf8"); return; }
+    const text = readFileSync(path, "utf8");
+    hash.update(`\nuntracked ${file}\n`, "utf8").update(text, "utf8");
     if (text.includes("\u0000")) return;                     // binary
     text.split(/\r?\n/).forEach((l, i) => push(added, file, i + 1, l));
   };
+  const untracked = (extra: string[]) =>
+    git(root, ["-c", "core.quotepath=false", "ls-files", ...extra, "--others", "--exclude-standard", ...paths]).split("\n").filter(Boolean);
   if (!range.head && range.base === "HEAD" && !hasHead(root)) {
-    for (const f of git(root, ["ls-files", "--cached", "--others", "--exclude-standard"]).split("\n")) if (f) whole(f);
-    return { added, removed, status, fingerprint };
+    for (const f of untracked(["--cached"])) whole(f);
+    return { added, removed, status, fingerprint: hash.digest("hex") };
   }
   const span = range.head ? [range.base, range.head] : [range.base];
-  for (const line of git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--name-status", "-M", ...span, "--"]).split("\n")) {
+  for (const line of git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--name-status", "-M", ...span, ...paths]).split("\n")) {
     const parts = line.split("\t");
     if (parts.length >= 2 && !own(parts[parts.length - 1])) status.set(parts[parts.length - 1], parts[0][0]);
   }
-  const diffText = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", ...span, "--"]);
-  fingerprint += diffText;
+  const diffText = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", ...span, ...paths]);
+  hash.update(diffText, "utf8");
   let oldFile: string | null = null, newFile: string | null = null, o = 0, n = 0;
   for (const line of diffText.split("\n")) {
     if (line.startsWith("--- ")) { oldFile = line === "--- /dev/null" ? null : line.slice(6); continue; }
@@ -137,13 +153,13 @@ export function readDiff(root: string, range: Range = { base: "HEAD" }): Diff {
     if (line.startsWith("+") && newFile) push(added, newFile, n++, line.slice(1).replace(/\r$/, ""));
     else if (line.startsWith("-") && (newFile ?? oldFile)) push(removed, newFile ?? oldFile!, o++, line.slice(1).replace(/\r$/, ""));
   }
-  if (!range.head) for (const f of git(root, ["ls-files", "--others", "--exclude-standard"]).split("\n")) if (f) whole(f);
-  return { added, removed, status, fingerprint };
+  if (!range.head) for (const f of untracked([])) whole(f);
+  return { added, removed, status, fingerprint: hash.digest("hex") };
 }
 
 /** Added lines per file: changes against BASE (default HEAD), plus untracked files whole. */
-export function changedLines(root: string, base = "HEAD"): Map<string, [number, string][]> {
-  return readDiff(root, { base }).added;
+export function changedLines(root: string, base = "HEAD", exclude: string[] = []): Map<string, [number, string][]> {
+  return readDiff(root, { base }, exclude).added;
 }
 
 export function scanLines(lines: Map<string, [number, string][]>, config: Config): Finding[] {
@@ -169,7 +185,7 @@ export function scan(dir: string, base = "HEAD"): { root: string; findings: Find
   const root = repoRoot(dir);
   if (!root) throw new Error(`${dir} is not in a git repository; soz-guard looks at what changed, so it needs git`);
   const config = loadConfig(root);
-  return { root, findings: scanLines(changedLines(root, base), config), config };
+  return { root, findings: scanLines(changedLines(root, base, config.exclude), config), config };
 }
 
 export function report(findings: Finding[]): string {

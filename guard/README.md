@@ -55,7 +55,7 @@ npx soz-guard init
 
 `init` adds, without touching what is already there:
 
-- a `Stop` hook in `.claude/settings.json`;
+- a `SessionStart` and a `Stop` hook in `.claude/settings.json`;
 - a `.soz-guard.json`, with `npm test` as a required check if the project has a test script;
 - `.soz-guard/` in `.gitignore` (verdicts and caches stay local);
 - a short "Finished means finished" section in `CLAUDE.md`.
@@ -135,6 +135,23 @@ npx soz-guard ci --criteria report              # a team that reviews test chang
 On GitHub Actions `--base` defaults to the pull request's base branch. The change is everything the
 branch adds since it left the base (the merge base). In CI the tests usually run in their own step;
 `--checks` is for when soz-guard should run them itself.
+
+## Only what the agent changed
+
+When a Claude Code session starts, the `SessionStart` hook records the working tree as it is, tracked
+and untracked files alike, as a git tree. When the agent tries to finish, the verdict is about what
+changed since then, committed or not, and about nothing else. Work that was already uncommitted
+before the session, yours or an earlier agent's, is not held against this one: a project does not
+have to be clean to use soz-guard.
+
+The snapshot is taken with a copy of git's index, so the working tree, the real index and the branch
+are never touched; git only stores the files' contents as objects, as `git stash` does. It takes well
+under a second. A resumed session keeps its own snapshot; snapshots older than 14 days are removed.
+Without one (soz-guard installed in the middle of a session), the verdict is about what changed since
+`HEAD`, as before.
+
+One limit: what a person changes in the same folder while the agent works counts as the agent's
+change. Git cannot tell the two apart.
 
 ## The hook
 

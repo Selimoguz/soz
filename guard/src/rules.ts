@@ -95,7 +95,9 @@ export const defaultRules: Rule[] = [
 ];
 
 export const defaultExclude = [
-  "**/*.md", "**/*.lock", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+  // prose and data, not code: a "TODO" in notes or a text corpus is not unfinished work  soz-guard: ignore (describes the rule)
+  "**/*.md", "**/*.txt", "**/*.log", "**/*.csv",
+  "**/*.lock", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
   "**/node_modules/**", "**/dist/**", "**/build/**", "**/.git/**", "**/*.min.js", "**/*.map",
 ];
 

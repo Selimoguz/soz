@@ -90,6 +90,13 @@ rmSync(join(repo, "test", "stock.test.ts"));
 hook();
 check("a test file deleted: open", last().state === "open" && last().criteria[0]?.kind === "deleted");
 git("checkout", "-q", "--", "test/stock.test.ts");
+// found trying a real project: node_modules committed to git, then removed; its packages' own tests are not the criteria
+write("node_modules/somepkg/test/index.test.js", 'expect(1).toBe(1);\n');
+git("add", "-f", "node_modules"); git("commit", "-q", "-m", "a project that committed node_modules");
+rmSync(join(repo, "node_modules"), { recursive: true, force: true });
+hook();
+check("a package's tests deleted inside node_modules (excluded): not the project's criteria", last().criteria.length === 0);
+git("checkout", "-q", "--", "node_modules");
 write(".soz-guard.json", JSON.stringify({ checks: [], disable: ["todo"] }));
 hook();
 check("the agent changes soz-guard's rules: open", last().state === "open" && last().criteria[0]?.kind === "config");

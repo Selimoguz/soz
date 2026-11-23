@@ -84,7 +84,7 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   const range = o.range ?? { base: "HEAD" };
   const config = loadConfig(root);
   const configText = existsSync(join(root, CONFIG_FILE)) ? readFileSync(join(root, CONFIG_FILE), "utf8") : "";
-  const diff = readDiff(root, range);
+  const diff = readDiff(root, range, config.exclude);
   const change = sha256(diff.fingerprint), configHash = sha256(configText);
   const findings = scanLines(diff.added, config);
   const criteria = criteriaChanges(diff, config);

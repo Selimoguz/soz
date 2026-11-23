@@ -2,6 +2,7 @@
 // cli.ts — soz-guard: work is finished when the checks say so, not when the agent does.
 //
 //   soz-guard hook                     a Claude Code Stop hook (reads the hook's JSON on stdin)
+//   soz-guard session-start            a Claude Code SessionStart hook: records where this session began
 //   soz-guard check [--json]           the verdict on what changed since HEAD, checks run; exit 1 unless finished
 //   soz-guard ci --base REF [--checks] [--criteria block|report] [--json]
 //                                      the same verdict in CI, on a pull request against its base
@@ -16,8 +17,9 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { scan, report, repoRoot, CONFIG_FILE, OWN_DIR } from "./scan.ts";
+import { scan, report, repoRoot, loadConfig, CONFIG_FILE, OWN_DIR } from "./scan.ts";
 import { evaluate, verdictReport, criteriaFingerprint, writeOwn } from "./verdict.ts";
+import { startSession, readBaseline, snapshotTree } from "./session.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -33,14 +35,30 @@ const isOurHook = (command: string | undefined) =>
 
 const finished = (state: string) => state === "verified" || state === "unchecked";
 
+type HookInput = { cwd?: string; session_id?: string; source?: string };
+const hookInput = (): HookInput => { try { return JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { return {}; } };
+
+/** Claude Code SessionStart hook: records the working tree as it is, so that the verdict at the end is about
+ * what this session changed, not about work that was uncommitted before it (see session.ts). */
+function sessionStart(): number {
+  const input = hookInput();
+  const root = repoRoot(input.cwd ?? process.cwd());
+  if (!root || !input.session_id) return 0;
+  startSession(root, input.session_id, loadConfig(root).exclude, input.source ?? "startup");
+  return 0;
+}
+
 /** Claude Code Stop hook. Exit 2 with a message on stderr makes Claude continue instead of stopping.
- * The agent may finish only when the verdict is verified or unchecked (see verdict.ts). */
+ * The agent may finish only when the verdict is verified or unchecked (see verdict.ts). With a baseline
+ * from this session's start, only what changed since then is judged; without one, what changed since HEAD. */
 function hook(): number {
-  let input: { cwd?: string; session_id?: string } = {};
-  try { input = JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { /* no input: use the current folder */ }
+  const input = hookInput();
   const dir = input.cwd ?? process.cwd();
-  if (!repoRoot(dir)) return 0;                                   // not a git repository: nothing to compare
-  const { verdict, config } = evaluate(dir);
+  const root = repoRoot(dir);
+  if (!root) return 0;                                            // not a git repository: nothing to compare
+  const baseline = readBaseline(root, input.session_id);
+  const range = baseline ? { base: baseline.tree, head: snapshotTree(root, loadConfig(root).exclude) } : undefined;
+  const { verdict, config } = evaluate(dir, { range });
   const stateFile = join(tmpdir(), `soz-guard-${(input.session_id ?? "default").replace(/[^\w-]/g, "")}.json`);
   const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number } : { blocks: 0 };
   if (finished(verdict.state)) { writeFileSync(stateFile, JSON.stringify({ blocks: 0 })); return 0; }
@@ -156,18 +174,26 @@ function init(dir: string): number {
   const done: string[] = [];
 
   const settingsPath = join(root, ".claude", "settings.json");
-  let settings: { hooks?: { Stop?: { hooks: { type: string; command: string }[] }[] } } = {};
+  type Hooks = Record<string, { hooks: { type: string; command: string }[] }[]>;
+  let settings: { hooks?: Hooks } = {};
   if (existsSync(settingsPath)) settings = JSON.parse(readFileSync(settingsPath, "utf8"));   // a broken file stops here, untouched
-  const command = selfCommand("hook");
   settings.hooks ??= {};
-  settings.hooks.Stop ??= [];
-  if (settings.hooks.Stop.some(m => m.hooks?.some(h => isOurHook(h.command))))
-    done.push(".claude/settings.json: the Stop hook is already there");
-  else {
-    settings.hooks.Stop.push({ hooks: [{ type: "command", command }] });
+  let changed = false;
+  // SessionStart records where the session began; Stop judges what changed since then
+  for (const [event, sub] of [["SessionStart", "session-start"], ["Stop", "hook"]] as const) {
+    const list = (settings.hooks[event] ??= []);
+    const ours = (c: string | undefined) => !!c && (c.includes(self) || /soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && c.trimEnd().endsWith(` ${sub}`);
+    if (list.some(m => m.hooks?.some(h => ours(h.command) || (event === "Stop" && isOurHook(h.command)))))
+      done.push(`.claude/settings.json: the ${event} hook is already there`);
+    else {
+      list.push({ hooks: [{ type: "command", command: selfCommand(sub) }] });
+      changed = true;
+      done.push(`.claude/settings.json: ${event} hook added`);
+    }
+  }
+  if (changed) {
     mkdirSync(join(root, ".claude"), { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-    done.push(".claude/settings.json: Stop hook added");
   }
 
   const configPath = join(root, CONFIG_FILE);
@@ -202,6 +228,7 @@ function init(dir: string): number {
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   if (cmd === "hook") return hook();
+  if (cmd === "session-start") return sessionStart();
   if (cmd === "init") return init(rest[0] ?? process.cwd());
   if (cmd === "check") return check(rest);
   if (cmd === "ci") return ci(rest);

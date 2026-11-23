@@ -8,11 +8,14 @@ declare module "node:fs" {
   export function mkdtempSync(prefix: string): string;
   export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
   export function readdirSync(path: string): string[];
+  export function statSync(path: string): { size: number; mtimeMs: number };
+  export function copyFileSync(from: string, to: string): void;
 }
 
 declare module "node:path" {
   export function join(...parts: string[]): string;
   export function dirname(path: string): string;
+  export function isAbsolute(path: string): boolean;
 }
 
 declare module "node:os" {
@@ -49,7 +52,7 @@ declare module "node:readline" {
 }
 
 declare const process: {
-  argv: string[]; env: Record<string, string | undefined>; execPath: string; platform: string;
+  argv: string[]; env: Record<string, string | undefined>; execPath: string; platform: string; pid: number;
   cwd(): string; exit(code?: number): never;
   stdout: { write(s: string): void }; stderr: { write(s: string): void };
   stdin: { isTTY?: boolean };

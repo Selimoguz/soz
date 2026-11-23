@@ -29,7 +29,8 @@ export function criteriaChanges(diff: Diff, config: Config): CriteriaChange[] {
                  detail: `the rules that decide what counts as finished (${CONFIG_FILE}) were ${status === "D" ? "deleted" : status === "A" ? "added" : "changed"}` });
       continue;
     }
-    if (!matchesAny(file, config.criteria)) continue;
+    // node_modules, dist, build...: a package's own tests are not the project's criteria
+    if (matchesAny(file, config.exclude) || !matchesAny(file, config.criteria)) continue;
     if (status === "D") { out.push({ file, kind: "deleted", evidence, detail: "a test or CI file was deleted" }); continue; }
     const removed = (diff.removed.get(file) ?? []).filter(([, t]) => ASSERTION.test(t));
     const added = (diff.added.get(file) ?? []).filter(([, t]) => ASSERTION.test(t));
