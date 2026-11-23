@@ -8,6 +8,7 @@
 //                                      the same verdict in CI, on a pull request against its base
 //   soz-guard replay COMMIT|FROM..TO   past commits, judged as soz-guard would have (for a pilot)
 //   soz-guard accept "<why>"           a person accepts changes to the tests or rules (in a terminal)
+//   soz-guard log [--verify]           the chained log of verdicts and acceptances
 //   soz-guard scan [--json] [--base REF]   only the static scan, as in 0.1
 //   soz-guard init [DIR]               installs the hook, a .soz-guard.json and a CLAUDE.md section
 
@@ -18,12 +19,12 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { scan, report, repoRoot, loadConfig, CONFIG_FILE, OWN_DIR } from "./scan.ts";
-import { evaluate, verdictReport, criteriaFingerprint, writeOwn } from "./verdict.ts";
+import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree } from "./session.ts";
+import { MARK } from "./guard.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
-const MARK = "<!-- soz-guard -->";
 
 /** How to run this very file again from anywhere: this Node, by full path (a desktop app's PATH may
  * not have node), with type stripping only when running the TypeScript source rather than the
@@ -58,17 +59,20 @@ function hook(): number {
   if (!root) return 0;                                            // not a git repository: nothing to compare
   const baseline = readBaseline(root, input.session_id);
   const range = baseline ? { base: baseline.tree, head: snapshotTree(root, loadConfig(root).exclude) } : undefined;
-  const { verdict, config } = evaluate(dir, { range });
+  const { verdict, config } = evaluate(dir, { range, guardBase: baseline?.guard, session: input.session_id, source: "hook" });
   const stateFile = join(tmpdir(), `soz-guard-${(input.session_id ?? "default").replace(/[^\w-]/g, "")}.json`);
   const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number } : { blocks: 0 };
-  if (finished(verdict.state)) { writeFileSync(stateFile, JSON.stringify({ blocks: 0 })); return 0; }
+  const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
+  if (finished(verdict.state)) { writeFileSync(stateFile, JSON.stringify({ blocks: 0 })); log("finished"); return 0; }
   state.blocks++;
   writeFileSync(stateFile, JSON.stringify(state));
   if (state.blocks <= config.maxBlocks) {
+    log(`stopped the agent (${state.blocks} of ${config.maxBlocks})`);
     process.stderr.write(`soz-guard: you are about to finish, but the work is not finished yet.\n${verdictReport(verdict, true)}\n(check ${state.blocks} of ${config.maxBlocks})\n`);
     return 2;
   }
   // Stopped enough times: let the agent finish, but tell the person, plainly, that it is not finished.
+  log("let the agent stop unfinished, after the last check");
   writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
   process.stdout.write(JSON.stringify({
     systemMessage: `soz-guard: the agent stopped after ${config.maxBlocks} checks, but the work is ${verdict.state}, not finished:\n${verdictReport(verdict, false)}`,
@@ -131,6 +135,30 @@ function replay(args: string[]): number {
   return 0;
 }
 
+/** The log of verdicts and acceptances: the last ones, or (--verify) whether its chain is intact. */
+function logCommand(args: string[]): number {
+  const root = repoRoot(process.cwd());
+  if (!root) throw new Error("not in a git repository");
+  const v = verifyLog(root);
+  if (args.includes("--verify")) {
+    process.stdout.write(v.ok ? `The log is intact: ${v.lines} entries, each chained to the one before.\n`
+                              : `The log is broken at entry ${v.brokenAt} of ${v.lines}: ${v.why}.\n`);
+    return v.ok ? 0 : 1;
+  }
+  const path = join(root, OWN_DIR, "log.jsonl");
+  const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(l => l.trim()) : [];
+  for (const l of lines.slice(-Number(flag(args, "--last") ?? 20))) {
+    try {
+      const e = JSON.parse(l) as { seq: number; at: string; event: string; state?: string; decision?: string; reason?: string; source?: string; findings?: unknown[]; criteria?: unknown[]; checks?: { name: string; status: string }[] };
+      const what = e.event === "verdict" ? `${e.state} (${e.source}): ${e.findings?.length ?? 0} unfinished, ${e.criteria?.length ?? 0} criteria${e.checks?.length ? ", " + e.checks.map(c => `${c.name} ${c.status}`).join(", ") : ""}`
+        : e.event === "hook" ? e.decision : e.event === "accept" ? `accepted: ${e.reason}` : e.event;
+      process.stdout.write(`${String(e.seq).padStart(4)}  ${e.at}  ${e.event.padEnd(7)}  ${what}\n`);
+    } catch { process.stdout.write(`      (unreadable line)\n`); }
+  }
+  if (!v.ok) process.stdout.write(`\nThe log is broken at entry ${v.brokenAt}: ${v.why}.\n`);
+  return 0;
+}
+
 /** A person accepts the current changes to what counts as finished. Typed in a terminal, never piped:
  * an agent runs commands without one. (On one machine this slows an agent down rather than stops it;
  * CI is where the rule is enforced.) */
@@ -141,13 +169,20 @@ async function accept(args: string[]): Promise<number> {
     process.stderr.write("soz-guard accept needs a terminal: a person types it, an agent cannot.\n");
     return 2;
   }
-  const { root, verdict } = evaluate(process.cwd(), { checks: false, record: false });
-  if (!verdict.criteria.length) { process.stdout.write("Nothing to accept: the change does not touch what counts as finished.\n"); return 0; }
-  process.stdout.write(`These changes touch what counts as finished:\n${verdict.criteria.map(c => `  ${c.file}  [${c.kind}] ${c.detail}`).join("\n")}\n`);
+  // What is accepted is what the last verdict stopped on: the hook judges a session's change, which only
+  // the hook's own record knows; recomputing here against HEAD could name other changes.
+  const root = repoRoot(process.cwd());
+  if (!root) throw new Error("not in a git repository");
+  const lastPath = join(root, OWN_DIR, "last.json");
+  const last = existsSync(lastPath) ? JSON.parse(readFileSync(lastPath, "utf8")) as { criteria: { file: string; kind: string; detail: string; evidence: string }[]; at: string } : null;
+  const criteria = last?.criteria ?? [];
+  if (!criteria.length) { process.stdout.write("Nothing to accept: the last verdict found no change to what counts as finished.\n"); return 0; }
+  process.stdout.write(`The last verdict (${last!.at}) stopped on these changes to what counts as finished:\n${criteria.map(c => `  ${c.file}  [${c.kind}] ${c.detail}`).join("\n")}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise<string>(res => rl.question("Accept them? Type yes: ", a => { rl.close(); res(a); }));
   if (answer.trim().toLowerCase() !== "yes") { process.stdout.write("Not accepted.\n"); return 1; }
-  writeOwn(root, "accepted.json", { criteria: criteriaFingerprint(verdict.criteria), reason, at: new Date().toISOString() });
+  writeOwn(root, "accepted.json", { criteria: criteriaFingerprint(criteria as never), reason, at: new Date().toISOString() });
+  appendLog(root, { event: "accept", reason, criteria: criteria.map(c => `${c.file} ${c.kind}`), fingerprint: criteriaFingerprint(criteria as never) });
   process.stdout.write("Accepted, for exactly these changes; any further change to the tests or rules needs accepting again.\n");
   return 0;
 }
@@ -234,6 +269,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "ci") return ci(rest);
   if (cmd === "replay") return replay(rest);
   if (cmd === "accept") return accept(rest);
+  if (cmd === "log") return logCommand(rest);
   if (cmd === "scan" || cmd === undefined) {
     const json = rest.includes("--json");
     const { root, findings } = scan(process.cwd(), flag(rest, "--base") ?? "HEAD");

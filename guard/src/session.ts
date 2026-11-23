@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, copyFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { CONFIG_FILE, OWN_DIR, excludesConfig } from "./scan.ts";
+import { type GuardState, guardState } from "./guard.ts";
 
 const SESSIONS = "sessions";
 const KEEP_DAYS = 14;
@@ -42,7 +43,8 @@ export function snapshotTree(root: string, exclude: string[]): string {
   }
 }
 
-type Baseline = { tree: string; at: string; source: string };
+/** TREE: the working tree at the start; GUARD: the hooks and soz-guard's instructions then (guard.ts). */
+type Baseline = { tree: string; at: string; source: string; guard?: GuardState };
 
 const file = (root: string, session: string) => join(root, OWN_DIR, SESSIONS, `${session.replace(/[^\w-]/g, "")}.json`);
 
@@ -56,7 +58,8 @@ export function readBaseline(root: string, session: string | undefined): Baselin
 export function startSession(root: string, session: string, exclude: string[], source = "startup"): Baseline {
   const existing = readBaseline(root, session);
   if (existing) return existing;
-  const baseline = { tree: snapshotTree(root, exclude), at: new Date().toISOString(), source };
+  const read = (f: string) => existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : null;
+  const baseline = { tree: snapshotTree(root, exclude), at: new Date().toISOString(), source, guard: guardState(read) };
   mkdirSync(join(root, OWN_DIR, SESSIONS), { recursive: true });
   writeFileSync(file(root, session), JSON.stringify(baseline, null, 2) + "\n");
   pruneSessions(root);

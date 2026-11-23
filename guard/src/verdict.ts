@@ -13,10 +13,12 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, loadConfig, readDiff, repoRoot, scanLines } from "./scan.ts";
+import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, loadConfig, readDiff, repoRoot, scanLines,
+         gitShow, gitIgnored } from "./scan.ts";
 import { type CriteriaChange, criteriaChanges } from "./criteria.ts";
+import { type GuardState, guardState, guardChanges } from "./guard.ts";
 import { matchesAny } from "./rules.ts";
 
 export type CheckResult = {
@@ -74,9 +76,48 @@ export type EvaluateOptions = {
   checks?: boolean;
   /** Reuse results of checks already run on exactly this change (the hook's cache). */
   reuse?: boolean;
-  /** Write the verdict to .soz-guard/last.json. */
+  /** Write the verdict to .soz-guard/last.json and append it to the log. */
   record?: boolean;
+  /** The hooks and instructions as they were at the session's start (see guard.ts); without it, as they
+   * are at the range's base in git. */
+  guardBase?: GuardState;
+  /** For the log: which session, and what asked for the verdict. */
+  session?: string;
+  source?: string;
 };
+
+// --- The log: every verdict and acceptance, appended, each line chained to the one before ---------------
+
+const LOG = "log.jsonl";
+const ZERO = "0".repeat(64);
+
+/** Appends ENTRY to .soz-guard/log.jsonl with its sequence number and the SHA-256 of the line before,
+ * so that a line removed or edited afterwards breaks the chain (soz-guard log --verify). */
+export function appendLog(root: string, entry: Record<string, unknown>) {
+  mkdirSync(join(root, OWN_DIR), { recursive: true });
+  const path = join(root, OWN_DIR, LOG);
+  const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(l => l.trim()) : [];
+  const prevLine = lines[lines.length - 1];
+  let seq = 1;
+  try { if (prevLine) seq = (JSON.parse(prevLine) as { seq: number }).seq + 1; } catch { seq = lines.length + 1; }
+  appendFileSync(path, JSON.stringify({ seq, prev: prevLine ? sha256(prevLine) : ZERO, at: new Date().toISOString(), ...entry }) + "\n", "utf8");
+}
+
+/** Checks the log's chain: { ok, lines } or the first line where it breaks. */
+export function verifyLog(root: string): { ok: boolean; lines: number; brokenAt?: number; why?: string } {
+  const path = join(root, OWN_DIR, LOG);
+  if (!existsSync(path)) return { ok: true, lines: 0 };
+  const lines = readFileSync(path, "utf8").split("\n").filter(l => l.trim());
+  let prev = ZERO;
+  for (let i = 0; i < lines.length; i++) {
+    let e: { seq?: number; prev?: string };
+    try { e = JSON.parse(lines[i]); } catch { return { ok: false, lines: lines.length, brokenAt: i + 1, why: "not JSON" }; }
+    if (e.seq !== i + 1) return { ok: false, lines: lines.length, brokenAt: i + 1, why: `sequence ${e.seq}, expected ${i + 1} (a line was removed or added)` };
+    if (e.prev !== prev) return { ok: false, lines: lines.length, brokenAt: i + 1, why: "the line before was changed or removed" };
+    prev = sha256(lines[i]);
+  }
+  return { ok: true, lines: lines.length };
+}
 
 export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; config: Config; verdict: Verdict } {
   const root = repoRoot(dir);
@@ -87,7 +128,15 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   const diff = readDiff(root, range, config.exclude);
   const change = sha256(diff.fingerprint), configHash = sha256(configText);
   const findings = scanLines(diff.added, config);
-  const criteria = criteriaChanges(diff, config);
+  // the hooks and soz-guard's instructions: against the session's start if known, else against the base in
+  // git (where a file git ignores, such as settings.local.json, cannot be compared and is left out)
+  const worktree = (f: string) => existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : null;
+  const atRev = (rev: string) => (f: string) => gitShow(root, rev, f);
+  const guard = o.guardBase
+    ? guardChanges(o.guardBase, guardState(worktree))
+    : guardChanges(guardState(atRev(range.base)), guardState(range.head ? atRev(range.head) : worktree))
+        .filter(c => range.head || !gitIgnored(root, c.file));
+  const criteria = [...criteriaChanges(diff, config), ...guard];
   const accepted = readAccepted(root);
   const criteriaAccepted = criteria.length && accepted && accepted.criteria === criteriaFingerprint(criteria) ? accepted.reason : null;
   const criteriaOpen = criteria.length > 0 && config.criteriaChanges === "block" && !criteriaAccepted;
@@ -113,7 +162,15 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     : todo.length && o.checks !== false ? "verified"
     : "unchecked";
   const verdict: Verdict = { state, change, config: configHash, at: new Date().toISOString(), range, findings, criteria, criteriaAccepted, checks };
-  if (o.record !== false) writeOwn(root, "last.json", verdict);
+  if (o.record !== false) {
+    writeOwn(root, "last.json", verdict);
+    appendLog(root, {
+      event: "verdict", source: o.source ?? "check", session: o.session ?? null, state, change, config: configHash,
+      base: range.base, findings: findings.map(f => `${f.file}:${f.line} ${f.rule}`),
+      criteria: criteria.map(c => `${c.file} ${c.kind}`), criteriaAccepted,
+      checks: checks.map(c => ({ name: c.name, status: c.status, seconds: c.seconds, reused: !!c.reused })),
+    });
+  }
   return { root, config, verdict };
 }
 

@@ -11,7 +11,7 @@ import { matchesAny } from "./rules.ts";
 /** EVIDENCE is the SHA-256 of exactly what changed in the file (its removed and added lines): a person's
  * acceptance is bound to it, so a further change, even of the same kind, needs accepting again. */
 export type CriteriaChange = {
-  file: string; kind: "config" | "deleted" | "assertions-removed" | "assertions-changed"; detail: string; evidence: string;
+  file: string; kind: "config" | "deleted" | "assertions-removed" | "assertions-changed" | "guard"; detail: string; evidence: string;
 };
 
 const evidenceOf = (diff: Diff, file: string) =>

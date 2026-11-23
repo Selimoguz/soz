@@ -81,6 +81,16 @@ export function repoRoot(dir: string): string | null {
   try { return git(dir, ["rev-parse", "--show-toplevel"]).trim(); } catch { return null; }
 }
 
+/** FILE's text at REV (a commit or a tree), or null if it is not there. */
+export function gitShow(root: string, rev: string, file: string): string | null {
+  try { return git(root, ["show", `${rev}:${file}`]); } catch { return null; }
+}
+
+/** Whether git ignores FILE (.gitignore and the like). */
+export function gitIgnored(root: string, file: string): boolean {
+  try { git(root, ["check-ignore", "-q", file]); return true; } catch { return false; }
+}
+
 /** soz-guard's own folder (verdicts, caches, acceptances): never a change of the project. */
 export const OWN_DIR = ".soz-guard";
 

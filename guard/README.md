@@ -136,6 +136,33 @@ On GitHub Actions `--base` defaults to the pull request's base branch. The chang
 branch adds since it left the base (the merge base). In CI the tests usually run in their own step;
 `--checks` is for when soz-guard should run them itself.
 
+**Run soz-guard in CI from a source the pull request cannot change**: a published version pinned by
+number, or a commit of soz-guard's own repository pinned by hash. Never from a copy inside the
+repository being checked, which the agent's branch could have edited. (soz-guard is not on npm yet;
+until it is, pin a commit of this repository.)
+
+## Integrity: soz-guard's own footing
+
+The hooks that run soz-guard and the instructions that tell the agent the rules belong to the owner as
+much as the tests do. A change to them is a criteria change (`guard`) that a person accepts:
+
+| Change | Verdict |
+|---|---|
+| a hook removed or changed in `.claude/settings.json` or `.claude/settings.local.json` | `open` |
+| `disableAllHooks` set in either | `open` |
+| soz-guard's section in `CLAUDE.md` or `AGENTS.md` rewritten or removed | `open` |
+| a permission granted (Claude Code writes it to `settings.local.json`), any other part of `CLAUDE.md` | fine |
+
+`settings.local.json` is usually ignored by git, so within a session these are compared with what the
+files held when the session started, not with the diff. Every verdict, every decision of the hook and
+every acceptance is appended to `.soz-guard/log.jsonl`, each line chained to the one before by its
+SHA-256; `soz-guard log --verify` shows where the chain breaks if a line was removed or edited.
+
+What this does not cover, plainly: on one machine an agent can do whatever its user can. It can edit
+soz-guard's own source, your user-level `~/.claude/settings.json`, or the log and its chain from the
+start. Locally, soz-guard makes such moves visible and slows them down; CI, running soz-guard from
+outside the change, is where they are stopped.
+
 ## Only what the agent changed
 
 When a Claude Code session starts, the `SessionStart` hook records the working tree as it is, tracked
@@ -223,6 +250,8 @@ A rule with the id of a built-in rule replaces it.
 npx soz-guard check              # the verdict on what changed since HEAD, checks run; exit 1 unless finished
 npx soz-guard check --json
 npx soz-guard scan               # the static rules only
+npx soz-guard log                # the last verdicts, hook decisions and acceptances
+npx soz-guard log --verify       # whether the log's chain is intact
 ```
 
 ## What it is not

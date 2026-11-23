@@ -10,6 +10,7 @@ declare module "node:fs" {
   export function readdirSync(path: string): string[];
   export function statSync(path: string): { size: number; mtimeMs: number };
   export function copyFileSync(from: string, to: string): void;
+  export function appendFileSync(path: string, data: string, encoding: "utf8"): void;
 }
 
 declare module "node:path" {

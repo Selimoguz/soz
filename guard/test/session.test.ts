@@ -81,6 +81,44 @@ run(["init"]);
 const again = JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8"));
 check("running init again adds nothing", again.hooks.SessionStart.length === 1 && again.hooks.Stop.length === 1);
 
+console.log("\nIntegrity: the hooks and soz-guard's instructions are the owner's");
+write(".gitignore", ".soz-guard/\n.claude/settings.local.json\n");
+write(".claude/settings.local.json", JSON.stringify({ permissions: { allow: [] } }, null, 2));
+git("add", "-A"); git("commit", "-q", "-m", "soz-guard installed");
+const settingsText = readFileSync(join(repo, ".claude", "settings.json"), "utf8");
+const claudeText = readFileSync(join(repo, "CLAUDE.md"), "utf8");
+event("session-start", "g1");
+write(".claude/settings.local.json", JSON.stringify({ permissions: { allow: ["Bash(npm test)"] } }, null, 2));
+write("CLAUDE.md", "# Project\n\nUse tabs.\n\n" + claudeText);
+check("a permission granted, a note added to CLAUDE.md outside soz-guard's section: fine", event("hook", "g1").status === 0 && last().criteria.length === 0);
+const noStop = JSON.parse(settingsText); delete noStop.hooks.Stop;
+write(".claude/settings.json", JSON.stringify(noStop, null, 2));
+event("hook", "g1");
+check("the agent removes the Stop hook: open, a person has to accept it", last().state === "open" && last().criteria.some(c => c.file === ".claude/settings.json" && c.kind === "guard"));
+write(".claude/settings.json", settingsText);
+write(".claude/settings.local.json", JSON.stringify({ permissions: { allow: ["Bash(npm test)"] }, disableAllHooks: true }, null, 2));
+event("hook", "g1");
+check("disableAllHooks in settings.local.json, which git ignores: still seen", last().criteria.some(c => c.file === ".claude/settings.local.json" && c.kind === "guard"));
+write(".claude/settings.local.json", JSON.stringify({ permissions: { allow: ["Bash(npm test)"] } }, null, 2));
+write("CLAUDE.md", "# Project\n\nUse tabs.\n\n" + claudeText.replace("Finished means finished", "Finished means mostly finished"));
+event("hook", "g1");
+check("soz-guard's section in CLAUDE.md rewritten: open", last().criteria.some(c => c.file === "CLAUDE.md" && c.kind === "guard"));
+write("CLAUDE.md", claudeText);
+const noSection = run(["check", "--no-checks"]);   // without a session: against HEAD in git
+check("without a session, the same is checked against HEAD", noSection.status === 0);
+
+console.log("\nThe log: every verdict, chained");
+const v1 = run(["log", "--verify"]);
+check("the log is intact", v1.status === 0 && v1.stdout.includes("intact"), v1.stdout + v1.stderr);
+check("soz-guard log lists the verdicts and what the hook decided", /stopped the agent/.test(run(["log", "--last", "50"]).stdout));
+const logPath = join(repo, ".soz-guard", "log.jsonl");
+const lines = readFileSync(logPath, "utf8").split("\n").filter(l => l.trim());
+writeFileSync(logPath, lines.filter((_, k) => k !== 2).join("\n") + "\n");
+const v2 = run(["log", "--verify"]);
+check("a line removed from the log: --verify says where", v2.status === 1 && v2.stdout.includes("broken at entry 3"), v2.stdout);
+writeFileSync(logPath, lines.map((l, k) => k === 1 ? l.replace('"open"', '"verified"').replace('"unchecked"', '"verified"') : l).join("\n") + "\n");
+check("a verdict edited in the log: --verify says where", run(["log", "--verify"]).stdout.includes("broken at entry 3"));
+
 rmSync(repo, { recursive: true, force: true });
 console.log(`\n${failed ? `${failed} FAILED` : "All soz-guard session tests passed"}`);
 process.exit(failed ? 1 : 0);
