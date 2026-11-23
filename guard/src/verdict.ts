@@ -14,7 +14,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
+import { homedir } from "node:os";
 import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, loadConfig, readDiff, repoRoot, scanLines,
          gitShow, gitIgnored } from "./scan.ts";
 import { type CriteriaChange, criteriaChanges } from "./criteria.ts";
@@ -24,6 +25,8 @@ import { matchesAny } from "./rules.ts";
 export type CheckResult = {
   name: string; run: string; status: "passed" | "failed" | "timeout" | "error";
   exitCode: number | null; seconds: number; tail: string; reused?: boolean;
+  /** A holdout check: TAIL is withheld, and the full output is in this file outside the repository. */
+  holdout?: string;
 };
 export type State = "verified" | "unchecked" | "unverified" | "open";
 export type Verdict = {
@@ -40,13 +43,37 @@ export function applicableChecks(checks: Check[], changedFiles: string[]): Check
   return checks.filter(c => !c.when || c.when.length === 0 || changedFiles.some(f => matchesAny(f, c.when!)));
 }
 
+/** Where soz-guard keeps what must stay outside the repository: SOZ_GUARD_HOME, else ~/.soz-guard. */
+export const guardHome = () => process.env.SOZ_GUARD_HOME || join(homedir(), ".soz-guard");
+
+/** The file outside the repository where a holdout check's full output goes, for the person. */
+export const holdoutResultFile = (root: string, check: string) =>
+  join(guardHome(), "holdout-results", `${basename(root)}-${sha256(root).slice(0, 8)}`, `${check.replace(/[^\w-]/g, "_")}.txt`);
+
+const WITHHELD = "(output withheld: this is a holdout check)";
+
+/** Runs a check. A holdout check's output is written outside the repository and left out of the result,
+ * which goes to the agent, .soz-guard/last.json and the cache: an agent shown what a hidden test expected
+ * could write code to fit it, which is what holding the test out is meant to prevent. */
 export function runCheck(root: string, c: Check): CheckResult {
+  const r = runCheckOpen(root, c);
+  if (!c.holdout) return r;
+  const file = holdoutResultFile(root, c.name);
+  try {
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, `${new Date().toISOString()}  ${c.name}: ${r.status}${r.exitCode !== null ? ` (exit ${r.exitCode})` : ""}\n$ ${c.run}\n\n${r.tail}\n`);
+  } catch { /* the verdict does not depend on the person's copy */ }
+  return { ...r, tail: WITHHELD, holdout: file };
+}
+
+function runCheckOpen(root: string, c: Check): CheckResult {
   const started = Date.now();
   const timeout = (c.timeoutSeconds ?? 600) * 1000;
   const r = spawnSync(c.run, { cwd: root, encoding: "utf8", shell: true, timeout, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
   const seconds = Math.round((Date.now() - started) / 100) / 10;
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\r/g, "").split("\n");
-  const tail = output.slice(-TAIL_LINES).join("\n").trim();
+  // a holdout check's output goes only to the person's file, which can hold more of it
+  const tail = output.slice(-(c.holdout ? 400 : TAIL_LINES)).join("\n").trim();
   if (r.error && r.error.code === "ETIMEDOUT" || (r.status === null && r.signal))
     return { name: c.name, run: c.run, status: "timeout", exitCode: null, seconds, tail };
   if (r.error) return { name: c.name, run: c.run, status: "error", exitCode: null, seconds, tail: r.error.message };
@@ -149,7 +176,8 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     let cache: { change: string; config: string; results: CheckResult[] } | null = null;
     try { if (o.reuse !== false && existsSync(cachePath)) cache = JSON.parse(readFileSync(cachePath, "utf8")); } catch { cache = null; }
     checks = todo.map(c => {
-      const hit = cache && cache.change === change && cache.config === configHash
+      // a holdout check always runs again: its tests live outside the repository and can change unseen
+      const hit = !c.holdout && cache && cache.change === change && cache.config === configHash
         ? cache.results.find(r => r.name === c.name && r.run === c.run && (r.status === "passed" || r.status === "failed")) : undefined;
       return hit ? { ...hit, reused: true } : runCheck(root, c);
     });
@@ -184,7 +212,14 @@ export function verdictReport(v: Verdict, forAgent: boolean): string {
     parts.push(`${v.criteriaAccepted ? "Changes to what counts as finished (accepted by a person: " + v.criteriaAccepted + ")" : "Changes to what counts as finished, which a person has to accept"}:\n`
       + v.criteria.map(c => `  ${c.file}  [${c.kind}] ${c.detail}`).join("\n")
       + (forAgent && !v.criteriaAccepted ? `\nDo not weaken the tests, the CI or soz-guard's rules to get your work accepted. Undo this change, or, if it is\nright (a test that no longer applies), stop and ask the user: they accept it with  soz-guard accept "<why>"  in a terminal.` : ""));
-  for (const c of v.checks.filter(c => c.status !== "passed"))
+  for (const c of v.checks.filter(c => c.status !== "passed" && c.holdout))
+    parts.push(forAgent
+      ? `Hidden check "${c.name}" ${c.status === "failed" ? "failed" : c.status === "timeout" ? "did not finish in time" : "could not run"}. Its tests and output are kept from you on purpose:\n`
+        + `the owner holds them out so the work is judged against the requirement, not against what a test expects.\n`
+        + `Do not look for them. Re-read the requirement and check your work against it, edge cases included; if it is\n`
+        + `unclear, stop and ask the user. The user can see the details.`
+      : `Holdout check "${c.name}" ${c.status === "failed" ? `failed (exit ${c.exitCode})` : c.status === "timeout" ? "did not finish in time" : "could not run"}; its output is kept out of the repository, in:\n    ${c.holdout}`);
+  for (const c of v.checks.filter(c => c.status !== "passed" && !c.holdout))
     parts.push(`Check "${c.name}" (${c.run}) ${c.status === "failed" ? `failed (exit ${c.exitCode})` : c.status === "timeout" ? "did not finish in time" : "could not run"}${c.reused ? ", on this same change before" : ""}:\n`
       + c.tail.split("\n").map(l => "    " + l).join("\n")
       + (forAgent && c.status === "failed" ? "\nMake it pass by fixing the code, not the check." : ""));

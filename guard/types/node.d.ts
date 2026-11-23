@@ -17,10 +17,12 @@ declare module "node:path" {
   export function join(...parts: string[]): string;
   export function dirname(path: string): string;
   export function isAbsolute(path: string): boolean;
+  export function basename(path: string): string;
 }
 
 declare module "node:os" {
   export function tmpdir(): string;
+  export function homedir(): string;
 }
 
 declare module "node:url" {

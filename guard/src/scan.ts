@@ -9,7 +9,12 @@ import { type Rule, defaultRules, defaultExclude, IGNORE_MARK, matchesAny } from
 export type Finding = { file: string; line: number; column: number; rule: string; message: string; text: string };
 
 /** A check the repository's owner requires, run by soz-guard itself (never taken on the agent's word). */
-export type Check = { name: string; run: string; when?: string[]; timeoutSeconds?: number };
+export type Check = {
+  name: string; run: string; when?: string[]; timeoutSeconds?: number;
+  /** A check whose tests the agent must not see (kept outside the repository): its output never reaches the
+   * agent or the repository's .soz-guard/, only a file in the user's home (see verdict.ts). */
+  holdout?: boolean;
+};
 
 export type Config = {
   rules: Rule[];
@@ -54,6 +59,8 @@ export function loadConfig(root: string): Config {
   for (const c of j.checks ?? []) {
     if (!c || typeof c.name !== "string" || typeof c.run !== "string" || !c.run.trim())
       throw new Error(`${CONFIG_FILE}: a check needs a name and a command to run: ${JSON.stringify(c)}`);
+    if (c.holdout !== undefined && typeof c.holdout !== "boolean")
+      throw new Error(`${CONFIG_FILE}: "holdout" is true or false: ${JSON.stringify(c)}`);
     config.checks.push(c);
   }
   config.criteria.push(...(j.criteria ?? []));

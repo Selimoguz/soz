@@ -86,6 +86,29 @@ kept for exactly this change: stopping again without changing anything does not 
 When a check fails, the agent sees its name, the exit code and the last 30 lines of its output, and
 is told to fix the code, not the check.
 
+## Holdout checks: tests the agent does not see
+
+An agent that sees a failing test's expected value can write code that produces that value and nothing
+more. Against that, the owner can keep some tests out of the agent's sight:
+
+```json
+{"name": "hidden", "run": "node --test %USERPROFILE%/.soz-guard/holdout/shop/", "holdout": true}
+```
+
+The tests live outside the repository (Claude Code asks the user before the agent reads a file
+outside the project). When such a check fails, the agent is told only that a hidden check failed, to
+re-read the requirement and check its work against it, and to ask the user if it is unclear: not the
+output, and not the command. The output goes to a file outside the repository,
+`~/.soz-guard/holdout-results/<project>/<check>.txt` (`SOZ_GUARD_HOME` moves it), and `soz-guard
+check` names that file. `.soz-guard/last.json`, the cache and the log in the repository hold only
+passed or failed. A holdout check is never taken from the cache: its tests can change without the
+repository changing.
+
+Plainly: locally, this is a matter of not showing, not of locking. The command is in
+`.soz-guard.json`, and an agent that insists can ask to read the folder; the user then sees it ask.
+Holdout tests that must stay secret belong in CI, in a repository or a secret the pull request cannot
+read.
+
 ## The criteria
 
 What "finished" means is defined by the tests, the CI configuration and `.soz-guard.json`. These
