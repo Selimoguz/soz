@@ -93,11 +93,20 @@ belong to the repository's owner. soz-guard treats a change to them as a person'
 
 | Change | Verdict |
 |---|---|
-| a new test or a new assertion | fine |
-| an assertion changed (as many added as removed) | fine |
-| fewer assertions in a file than before | `open`: a person accepts it |
-| a test or CI file deleted | `open` |
-| `.soz-guard.json` changed | `open` |
+| Change | `"assertions": "fewer"` (default) | `"assertions": "any-change"` |
+|---|---|---|
+| a new test or a new assertion | fine | fine |
+| an existing assertion changed (an expected value, a matcher), as many as before | fine | `open` |
+| an existing assertion moved unchanged | fine | `open` (a diff cannot tell a move from a change) |
+| fewer assertions in a file than before | `open` | `open` |
+| a test or CI file deleted | `open` | `open` |
+| `.soz-guard.json` changed | `open` | `open` |
+
+`"fewer"` catches a test being emptied; `"any-change"` also catches an expected value quietly bent to
+fit the code (`toBe(80)` becoming `toBe(70)`), which `"fewer"` lets through. A live trial showed why
+the strict mode does not excuse a removed line when the same text appears elsewhere: a new test can
+assert the same line, and an edited old one would hide behind it. Start with `"fewer"`, measure with
+`replay` how often `"any-change"` would stop you, and switch when the cost is acceptable.
 
 Which files count: `.soz-guard.json`, `test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`,
 `*_test.*`, `test_*.py`, `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, and whatever you add

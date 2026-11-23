@@ -25,6 +25,9 @@ export type Config = {
   /** "block" (default): a change to the criteria keeps the work open until a person accepts it;
    * "report": it is only reported. */
   criteriaChanges: "block" | "report";
+  /** "fewer" (default): fewer assertions in a criteria file need a person; "any-change": so does any
+   * existing assertion that was changed or removed (moving it unchanged, or adding new ones, is fine). */
+  assertions: "fewer" | "any-change";
 };
 
 export const CONFIG_FILE = ".soz-guard.json";
@@ -37,13 +40,16 @@ export const defaultCriteria = [
 /** The defaults, changed by the repository's .soz-guard.json if there is one. */
 export function loadConfig(root: string): Config {
   const config: Config = { rules: [...defaultRules], exclude: [...defaultExclude], disable: [], maxBlocks: 3,
-                           checks: [], criteria: [...defaultCriteria], criteriaChanges: "block" };
+                           checks: [], criteria: [...defaultCriteria], criteriaChanges: "block", assertions: "fewer" };
   const path = join(root, CONFIG_FILE);
   if (!existsSync(path)) return config;
   const j = JSON.parse(readFileSync(path, "utf8")) as Partial<{
     rules: Rule[]; exclude: string[]; disable: string[]; maxBlocks: number;
-    checks: Check[]; criteria: string[]; criteriaChanges: string;
+    checks: Check[]; criteria: string[]; criteriaChanges: string; assertions: string;
   }>;
+  if (j.assertions !== undefined && j.assertions !== "fewer" && j.assertions !== "any-change")
+    throw new Error(`${CONFIG_FILE}: "assertions" is "fewer" or "any-change", not ${JSON.stringify(j.assertions)}`);
+  if (j.assertions) config.assertions = j.assertions;
   for (const c of j.checks ?? []) {
     if (!c || typeof c.name !== "string" || typeof c.run !== "string" || !c.run.trim())
       throw new Error(`${CONFIG_FILE}: a check needs a name and a command to run: ${JSON.stringify(c)}`);

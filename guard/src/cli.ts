@@ -67,7 +67,8 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 function check(args: string[]): number {
   const { verdict } = evaluate(process.cwd(), { range: { base: flag(args, "--base") ?? "HEAD" }, checks: !args.includes("--no-checks") });
   if (args.includes("--json")) process.stdout.write(JSON.stringify(verdict, null, 2) + "\n");
-  else process.stdout.write(`soz-guard: ${verdict.state}\n${verdictReport(verdict, false)}\n`);
+  else process.stdout.write(`soz-guard: ${verdict.state}${args.includes("--no-checks") ? " (checks not run: --no-checks)" : ""}\n`
+    + `${args.includes("--no-checks") && verdict.state === "unchecked" ? "Nothing open in what changed." : verdictReport(verdict, false)}\n`);
   return finished(verdict.state) ? 0 : 1;
 }
 
@@ -173,7 +174,7 @@ function init(dir: string): number {
   if (existsSync(configPath)) done.push(`${CONFIG_FILE}: already there`);
   else {
     const checks = suggestedChecks(root);
-    writeFileSync(configPath, JSON.stringify({ checks, criteria: [], criteriaChanges: "block", disable: [], exclude: [], maxBlocks: 3, rules: [] }, null, 2) + "\n");
+    writeFileSync(configPath, JSON.stringify({ checks, criteria: [], criteriaChanges: "block", assertions: "fewer", disable: [], exclude: [], maxBlocks: 3, rules: [] }, null, 2) + "\n");
     done.push(`${CONFIG_FILE}: created` + (checks.length ? ` with the check "${checks[0].run}": work is finished only when it passes`
       : `; add the checks that must pass ("checks": [{"name": "tests", "run": "..."}])`));
   }

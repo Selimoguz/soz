@@ -105,6 +105,30 @@ owner({ checks: [], criteriaChanges: "report" });
 write("test/stock.test.ts", 'import { reserve } from "../src/stock";\n');
 check('criteriaChanges "report": reported, not blocking', hook().status === 0 && last().criteria.length === 1);
 git("checkout", "-q", "--", "test/stock.test.ts");
+
+console.log('\n"assertions": "any-change": an existing assertion is the owner\'s too');
+owner({ checks: [], assertions: "any-change" });
+write("test/stock.test.ts", 'import { reserve } from "../src/stock";\nexpect(reserve(2)).toBe(2);\nexpect(reserve(0)).toBe(1);\n');
+const h5 = hook();
+check("an expected value changed (0 to 1), as many assertions as before: open", h5.status === 2 && last().criteria[0]?.kind === "assertions-changed"
+      && h5.stderr.includes("expect(reserve(0)).toBe(0)"), h5.stderr);
+write("test/stock.test.ts", 'import { reserve } from "../src/stock";\nexpect(reserve(2)).toBe(2);\nexpect(reserve(0)).toBe(3);\ntest("new", () => { expect(reserve(0)).toBe(0); });\n');
+hook();
+check("found in the live trial: a value changed in one test, hidden behind an identical line in a new one: still open",
+      last().state === "open" && last().criteria[0]?.kind === "assertions-changed");
+write("test/stock.test.ts", 'import { reserve } from "../src/stock";\nexpect(reserve(0)).toBe(0);\nexpect(reserve(2)).toBe(2);\n');
+hook();
+check("an assertion moved unchanged: the diff cannot tell it from a change, so a person accepts it once", last().state === "open");
+write("test/stock.test.ts", 'import { reserve } from "../src/stock";\nexpect(reserve(2)).toBe(2);\nexpect(reserve(1)).toBe(1);\nexpect(reserve(0)).toBe(0);\n');
+hook();
+check("a new assertion between the old ones (what the agent did in the live trial): fine", last().criteria.length === 0);
+git("checkout", "-q", "--", "test/stock.test.ts");
+check('a bad "assertions" value stops with a clear message', (() => {
+  write(".soz-guard.json", JSON.stringify({ assertions: "some" }));
+  const r = run(["check", "--no-checks"]);
+  git("checkout", "-q", "--", ".soz-guard.json");
+  return r.status === 1 && r.stderr.includes('"assertions" is "fewer" or "any-change"');
+})());
 owner({ checks: [] });
 
 console.log("\nci: the same decision on a pull request");
