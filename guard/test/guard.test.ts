@@ -35,6 +35,9 @@ const cases: [string, string, string | null][] = [
   ["src/order.ts", "const handleSave = () => {};", "empty-function"],                       // soz-guard: ignore (test data)
   ["src/order.ts", "  save() {}", "empty-function"],                                        // soz-guard: ignore (test data)
   ["src/order.ts", "function approve(order: Order): void {}", "empty-function"],            // soz-guard: ignore (test data)
+  ["src/order.ts", "const cancel = () => {};", "empty-function"],                           // soz-guard: ignore (test data)
+  ["src/order.ts", "export const cancel = async (id: string): Promise<void> => {};", "empty-function"],   // soz-guard: ignore (test data)
+  ["src/Order.tsx", "  private cancel = () => {}", "empty-function"],                       // soz-guard: ignore (test data)
   ["test/pay.test.ts", 'test.skip("does not pay twice", () => check());', "skipped-test"],   // soz-guard: ignore (test data)
   ["test/pay.test.ts", 'it.todo("refunds");', "skipped-test"],                                // soz-guard: ignore (test data)
   ["src/PayTest.java", "@Disabled", "skipped-test"],                                         // soz-guard: ignore (test data)
@@ -46,6 +49,9 @@ const cases: [string, string, string | null][] = [
   ["test/order.test.ts", 'check("the new TODO is reported", ok);', null],                    // soz-guard: ignore (test data)
   ["src/Order.tsx", '<input placeholder="Cari adı" />', null],
   ["src/Order.tsx", "useEffect(() => {}, []);", null],
+  ["src/order.ts", "const noop = () => {};", null],
+  ["src/order.ts", "export function load(done = () => {}) {", null],
+  ["src/order.ts", "const save = () => {", null],
   ["src/order.ts", "const todoList = loadTodos();", null],
   ["src/order.ts", "if (stock < 0) {}", null],
   ["src/order.ts", "constructor() {}", null],

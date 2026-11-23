@@ -84,10 +84,13 @@ export const defaultRules: Rule[] = [
   {
     id: "empty-function",
     // An empty function or method, or a UI handler that does nothing (an empty arrow passed to
-    // on.../handle...). A plain no-op arrow elsewhere, such as an effect callback, is not reported.
+    // on.../handle...), or a named arrow function that is a whole statement (`const cancel = () => {}`,
+    // a class field `cancel = () => {}`). A plain no-op arrow elsewhere, such as an effect callback or a
+    // default parameter, is not reported, nor is one named noop.
     pattern: String.raw`\bfunction\b[^{;]*\)\s*(:\s*[\w<>\[\]|. ]+)?\s*\{\s*\}`
       + String.raw`|^\s*(public |private |protected |static |async |override )*(?!(if|for|while|switch|catch|constructor|function)\b)\w+\s*\([^)]*\)\s*(:\s*[^{]+)?\{\s*\}\s*$`
-      + String.raw`|\b(on[A-Z]\w*|handle[A-Z]\w*)\s*[=:]\s*\{?\s*(async\s*)?(\([^)]*\)|\w+)\s*=>\s*\{\s*\}`,
+      + String.raw`|\b(on[A-Z]\w*|handle[A-Z]\w*)\s*[=:]\s*\{?\s*(async\s*)?(\([^)]*\)|\w+)\s*=>\s*\{\s*\}`
+      + String.raw`|^\s*(export\s+)?((const|let|var)\s+|(public |private |protected |static |readonly |override )*)(?!noop\b|_\w*\b)\w+\s*(:[^=]+)?=\s*(async\s*)?(\([^)]*\)|\w+)\s*(:\s*[^=]+)?=>\s*\{\s*\}\s*;?\s*$`,
     message: "a function or UI handler with an empty body",
     extensions: C_LIKE,
     exclude: TESTS,

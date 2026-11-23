@@ -280,7 +280,7 @@ not its business.
 | `deferred` | comments that put work off: "for now", "hard-coded", "wire this up later", "şimdilik", "yapılacak", "bağlanacak" | "retried later", "a temporary folder" |
 | `elided` | `// ...` and `// ... rest of the code` | spread syntax `...rest` |
 | `fake-data` | lorem ipsum, example.com, test@test, John Doe, 123456789 (outside tests) | the same in tests and fixtures |
-| `empty-function` | `function f() {}`, `save() {}`, `onClick={() => {}}`, `handleSave = () => {}` | `useEffect(() => {}, [])`, `if (x) {}`, `constructor() {}` |
+| `empty-function` | `function f() {}`, `save() {}`, `onClick={() => {}}`, `handleSave = () => {}`, `const cancel = () => {}` | `useEffect(() => {}, [])`, `if (x) {}`, `constructor() {}`, `const noop = () => {}`, `done = () => {}` as a default |
 
 Markdown, lock files, `node_modules`, `dist` and `build` are skipped. Your own rules and settings:
 
