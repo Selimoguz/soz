@@ -10,10 +10,13 @@
 //   soz-guard accept "<why>"           a person accepts changes to the tests or rules (in a terminal)
 //   soz-guard log [--verify]           the chained log of verdicts and acceptances
 //   soz-guard scan [--json] [--base REF]   only the static scan, as in 0.1
-//   soz-guard init [DIR]               installs the hook, a .soz-guard.json and a CLAUDE.md section
+//   soz-guard pre-commit [--checks]    a git pre-commit hook: the verdict on what is being committed
+//   soz-guard init [DIR] [--claude] [--codex] [--git [--checks]]
+//                                      installs the hooks (Claude Code by default), a .soz-guard.json and
+//                                      soz-guard's section in CLAUDE.md / AGENTS.md
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -63,7 +66,12 @@ function hook(): number {
   const stateFile = join(tmpdir(), `soz-guard-${(input.session_id ?? "default").replace(/[^\w-]/g, "")}.json`);
   const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number } : { blocks: 0 };
   const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
-  if (finished(verdict.state)) { writeFileSync(stateFile, JSON.stringify({ blocks: 0 })); log("finished"); return 0; }
+  if (finished(verdict.state)) {
+    writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
+    log("finished");
+    process.stdout.write("{}\n");                    // Codex expects JSON from a Stop hook that lets the agent stop
+    return 0;
+  }
   state.blocks++;
   writeFileSync(stateFile, JSON.stringify(state));
   if (state.blocks <= config.maxBlocks) {
@@ -92,6 +100,37 @@ function check(args: string[]): number {
   else process.stdout.write(`soz-guard: ${verdict.state}${args.includes("--no-checks") ? " (checks not run: --no-checks)" : ""}\n`
     + `${args.includes("--no-checks") && verdict.state === "unchecked" ? "Nothing open in what changed." : verdictReport(verdict, false)}\n`);
   return finished(verdict.state) ? 0 : 1;
+}
+
+/** A git pre-commit hook, for any agent and for people: the verdict on exactly what is being committed (the
+ * index against HEAD). With --checks the required checks run too, but only when the working tree is what is
+ * being committed: tests that pass on files left out of the commit prove nothing about the commit. */
+function preCommit(args: string[]): number {
+  const root = repoRoot(process.cwd());
+  if (!root) return 0;
+  let base = "HEAD";
+  try { gitOut(root, ["rev-parse", "--verify", "--quiet", "HEAD"]); } catch { base = EMPTY_TREE; }
+  const staged = gitOut(root, ["write-tree"]);           // the index as a tree: what this commit will hold
+  let runChecks = args.includes("--checks");
+  let note = "";
+  if (runChecks) {
+    const exclude = loadConfig(root).exclude.filter(g => g !== CONFIG_FILE).map(g => `:(exclude,glob)${g}`);
+    const unstaged = gitOut(root, ["-c", "core.quotepath=false", "diff", "--name-only", "--", ".", ...exclude]);
+    const untracked = gitOut(root, ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "--", ".", ...exclude]);
+    const left = [...unstaged.split("\n"), ...untracked.split("\n")].filter(f => f && !f.startsWith(`${OWN_DIR}/`));
+    if (left.length) {
+      runChecks = false;
+      note = `The required checks were not run: ${left.length} file(s) differ from what is being committed (${left.slice(0, 5).join(", ")}${left.length > 5 ? ", ..." : ""}),\n`
+        + `and checks that pass on files left out of the commit say nothing about it. Stage them, or set them aside\n`
+        + `(git stash --keep-index --include-untracked), and commit again.`;
+    }
+  }
+  const { verdict } = evaluate(root, { range: { base, head: staged }, checks: runChecks, source: "pre-commit" });
+  const ok = finished(verdict.state) && !note;
+  if (ok && !verdict.checks.length) return 0;
+  process.stderr.write(`soz-guard (pre-commit): ${ok ? verdict.state : "this commit is not finished"}\n`
+    + `${verdict.findings.length || verdict.criteria.length || verdict.checks.length ? verdictReport(verdict, true) + "\n" : ""}${note ? note + "\n" : ""}`);
+  return ok ? 0 : 1;
 }
 
 /** The same decision in CI, on a pull request's change against its base. */
@@ -197,7 +236,59 @@ function suggestedChecks(root: string): { name: string; run: string; timeoutSeco
   return [];
 }
 
-function init(dir: string): number {
+/** The same command for a POSIX shell (git runs its hooks with sh, Git for Windows too): forward slashes. */
+const shellCommand = (sub: string) => selfCommand(sub).replace(/\\/g, "/");
+
+/** A git pre-commit hook that runs soz-guard. Never overwrites a hook that is not soz-guard's own. */
+function installGitHook(root: string, checks: boolean): string {
+  const hooksDir = gitOut(root, ["rev-parse", "--git-path", "hooks"]);
+  const dir = isAbsolute(hooksDir) ? hooksDir : join(root, hooksDir);
+  const path = join(dir, "pre-commit");
+  const line = `${shellCommand(`pre-commit${checks ? " --checks" : ""}`)} || exit 1`;
+  if (existsSync(path)) {
+    const text = readFileSync(path, "utf8");
+    if (text.includes("soz-guard") || text.includes(self.replace(/\\/g, "/"))) return "git pre-commit hook: already there";
+    return `git pre-commit hook: there is one already, left as it is; to add soz-guard, put this line in ${path}:\n      ${line}`;
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path, `#!/bin/sh\n# soz-guard: judges what is being committed\n${line}\n`, { mode: 0o755 });
+  return `git pre-commit hook added${checks ? ", with the required checks" : " (static rules and criteria; add --checks to run the checks too)"}\n`
+    + `      soz-guard's own setup changes the criteria: commit it yourself with  git commit --no-verify`;
+}
+
+/** Codex: SessionStart and Stop hooks in the project's .codex/hooks.json, the same commands as for Claude
+ * Code (Codex sends the same fields and reads exit code 2 with stderr as "continue"). */
+function installCodexHooks(root: string): string {
+  const path = join(root, ".codex", "hooks.json");
+  type Hooks = Record<string, { hooks: { type: string; command: string }[] }[]>;
+  const j: { hooks?: Hooks } = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  j.hooks ??= {};
+  const added: string[] = [];
+  for (const [event, sub] of [["SessionStart", "session-start"], ["Stop", "hook"]] as const) {
+    const list = (j.hooks[event] ??= []);
+    if (list.some(m => m.hooks?.some(h => /soz-guard|cli\.(ts|js)"/.test(h.command ?? "") && h.command.trimEnd().endsWith(` ${sub}`)))) continue;
+    list.push({ hooks: [{ type: "command", command: selfCommand(sub) }] });
+    added.push(event);
+  }
+  if (!added.length) return ".codex/hooks.json: the hooks are already there";
+  mkdirSync(join(root, ".codex"), { recursive: true });
+  writeFileSync(path, JSON.stringify(j, null, 2) + "\n");
+  return `.codex/hooks.json: ${added.join(" and ")} hook added (Codex asks you to trust them once, in /hooks)`;
+}
+
+/** soz-guard's section in an instructions file (CLAUDE.md for Claude Code, AGENTS.md for Codex and others). */
+function addSection(root: string, name: string): string {
+  const path = join(root, name);
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  if (current.includes(MARK)) return `${name}: the soz-guard section is already there`;
+  const section = readFileSync(join(here, "..", "templates", "CLAUDE.md"), "utf8");
+  writeFileSync(path, (current ? current.replace(/\s*$/, "\n\n") : "") + section);
+  return current ? `${name}: soz-guard section appended` : `${name}: created`;
+}
+
+function init(dir: string, args: string[] = []): number {
+  const codex = args.includes("--codex"), gitHook = args.includes("--git");
+  const claude = args.includes("--claude") || (!codex && !gitHook);
   const root = repoRoot(dir);
   if (!root) {
     process.stderr.write(`${dir} is not a git repository.\n`
@@ -208,6 +299,7 @@ function init(dir: string): number {
   }
   const done: string[] = [];
 
+  if (claude) {
   const settingsPath = join(root, ".claude", "settings.json");
   type Hooks = Record<string, { hooks: { type: string; command: string }[] }[]>;
   let settings: { hooks?: Hooks } = {};
@@ -230,6 +322,9 @@ function init(dir: string): number {
     mkdirSync(join(root, ".claude"), { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   }
+  }
+  if (codex) done.push(installCodexHooks(root));
+  if (gitHook) done.push(installGitHook(root, args.includes("--checks")));
 
   const configPath = join(root, CONFIG_FILE);
   if (existsSync(configPath)) done.push(`${CONFIG_FILE}: already there`);
@@ -248,14 +343,8 @@ function init(dir: string): number {
     done.push(`.gitignore: ${OWN_DIR}/ added (verdicts and caches stay local)`);
   }
 
-  const claudeMd = join(root, "CLAUDE.md");
-  const current = existsSync(claudeMd) ? readFileSync(claudeMd, "utf8") : "";
-  if (current.includes(MARK)) done.push("CLAUDE.md: the soz-guard section is already there");
-  else {
-    const section = readFileSync(join(here, "..", "templates", "CLAUDE.md"), "utf8");
-    writeFileSync(claudeMd, (current ? current.replace(/\s*$/, "\n\n") : "") + section);
-    done.push(current ? "CLAUDE.md: soz-guard section appended" : "CLAUDE.md: created");
-  }
+  if (claude) done.push(addSection(root, "CLAUDE.md"));
+  if (codex || gitHook) done.push(addSection(root, "AGENTS.md"));
   process.stdout.write(`soz-guard set up in ${root}\n${done.map(d => "  " + d).join("\n")}\n`);
   return 0;
 }
@@ -264,7 +353,8 @@ async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   if (cmd === "hook") return hook();
   if (cmd === "session-start") return sessionStart();
-  if (cmd === "init") return init(rest[0] ?? process.cwd());
+  if (cmd === "init") return init(rest.find(a => !a.startsWith("--")) ?? process.cwd(), rest);
+  if (cmd === "pre-commit") return preCommit(rest);
   if (cmd === "check") return check(rest);
   if (cmd === "ci") return ci(rest);
   if (cmd === "replay") return replay(rest);
@@ -277,7 +367,7 @@ async function main(argv: string[]): Promise<number> {
     else process.stdout.write(findings.length ? `Unfinished work in what changed:\n${report(findings)}\n` : "Nothing unfinished in what changed.\n");
     return findings.length ? 1 : 0;
   }
-  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | scan [--json] | init [DIR]\n');
+  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--codex] [--git [--checks]]\n');
   return 2;
 }
 

@@ -173,8 +173,10 @@ much as the tests do. A change to them is a criteria change (`guard`) that a per
 |---|---|
 | a hook removed or changed in `.claude/settings.json` or `.claude/settings.local.json` | `open` |
 | `disableAllHooks` set in either | `open` |
+| a hook removed or changed in `.codex/hooks.json`, or a line about hooks in `.codex/config.toml` | `open` |
 | soz-guard's section in `CLAUDE.md` or `AGENTS.md` rewritten or removed | `open` |
 | a permission granted (Claude Code writes it to `settings.local.json`), any other part of `CLAUDE.md` | fine |
+| soz-guard's section added where there was none | fine |
 
 `settings.local.json` is usually ignored by git, so within a session these are compared with what the
 files held when the session started, not with the diff. Every verdict, every decision of the hook and
@@ -210,6 +212,34 @@ and tells the agent what is open, so it continues instead of stopping. To never 
 loop, it does this at most `maxBlocks` times (3); after that it lets the agent stop and tells the
 person, plainly, that the work is not finished. Outside a git repository it does nothing. If it
 fails itself, it says so and does not block.
+
+## Other agents: a git hook, and Codex
+
+```sh
+npx soz-guard init --git             # a git pre-commit hook, for any agent and for people
+npx soz-guard init --git --checks    # ... that runs the required checks too
+npx soz-guard init --codex           # Codex's SessionStart and Stop hooks, in .codex/hooks.json
+npx soz-guard init --claude --codex --git    # any combination; without a flag, --claude
+```
+
+**The pre-commit hook** judges exactly what is being committed: the staged files against `HEAD`,
+nothing left unstaged. A gap, a deleted test or a weakened rule in the commit stops it. With
+`--checks` the required checks run as well, but only when the working tree is what is being committed;
+otherwise it refuses and says so, since tests that pass on files left out of the commit say nothing
+about the commit (`git stash --keep-index --include-untracked` sets the rest aside). The hook is
+`.git/hooks/pre-commit` (or under `core.hooksPath`); one that is already there is never overwritten,
+and `init` prints the line to add to it. Committing soz-guard's own setup changes the criteria, so that
+first commit is the owner's: `git commit --no-verify`, deliberately.
+
+This works with any agent that commits, but only at the commit: an agent that never commits, or one
+that runs `git commit --no-verify`, passes it by. As everywhere locally, CI is where it is enforced.
+
+**Codex** has lifecycle hooks much like Claude Code's: the same fields on standard input, and a Stop
+hook that exits 2 makes the agent continue, with the reason as its next prompt. `init --codex` adds
+soz-guard's two hooks to the project's `.codex/hooks.json` and its section to `AGENTS.md`; Codex asks
+once, in `/hooks`, to trust them. A change to those hooks, or hooks switched off in
+`.codex/config.toml`, is a `guard` change, as for Claude Code. (Written from Codex's documentation and
+tested with Codex's input format; not yet tried in a live Codex session.)
 
 ## A pilot: replay the past
 

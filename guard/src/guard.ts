@@ -13,7 +13,9 @@ import { createHash } from "node:crypto";
 import { type CriteriaChange } from "./criteria.ts";
 
 export const MARK = "<!-- soz-guard -->";
-const SETTINGS = [".claude/settings.json", ".claude/settings.local.json"];
+const SETTINGS = [".claude/settings.json", ".claude/settings.local.json", ".codex/hooks.json"];
+/** Codex can also hold hooks inline, or switch them off ([features] hooks = false), in its config.toml. */
+const CODEX_TOML = ".codex/config.toml";
 const INSTRUCTIONS = ["CLAUDE.md", "AGENTS.md"];
 
 /** What a file's guarding part is, as text, or null if the file (or its section) is not there. */
@@ -42,6 +44,11 @@ export function guardState(read: (file: string) => string | null): GuardState {
       state[f] = JSON.stringify({ hooks: j.hooks ?? null, disableAllHooks: j.disableAllHooks ?? null });
     } catch { state[f] = `unreadable ${sha256(text)}`; }
   }
+  // TOML is not parsed here: every line that mentions hooks is the guarding part, which errs on the side
+  // of asking a person
+  const toml = read(CODEX_TOML);
+  state[CODEX_TOML] = toml === null ? null
+    : toml.replace(/\r\n?/g, "\n").split("\n").map(l => l.trim()).filter(l => /hooks/.test(l)).join("\n") || null;
   for (const f of INSTRUCTIONS) {
     const text = read(f);
     state[f] = text === null ? null : sozSection(text);
@@ -57,9 +64,11 @@ export function guardChanges(before: GuardState, after: GuardState): CriteriaCha
   for (const f of Object.keys(after).sort()) {
     const a = before[f], b = after[f];
     if (a === b || (none(a) && none(b))) continue;
-    const settings = SETTINGS.includes(f);
+    // soz-guard's section added where there was none only adds rules; changing or removing one is the risk
+    if (INSTRUCTIONS.includes(f) && (a === null || a === undefined)) continue;
+    const settings = SETTINGS.includes(f) || f === CODEX_TOML;
     const detail = settings
-      ? (b && b.includes('"disableAllHooks":true') ? `all hooks were switched off in ${f} (disableAllHooks)` : `the hooks in ${f} were changed: soz-guard's own may be gone`)
+      ? (b && (b.includes('"disableAllHooks":true') || /hooks\s*=\s*false/.test(b)) ? `all hooks were switched off in ${f} (disableAllHooks)` : `the hooks in ${f} were changed: soz-guard's own may be gone`)
       : (b === null ? `soz-guard's section in ${f} was removed` : `soz-guard's section in ${f} was changed`);
     out.push({ file: f, kind: "guard", detail, evidence: sha256(`${f}\n${b ?? "absent"}`) });
   }

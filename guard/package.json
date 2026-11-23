@@ -14,7 +14,7 @@
     "typecheck": "node ../impl/ts/node_modules/typescript/bin/tsc -p .",
     "build": "node ../impl/ts/node_modules/typescript/bin/tsc -p tsconfig.build.json",
     "prepack": "npm run build",
-    "test": "npm run typecheck && node --experimental-strip-types --disable-warning=ExperimentalWarning test/guard.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/verdict.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/session.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/holdout.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/pack.test.ts"
+    "test": "npm run typecheck && node --experimental-strip-types --disable-warning=ExperimentalWarning test/guard.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/verdict.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/session.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/holdout.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/precommit.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/pack.test.ts"
   },
   "files": [
     "dist",
