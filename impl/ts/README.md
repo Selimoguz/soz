@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 271 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 279 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 271 conformance cases, the example, defineOperation, the stores with real processes, the renderer, the order example, the gateway
+npm test          # type check (tsc, strict), the 279 conformance cases, the example, defineOperation, the stores with real processes, the renderer, the order example, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed

@@ -8,7 +8,7 @@ import {
 } from "./exact.ts";
 import {
   type Node, type Operation, type Operations, type Type, type Rule, type Actor, type CheckResult, type Call,
-  readPlan, checkPlan, typeName, isSideEffect, ruleConcerns, ruleArgsMatch, UNKNOWN, limits,
+  readPlan, checkPlan, typeName, isSideEffect, ruleConcerns, ruleArgsMatch, UNKNOWN, limits, isPlanRule, conditionHolds,
 } from "./checker.ts";
 
 // --- Run-time values ----------------------------------------------------------------------------------
@@ -267,7 +267,7 @@ function stepPolicy(c: Ctx, op: Operation, argv: [string, Value][]): { denials: 
   const args: [string, unknown][] = argv.map(([k, v]) => [k, v instanceof Pending ? UNKNOWN : v]);
   const denials: [string, string | null][] = [], requires: Requirement[] = [];
   for (const r of c.policy) {
-    if (!ruleConcerns(r, op, c.actor) || !ruleArgsMatch(r, args)) continue;
+    if (isPlanRule(r) || !ruleConcerns(r, op, c.actor) || !ruleArgsMatch(r, args)) continue;
     const d = r.decision;
     if ("deny" in d) denials.push([r.name, d.deny]);
     else if ("approve" in d && isSideEffect(op.effect)
@@ -275,6 +275,40 @@ function stepPolicy(c: Ctx, op: Operation, argv: [string, Value][]): { denials: 
       requires.push({ role: d.approve, fourEyes: d.fourEyes, rule: r.name });
   }
   return { denials, requires };
+}
+
+/** The rules on the whole plan (SPEC 12.3), once its steps are known: each selects the steps it concerns
+ * (not those already done, which will not run), and holds if their count and the sums of its parameters
+ * meet its conditions. A value not known yet makes a sum unknown, and the rule is assumed to hold. A deny
+ * stops the preview; an approve_by is required of every step the rule selected. Execution runs exactly the
+ * previewed arguments (10.4), so what the preview decided stands. */
+function planPolicy(c: Ctx) {
+  const argsOf = (s: Step): [string, unknown][] => s.args.fields.map(([k, v]) => [k, v instanceof Pending ? UNKNOWN : v]);
+  for (const r of c.policy.filter(isPlanRule)) {
+    const selected = c.steps.filter(s => !s.alreadyDone && ruleConcerns(r, s.operation, c.actor) && ruleArgsMatch(r, argsOf(s)));
+    if (!selected.length) continue;
+    const sums = new Map<string, Rational | typeof UNKNOWN>();
+    for (const [param] of r.total) {
+      let sum: Rational | typeof UNKNOWN = Rational.of(0);
+      for (const s of selected) {
+        const v = argsOf(s).find(([k]) => nameFold(k) === nameFold(param))?.[1];
+        if (v === undefined) continue;                                   // not given: adds nothing
+        sum = sum === UNKNOWN || !(v instanceof Rational) ? UNKNOWN : sum.add(v);
+      }
+      sums.set(param, sum);
+    }
+    const holds = r.total.every(([param, op, expected]) => conditionHolds(op, sums.get(param), expected))
+      && r.count.every(([op, expected]) => conditionHolds(op, Rational.of(selected.length), expected));
+    if (!holds) continue;
+    const what = [...r.total.map(([param]) => { const v = sums.get(param); return `the ${param}s add up to ${v === UNKNOWN ? "an amount not known yet" : (v as Rational).toString()}`; }),
+                  ...(r.count.length ? [`${selected.length} steps`] : [])].join(", ");
+    const d = r.decision;
+    if ("deny" in d) problem("policy-denied", `the plan is not allowed: rule "${r.name}" (${what}${d.deny ? `; ${d.deny}` : ""}), steps ${selected.map(s => s.index).join(", ")}`);
+    else if ("approve" in d)
+      for (const s of selected)
+        if (isSideEffect(s.operation.effect) && !s.requires.some(x => x.role === d.approve && x.fourEyes === d.fourEyes && x.rule === r.name))
+          s.requires.push({ role: d.approve, fourEyes: d.fourEyes, rule: r.name });
+  }
 }
 
 const denialText = (op: Operation, ds: [string, string | null][]) =>
@@ -596,6 +630,10 @@ export async function preview(text: string, o: RunOptions): Promise<Preview> {
       if (e instanceof PlanStopped) { status = c.steps.length ? "stopped" : "nothing"; reason = e.reason; }
       else if (e instanceof RunProblem) { status = e.code === "policy-denied" ? "denied" : "error"; problems.push({ code: e.code, message: e.message }); }
       else throw e;
+    }
+    if (status === "ready" || status === "stopped") {
+      try { planPolicy(c); }
+      catch (e) { if (!(e instanceof RunProblem)) throw e; status = "denied"; problems.push({ code: e.code, message: e.message }); }
     }
   }
   const steps = c.steps;

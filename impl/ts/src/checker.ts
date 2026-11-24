@@ -213,9 +213,14 @@ export type Decision =
 export type Rule = {
   name: string; operations: string[]; effects: string[]; actorRoles: string[]; actorNotRoles: string[];
   args: [string, string, Json][]; decision: Decision;
+  /** Conditions on the whole plan (SPEC 12.3): the sum of a parameter over the steps the rule selects, and
+   * how many steps it selects. A rule with either is decided once the plan's steps are known. */
+  total: [string, string, Json][]; count: [string, Json][];
 };
+export const isPlanRule = (r: Rule) => r.total.length > 0 || r.count.length > 0;
 
 const conditionOps = ["=", "!=", "<", "<=", ">", ">=", "in", "not_in"];
+const orderOps = ["<", "<=", ">", ">="];
 const sourceNames: Source[] = ["message", "tool", "model", "schema"];
 const asList = (x: Json | undefined): Json[] => x === undefined || x === null ? [] : Array.isArray(x) ? x : [x];
 
@@ -238,12 +243,30 @@ export function policyFromJson(j: Json | undefined): Rule[] {
         args.push([param, op, value]);
       }
     }
+    const total: [string, string, Json][] = [], count: [string, Json][] = [];
+    if (w.total !== undefined) {
+      if (!isObject(w.total)) throw new Error(`policy: ${name}: total must be an object, {"param": {"OP": NUMBER}}`);
+      for (const [param, conds] of Object.entries(w.total)) {
+        if (!isObject(conds)) throw new Error(`policy: ${name}: conditions on the total of ${param} must be an object`);
+        for (const [op, value] of Object.entries(conds)) {
+          if (!orderOps.includes(op) || !(value instanceof Rational)) throw new Error(`policy: ${name}: a total is compared with <, <=, > or >= and a number`);
+          total.push([param, op, value]);
+        }
+      }
+    }
+    if (w.count !== undefined) {
+      if (!isObject(w.count)) throw new Error(`policy: ${name}: count must be an object, {"OP": NUMBER}`);
+      for (const [op, value] of Object.entries(w.count)) {
+        if (!orderOps.includes(op) || !(value instanceof Rational)) throw new Error(`policy: ${name}: a count is compared with <, <=, > or >= and a number`);
+        count.push([op, value]);
+      }
+    }
     let decision: Decision;
     if (then === "deny") decision = { deny: null };
     else if (isObject(then) && then.deny !== undefined) decision = { deny: then.deny as string };
     else if (isObject(then) && then.approve_by !== undefined) decision = { approve: then.approve_by as string, fourEyes: then.four_eyes === true };
     else if (isObject(then) && isObject(then.args_from)) {
-      if (args.length) throw new Error(`policy: ${name}: args_from is decided from the plan's text; it cannot depend on argument values`);
+      if (args.length || total.length || count.length) throw new Error(`policy: ${name}: args_from is decided from the plan's text; it cannot depend on argument values`);
       decision = { argsFrom: Object.entries(then.args_from).map(([p, srcs]) => [p, asList(srcs).map(s => {
         if (!sourceNames.includes(s as Source) && !(typeof s === "string" && s.startsWith("tool:") && LABEL.test(s.slice(5)))) throw new Error(`policy: ${name}: unknown source ${JSON.stringify(s)}`);
         return s as Source;
@@ -251,7 +274,7 @@ export function policyFromJson(j: Json | undefined): Rule[] {
     } else throw new Error(`policy: ${name}: then must be "deny", {"deny": ...}, {"approve_by": ...} or {"args_from": ...}`);
     return {
       name, operations: (asList(w.operation) as string[]).map(nameFold), effects: asList(w.effect) as string[],
-      actorRoles: asList(w.actor_role) as string[], actorNotRoles: asList(w.actor_not_role) as string[], args, decision,
+      actorRoles: asList(w.actor_role) as string[], actorNotRoles: asList(w.actor_not_role) as string[], args, decision, total, count,
     };
   });
 }
@@ -274,7 +297,7 @@ function policyEqual(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
-function conditionHolds(op: string, actual: unknown, expected: Json): boolean {
+export function conditionHolds(op: string, actual: unknown, expected: Json): boolean {
   if (actual === UNKNOWN) return true;
   if (actual === ABSENT) return false;
   switch (op) {
@@ -674,7 +697,7 @@ class Checker {
 
   checkPolicy(node: Node, op: Operation, given: [string, Val][], givenNodes: [string, Node][]) {
     for (const r of this.policy) {
-      if (r.args.length || !ruleConcerns(r, op, this.actor)) continue;
+      if (r.args.length || isPlanRule(r) || !ruleConcerns(r, op, this.actor)) continue;
       const d = r.decision;
       if ("deny" in d) this.err(node, "policy-denied", `${op.name} is not allowed here (rule "${r.name}")${d.deny ? ": " + d.deny : ""}`);
       else if ("argsFrom" in d) for (const [param, allowed] of d.argsFrom) {

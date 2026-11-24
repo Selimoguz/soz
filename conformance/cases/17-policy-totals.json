@@ -1,0 +1,310 @@
+{
+  "description": "Rules on the whole plan (SPEC 12.3): the sum of a parameter over the steps a rule selects, and how many it selects. A limit split over many steps, each under the per-step rule, still meets the plan's limit.",
+  "message": "Pay C1, C2, C3, C4, C5, C6, C7, C8, C9, C10 and C11: 999 each, or 10 each, or 800 each.",
+  "actor": {
+    "id": "ali",
+    "roles": [
+      "sales"
+    ]
+  },
+  "policy": {
+    "rules": [
+      {
+        "name": "big payments: finance, four eyes",
+        "when": {
+          "operation": "pay",
+          "args": {
+            "amount": {
+              ">": 1000
+            }
+          }
+        },
+        "then": {
+          "approve_by": "finance",
+          "four_eyes": true
+        }
+      },
+      {
+        "name": "money in one plan over 5000: finance",
+        "when": {
+          "effect": "money",
+          "total": {
+            "amount": {
+              ">": 5000
+            }
+          }
+        },
+        "then": {
+          "approve_by": "finance"
+        }
+      },
+      {
+        "name": "more than 10 payments in one plan",
+        "when": {
+          "operation": "pay",
+          "count": {
+            ">": 10
+          }
+        },
+        "then": {
+          "deny": "split them over plans a person approves one by one"
+        }
+      },
+      {
+        "name": "payments to C2 over 1500 in one plan",
+        "when": {
+          "operation": "pay",
+          "args": {
+            "to": {
+              "=": "C2"
+            }
+          },
+          "total": {
+            "amount": {
+              ">": 1500
+            }
+          }
+        },
+        "then": "deny"
+      },
+      {
+        "name": "no payments to C9",
+        "when": {
+          "operation": "pay",
+          "args": {
+            "to": {
+              "=": "C9"
+            }
+          }
+        },
+        "then": "deny"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "six payments of 999: each under the per-step rule, together over 5000: every payment needs finance",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 999) (pay to \"C2\" amount 999) (pay to \"C3\" amount 999) (pay to \"C4\" amount 999) (pay to \"C5\" amount 999) (pay to \"C6\" amount 999))",
+      "tools": {},
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": false,
+                "rule": "money in one plan over 5000: finance"
+              }
+            ]
+          },
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": false,
+                "rule": "money in one plan over 5000: finance"
+              }
+            ]
+          },
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": false,
+                "rule": "money in one plan over 5000: finance"
+              }
+            ]
+          },
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": false,
+                "rule": "money in one plan over 5000: finance"
+              }
+            ]
+          },
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": false,
+                "rule": "money in one plan over 5000: finance"
+              }
+            ]
+          },
+          {
+            "operation": "pay",
+            "requires": [
+              {
+                "role": "finance",
+                "four_eyes": false,
+                "rule": "money in one plan over 5000: finance"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "two payments of 999: under every limit, nothing more needed",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 999) (pay to \"C2\" amount 999))",
+      "tools": {},
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "pay",
+            "requires": []
+          },
+          {
+            "operation": "pay",
+            "requires": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "eleven payments of 10: too many in one plan, the preview cannot be approved",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 10) (pay to \"C2\" amount 10) (pay to \"C3\" amount 10) (pay to \"C4\" amount 10) (pay to \"C5\" amount 10) (pay to \"C6\" amount 10) (pay to \"C7\" amount 10) (pay to \"C8\" amount 10) (pay to \"C9\" amount 10) (pay to \"C10\" amount 10) (pay to \"C11\" amount 10))",
+      "tools": {},
+      "expect_preview": {
+        "status": "denied",
+        "problems": [
+          "policy-denied"
+        ]
+      }
+    },
+    {
+      "name": "a rule's total adds only the steps it selects: two payments to C2 over 1500 are denied",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 800) (pay to \"C2\" amount 800) (pay to \"C2\" amount 999))",
+      "tools": {},
+      "expect_preview": {
+        "status": "denied",
+        "problems": [
+          "policy-denied"
+        ]
+      }
+    },
+    {
+      "name": "... the same amounts to other payees: C2's rule does not hold",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 800) (pay to \"C2\" amount 800) (pay to \"C3\" amount 999))",
+      "tools": {},
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "operation": "pay",
+            "requires": []
+          },
+          {
+            "operation": "pay",
+            "requires": []
+          },
+          {
+            "operation": "pay",
+            "requires": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "a per-step rule comparing a text with =: a payment to C9 is denied",
+      "plan": "(plan \"x\" (pay to \"C9\" amount 10))",
+      "tools": {},
+      "expect_preview": {
+        "status": "denied",
+        "problems": [
+          "policy-denied"
+        ]
+      }
+    },
+    {
+      "name": "six payments of 999, approved only by the person who asked: nothing runs",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 999) (pay to \"C2\" amount 999) (pay to \"C3\" amount 999) (pay to \"C4\" amount 999) (pay to \"C5\" amount 999) (pay to \"C6\" amount 999))",
+      "tools": {
+        "pay": [
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "not-approved",
+        "calls": []
+      }
+    },
+    {
+      "name": "six payments of 999, approved by finance too: they run",
+      "plan": "(plan \"x\" (pay to \"C1\" amount 999) (pay to \"C2\" amount 999) (pay to \"C3\" amount 999) (pay to \"C4\" amount 999) (pay to \"C5\" amount 999) (pay to \"C6\" amount 999))",
+      "tools": {
+        "pay": [
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          },
+          {
+            "result": null
+          }
+        ]
+      },
+      "approvers": [
+        {
+          "id": "ali",
+          "roles": [
+            "sales"
+          ]
+        },
+        {
+          "id": "ayse",
+          "roles": [
+            "finance"
+          ]
+        }
+      ],
+      "expect_execute": {
+        "outcome": "done",
+        "calls": [
+          "pay",
+          "pay",
+          "pay",
+          "pay",
+          "pay",
+          "pay"
+        ]
+      }
+    }
+  ]
+}

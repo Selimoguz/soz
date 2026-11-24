@@ -594,8 +594,23 @@ on its own. A server that does not answer in time gives **unknown**. The value o
 - `client`: the gateway executes when `soz_execute` is called and relies on the client asking the
   user before that tool call. Use it only with clients set to ask every time for `soz_execute`.
 
-The message that provenance is checked against is passed by the agent. In `elicitation` and `code`
-mode the user sees that message next to the steps before approving.
+**Where the message comes from.** The message that provenance is checked against is passed by the
+agent, in `soz_preview`'s `message`. The gateway cannot tell it from the message the user really sent:
+an agent that was talked into it (by content it read) can pass a message it wrote, holding the values it
+wants. Provenance then proves only that each value is in *that* text. What stands between such a message
+and an action is the person: in `elicitation` and `code` mode they see the message the plan was based on,
+word for word, next to its steps, outside the model's reach, and approve only if it is what they wrote.
+In `client` mode nothing shows it to them, so provenance there proves less.
+
+Provenance also proves less than "what the user meant": a value can be in the message and still be put
+in the wrong place (the user asked to pay invoice 1203 for 12.500 and mentioned 45 items in stock; a plan
+that pays 45 has a value from the message). The preview shows each argument's source; matching the steps
+to their meaning is again the person's.
+
+A host that knows the user's message itself (its own chat, a ticket, an e-mail it received) should give it
+to the gateway directly and not take it from the agent; how is up to the host and outside this
+specification. Until then the person's reading of the preview is the last check, and the approval record
+(10.5) keeps the message they approved against.
 
 What approval protects against: a model that acts without asking, or that was talked into acting by
 content it read. It does not protect against an agent that can run arbitrary programs on the same
@@ -732,6 +747,12 @@ no rules, nothing in this section applies.
   only between numbers). A parameter that was not given satisfies no condition. A value not known
   yet (a pending result, section 10.3) satisfies every condition: the rule is assumed to apply.
 
+Two more conditions, `total` and `count`, are on the whole plan rather than one call (section 12.3):
+
+- `total`: `{"param": {"OP": NUMBER, ...}, ...}` with `OP` one of `<`, `<=`, `>`, `>=`: the sum of the
+  parameter's values over the steps the rule selects;
+- `count`: `{"OP": NUMBER, ...}`: how many steps the rule selects.
+
 `then` is one of:
 
 - `"deny"` or `{"deny": "reason"}`: the call is not allowed;
@@ -747,8 +768,9 @@ no rules, nothing in this section applies.
   parameter can be free for the model's own words and still be held to a source by a policy, or the
   other way round.
 
-A rule a host cannot read (an unknown comparison, source or `then`) is a configuration error; the
-host MUST NOT start with it.
+A rule a host cannot read (an unknown comparison, source or `then`, a `total` or `count` compared with
+anything but `<`, `<=`, `>`, `>=` and a number, or `args_from` together with `total` or `count`) is a
+configuration error; the host MUST NOT start with it.
 
 ### 12.2 When rules apply
 
@@ -769,6 +791,38 @@ host MUST NOT start with it.
 The approval record (section 10.5) lists the approvers. A gateway collects other people's approval as
 in section 11.5.
 
+### 12.3 Rules on the whole plan
+
+A limit on each call can be met by splitting: a rule "payments over 1000 need finance" lets a plan through
+with six payments of 999. A rule with `total` or `count` looks at the plan as a whole:
+
+```json
+{"name": "money in one plan over 5000: finance",
+ "when": {"effect": "money", "total": {"amount": {">": 5000}}},
+ "then": {"approve_by": "finance"}}
+{"name": "more than 10 payments in one plan",
+ "when": {"operation": "pay", "count": {">": 10}},
+ "then": {"deny": "split them over plans a person approves one by one"}}
+```
+
+- It is decided **in the preview**, once all the plan's steps are known (and for a plan that stops, over
+  the steps before the stop). It is not decided in the checker, nor applied to each call on its own.
+- It **selects** the steps whose operation, effect, actor and `args` conditions hold, as any rule does,
+  leaving out steps already done (section 10.3), which will not run.
+- `count` is the number of steps selected; each `total` is the sum of the parameter over them. A step that
+  does not give the parameter adds nothing; a value not known yet makes the sum unknown, and the rule is
+  assumed to hold.
+- If every condition holds: `deny` makes the problem `policy-denied` and the preview's status `denied`;
+  `approve_by` adds the requirement to every selected step's `requires`, as in section 12.2.
+- Execution runs exactly the previewed arguments (section 10.4), so the preview's decision stands; the
+  requirements are met before anything runs, as for any rule.
+
+A limit over several plans (per day, per payee) needs a record across plans; it is not part of this
+version (section 13).
+
 ## 13. Planned
+
+- **Limits across plans**: a total per day or per payee, kept with the journal (section 12.3 covers one
+  plan).
 
 - **Inflected words** in language profiles (`beşer`, `ikisi`), and fractions in words (`buçuk`).

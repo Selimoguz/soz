@@ -310,13 +310,47 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
   "(values denials requires) for a call of OP with ARGV under *POLICY* and *ACTOR*."
   (let ((denials '()) (requires '()) (args (policy-args argv)))
     (dolist (r *policy*)
-      (when (and (rule-concerns-p r op) (rule-args-match-p r args))
+      (when (and (not (plan-rule-p r)) (rule-concerns-p r op) (rule-args-match-p r args))
         (case (first (rule-decision r))
           (:deny (push (cons (rule-name r) (second (rule-decision r))) denials))
           (:approve (when (side-effect-p (op-effect op))
                       (pushnew (list (second (rule-decision r)) (third (rule-decision r)) (rule-name r))
                                requires :test #'equal))))))
     (values (reverse denials) (reverse requires))))
+
+;;; The rules on the whole plan (SPEC 12.3), once its steps are known: each selects the steps it concerns
+;;; (not those already done, which will not run), and holds if their count and the sums of its parameters
+;;; meet its conditions. A value not known yet makes a sum unknown, and the rule is assumed to hold. A deny
+;;; stops the preview; an approve_by is required of every step the rule selected.
+(defun plan-policy (steps)
+  (dolist (r (remove-if-not #'plan-rule-p *policy*))
+    (let ((selected (remove-if-not (lambda (s) (and (not (step-already-done s)) (rule-concerns-p r (step-operation s))
+                                                    (rule-args-match-p r (policy-args (cdr (step-args s))))))
+                                   steps)))
+      (when selected
+        (let* ((sums (mapcar (lambda (c)
+                               (let ((param (first c)) (sum 0))
+                                 (dolist (s selected)
+                                   (let ((a (assoc (name-fold param) (policy-args (cdr (step-args s))) :key #'name-fold :test #'string=)))
+                                     (when a (setf sum (if (or (eq sum :unknown) (not (rationalp (cdr a)))) :unknown (+ sum (cdr a)))))))
+                                 (cons param sum)))
+                             (rule-total r)))
+               (holds (and (every (lambda (c) (condition-holds-p (second c) (cdr (assoc (first c) sums :test #'string=)) (third c))) (rule-total r))
+                           (every (lambda (c) (condition-holds-p (first c) (length selected) (second c))) (rule-count r)))))
+          (when holds
+            (let ((what (format nil "~{~a~^, ~}"
+                                (append (mapcar (lambda (x) (format nil "the ~as add up to ~a" (car x)
+                                                                    (if (eq (cdr x) :unknown) "an amount not known yet" (number-text (cdr x)))))
+                                                sums)
+                                        (when (rule-count r) (list (format nil "~d steps" (length selected))))))))
+              (case (first (rule-decision r))
+                (:deny (problem "policy-denied" "the plan is not allowed: rule \"~a\" (~a~@[; ~a~]), steps ~{~d~^, ~}"
+                                (rule-name r) what (second (rule-decision r)) (mapcar #'step-index selected)))
+                (:approve
+                 (dolist (s selected)
+                   (when (side-effect-p (op-effect (step-operation s)))
+                     (pushnew (list (second (rule-decision r)) (third (rule-decision r)) (rule-name r))
+                              (step-requires s) :test #'equal))))))))))))
 
 (defun denial-text (op denials)
   (format nil "~a is not allowed: ~{~a~^; ~}" (op-name op)
@@ -648,6 +682,11 @@ PROFILE is the language profile for the message (SPEC 5.4). Returns a PREVIEW."
           (run-problem (e)
             (setf status (if (string= (problem-code e) "policy-denied") "denied" "error"))
             (push (obj "code" (problem-code e) "message" (problem-message e)) problems))))
+    (when (member status '("ready" "stopped") :test #'string=)
+      (handler-case (plan-policy (reverse *steps*))
+        (run-problem (e)
+          (setf status "denied")
+          (push (obj "code" (problem-code e) "message" (problem-message e)) problems))))
     (let* ((steps (reverse *steps*))
            (p (make-preview :text text :message message :check check :status status :steps steps
                             :problems (reverse problems) :stop-reason reason :actor actor :policy policy)))

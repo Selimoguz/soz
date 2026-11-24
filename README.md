@@ -24,6 +24,9 @@ Without running anything, the checker proves:
   If the user asked for 20 crates and the plan says 25, the plan does not run: a number the model
   made up cannot reach an operation that changes something. Nor can such an operation depend on a
   condition built on a made-up threshold (`(if (> balance 50000) ...)` with 50000 from nowhere).
+  What it proves is that each value is in the message it was given, not that it went where the user
+  meant it, and that message is passed by the agent: the person who approves sees it word for word next
+  to the steps, and is the last check ([SPEC 11.3](SPEC.md#113-approval)).
 - **Effects.** What the plan touches (`read`, `write`, `external`, `money`, or your own effects such
   as `erp.post`) and whether it needs approval are known from its text.
 - **Bounds.** Loops run only over finite lists, and the largest number of operation calls is known
@@ -147,8 +150,14 @@ The host can put rules in force for the person who asked (the model does not say
    {"name": "amounts come from the invoice",
     "when": {"operation": "bank.pay"},
     "then": {"args_from": {"amount": ["tool"], "to_iban": ["tool"]}}},
-   {"name": "field staff do not pay", "when": {"effect": "money", "actor_role": "field"}, "then": "deny"}]}
+   {"name": "field staff do not pay", "when": {"effect": "money", "actor_role": "field"}, "then": "deny"},
+   {"name": "more than 25.000 in one plan: finance",
+    "when": {"effect": "money", "total": {"amount": {">": 25000}}},
+    "then": {"approve_by": "finance"}}]}
 ```
+
+A limit on each payment can be met by splitting it into many; `total` and `count` look at the whole plan,
+so ten payments of 9.999 still need finance.
 
 Rules that do not depend on values are errors in the checker, so the model learns them while
 planning; rules on values apply to the preview (a denied step makes it unapprovable, a required
@@ -252,7 +261,7 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | Part | State |
 |---|---|
 | [Specification](SPEC.md) 0.4: syntax, provenance, effects, bounds, preview, approval, execution, journal (claimed before each call), audit, policy | draft |
-| [Conformance suite](conformance/): 271 language-neutral cases in JSON (231 checker, 40 preview and execution), every convertible checker case in both syntaxes | done |
+| [Conformance suite](conformance/): 279 language-neutral cases in JSON (231 checker, 48 preview and execution), every convertible checker case in both syntaxes | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | [TypeScript implementation](impl/ts/README.md) (`impl/ts/`), no dependencies | passes the suite |
 | MCP gateway over stdio, in Lisp and in TypeScript (both without dependencies), with elicitation or approval-code approval, resources and a prompt; end-to-end tests | available |
@@ -274,7 +283,7 @@ sbcl --script impl/lisp/run-conformance.lisp      # the Lisp reference implement
 cd impl/ts && npm run conformance                 # the TypeScript implementation against the same suite
 ```
 
-Two implementations in two very different languages pass the same 271 cases, including one that
+Two implementations in two very different languages pass the same 279 cases, including one that
 pins the preview hash computed independently in Python: the suite, not either implementation, is
 what defines soz.
 

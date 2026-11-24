@@ -473,12 +473,19 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 (defstruct (rule (:conc-name rule-))
   name operations effects actor-roles actor-not-roles
   args        ; ((param op value) ...)  — conditions on argument values
-  decision)   ; (:deny reason) | (:approve role four-eyes) | (:args-from ((param . (source ...)) ...))
+  decision    ; (:deny reason) | (:approve role four-eyes) | (:args-from ...)
+  total       ; ((param op value) ...)  — the sum of PARAM over the steps the rule selects (SPEC 12.3)
+  count)      ; ((op value) ...)        — how many steps it selects   ; (:deny reason) | (:approve role four-eyes) | (:args-from ((param . (source ...)) ...))
 
 (defvar *policy* '() "The rules in force (a list of RULE).")
 (defvar *actor* nil "Who asked for the plan (an ACTOR), or NIL.")
 
 (defparameter *condition-ops* '("=" "!=" "<" "<=" ">" ">=" "in" "not_in"))
+(defparameter *order-ops* '("<" "<=" ">" ">="))
+
+(defun plan-rule-p (rule)
+  "A rule on the whole plan (SPEC 12.3): decided once the plan's steps are known."
+  (or (rule-total rule) (rule-count rule)))
 (defparameter *source-names* '(("message" . :message) ("tool" . :tool) ("model" . :model) ("schema" . :schema)))
 
 (defun label-p (x)
@@ -522,17 +529,38 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                                       (maphash (lambda (cop value)
                                                  (unless (member cop *condition-ops* :test #'string=)
                                                    (policy-error "~a: unknown comparison ~s" name cop))
-                                                 (push (list param cop (if (vectorp value) (coerce value 'list) value)) out))
+                                                 (push (list param cop (if (and (vectorp value) (not (stringp value))) (coerce value 'list) value)) out))
                                                conds))
                                     a))
                          out))
+                 (total (let ((tt (gethash "total" w)) (out '()))
+                          (when tt
+                            (unless (hash-table-p tt) (policy-error "~a: total must be an object, {\"param\": {\"OP\": NUMBER}}" name))
+                            (maphash (lambda (param conds)
+                                       (unless (hash-table-p conds) (policy-error "~a: conditions on the total of ~a must be an object" name param))
+                                       (maphash (lambda (cop value)
+                                                  (unless (and (member cop *order-ops* :test #'string=) (rationalp value))
+                                                    (policy-error "~a: a total is compared with <, <=, > or >= and a number" name))
+                                                  (push (list param cop value) out))
+                                                conds))
+                                     tt))
+                          out))
+                 (count (let ((cc (gethash "count" w)) (out '()))
+                          (when cc
+                            (unless (hash-table-p cc) (policy-error "~a: count must be an object, {\"OP\": NUMBER}" name))
+                            (maphash (lambda (cop value)
+                                       (unless (and (member cop *order-ops* :test #'string=) (rationalp value))
+                                         (policy-error "~a: a count is compared with <, <=, > or >= and a number" name))
+                                       (push (list cop value) out))
+                                     cc))
+                          out))
                  (decision
                    (cond ((equal then "deny") (list :deny nil))
                          ((and (hash-table-p then) (gethash "deny" then)) (list :deny (gethash "deny" then)))
                          ((and (hash-table-p then) (gethash "approve_by" then))
                           (list :approve (gethash "approve_by" then) (eq (gethash "four_eyes" then) :true)))
                          ((and (hash-table-p then) (gethash "args_from" then))
-                          (when args (policy-error "~a: args_from is decided from the plan's text; it cannot depend on argument values" name))
+                          (when (or args total count) (policy-error "~a: args_from is decided from the plan's text; it cannot depend on argument values" name))
                           (list :args-from
                                 (loop for param being the hash-keys of (gethash "args_from" then) using (hash-value srcs)
                                       collect (cons param (mapcar (lambda (x) (or (source-keyword x)
@@ -544,7 +572,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                        :effects (as-list (gethash "effect" w))
                        :actor-roles (as-list (gethash "actor_role" w))
                        :actor-not-roles (as-list (gethash "actor_not_role" w))
-                       :args args :decision decision)))))
+                       :args args :decision decision :total total :count count)))))
 
 (defun has-any-role-p (roles)
   (and *actor* (intersection roles (actor-roles *actor*) :test #'string=) t))
@@ -587,7 +615,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 (defun check-policy (node op given given-nodes)
   "Rules that do not depend on argument values are decided here, from the plan's text."
   (dolist (r *policy*)
-    (when (and (null (rule-args r)) (rule-concerns-p r op))
+    (when (and (null (rule-args r)) (not (plan-rule-p r)) (rule-concerns-p r op))
       (case (first (rule-decision r))
         (:deny (err node "policy-denied" "~a is not allowed here (rule \"~a\")~@[: ~a~]"
                     (op-name op) (rule-name r) (second (rule-decision r))))
