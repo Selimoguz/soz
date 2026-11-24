@@ -110,16 +110,19 @@ function fromHostList(x: Json[], item: Type, where: string): ListV {
 // --- Journal and audit record (SPEC 10.8) -----------------------------------------------------------------
 
 export type JournalStatus = "pending" | "done" | "unknown";
-export type JournalEntry = { key: string; status: JournalStatus; result: Json };
+/** `args`: all the step's arguments, not only the key's (SPEC 10.8); absent in entries older versions wrote. */
+export type JournalEntry = { key: string; status: JournalStatus; result: Json; args?: Json };
 type Maybe<T> = T | Promise<T>;
 
 /** Where step keys are kept. Implement it on a database to share it between hosts. */
 export interface JournalStore {
   get(key: string): Maybe<JournalEntry | undefined>;
   /** Atomically: if the key has no entry, record it as pending and return null (claimed); otherwise
-   * return the entry that is there (someone else claimed it first, or it was done before). */
-  claim(key: string): Maybe<JournalEntry | null>;
-  complete(key: string, status: "done" | "unknown", result: Json): Maybe<void>;
+   * return the entry that is there (someone else claimed it first, or it was done before). Keep
+   * `args` with the entry: a later step with the same key and other arguments is then a conflict. */
+  claim(key: string, args?: Json): Maybe<JournalEntry | null>;
+  /** `args` as given to claim; an entry keeps the ones it has when they are not given. */
+  complete(key: string, status: "done" | "unknown", result: Json, args?: Json): Maybe<void>;
   /** The call did not happen: the step may run again. Also how a person resolves "it did not happen". */
   release(key: string): Maybe<void>;
 }
@@ -129,8 +132,8 @@ export interface AuditSink {
   append(type: string, data: unknown): Maybe<void>;
 }
 
-const entryOf = (key: string, status: JournalStatus, result: unknown): JournalEntry =>
-  parseJson(canonicalJson({ key, status, result: result ?? null })) as JournalEntry;
+const entryOf = (key: string, status: JournalStatus, result: unknown, args?: Json): JournalEntry =>
+  parseJson(canonicalJson(args === undefined ? { key, status, result: result ?? null } : { key, status, result: result ?? null, args })) as JournalEntry;
 
 /**
  * The journal in memory (no path) or in files (with a path). On disk, each key has a file of its own
@@ -163,10 +166,10 @@ export class Journal implements JournalStore {
     if (this.dir && existsSync(this.file(key))) return parseJson(readFileSync(this.file(key), "utf8")) as JournalEntry;
     return this.memory.get(key);
   }
-  claim(key: string): JournalEntry | null {
+  claim(key: string, args?: Json): JournalEntry | null {
     const existing = this.get(key);
     if (existing) return existing;
-    const entry = entryOf(key, "pending", null);
+    const entry = entryOf(key, "pending", null, args);
     if (this.dir) {
       for (let tries = 0; ; tries++) {
         try { writeFileSync(this.file(key), canonicalJson(entry), { flag: "wx" }); break; }
@@ -184,8 +187,8 @@ export class Journal implements JournalStore {
     this.log(entry);
     return null;
   }
-  complete(key: string, status: "done" | "unknown", result: Json) {
-    const entry = entryOf(key, status, result);
+  complete(key: string, status: "done" | "unknown", result: Json, args?: Json) {
+    const entry = entryOf(key, status, result, args ?? this.get(key)?.args);
     if (this.dir) writeFileSync(this.file(key), canonicalJson(entry));
     this.memory.set(key, entry);
     this.log(entry);
@@ -196,7 +199,7 @@ export class Journal implements JournalStore {
     this.log({ key, status: "released", result: null });
   }
   /** Writes an entry directly (preloading, and what a person records when resolving). */
-  put(key: string, status: JournalStatus, result: unknown) { this.complete(key, status as "done", entryOf(key, status, result).result); }
+  put(key: string, status: JournalStatus, result: unknown, args?: Json) { this.complete(key, status as "done", entryOf(key, status, result).result, args); }
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(() => r(null), ms));
@@ -391,6 +394,9 @@ async function evalForm(c: Ctx, node: Node & { kind: "list" }, env: Env): Promis
   return evalCall(c, c.ops.get(k)!, args, env, node);
 }
 
+const hasPending = (v: Value): boolean =>
+  v instanceof Pending || (v instanceof RecordV && v.fields.some(f => hasPending(f[1]))) || (v instanceof ListV && v.items.some(hasPending));
+
 export function stepKeyText(op: Operation, argv: [string, Value][]): string {
   const keys = (op.key ?? []).map(nameFold);
   const o = newObject() as { [k: string]: unknown };
@@ -449,6 +455,15 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
   const sources = c.calls.find(x => x.line === node.line && x.column === node.column)?.sources ?? [];
   const st: Step = { index, operation: op, args: new RecordV(argv), key, alreadyDone: !!done, journalStatus: done?.status ?? null, requires: [], sources };
   c.steps.push(st);
+  // The journal keeps every argument of a step, not only its key's (SPEC 10.8). The same key with
+  // other arguments names the same thing done differently: neither done already nor new (10.3, 10.4).
+  const argsJson = hasPending(st.args) ? undefined : parseJson(canonicalJson(st.args));
+  const conflicts = (entry: JournalEntry | null | undefined): boolean =>
+    !!entry && entry.args !== undefined && argsJson !== undefined && canonicalJson(entry.args) !== canonicalJson(argsJson);
+  const conflictText = (entry: JournalEntry) =>
+    `step ${index} (${op.name}) has the key ${key}, which is in the journal (${entry.status}) with other arguments: `
+    + `${canonicalJson(entry.args)} there, ${canonicalJson(argsJson)} now. It is neither run again nor taken as done; `
+    + "give it a new key (a new order number) if it is a new one, or correct the arguments";
 
   if (c.mode === "preview") {
     const { denials, requires } = stepPolicy(c, op, argv);
@@ -456,6 +471,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
     if (denials.length) problem("policy-denied", `step ${index}: ${denialText(op, denials)}`);
     if (c.steps.slice(0, -1).some(s => s.key === key))
       problem("duplicate-step", `step ${index} (${op.name}) is the same as an earlier step: same operation, same key ${key}`);
+    if (conflicts(done)) problem("key-conflict", conflictText(done!));
     return new Pending(index);
   }
 
@@ -466,6 +482,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
       ? `step ${index}: approved ${p.operation.name} ${canonicalJson(p.args)}, now ${op.name} ${canonicalJson(st.args)}`
       : `step ${index} (${op.name}) was not in the approved preview`);
   }
+  if (conflicts(done)) { st.status = "not_run"; throw new PlanHalted("conflict", conflictText(done!)); }
   const { denials, requires } = stepPolicy(c, op, argv);
   st.requires = requires;
   if (denials.length) { st.status = "not_run"; throw new PlanHalted("denied", `step ${index}: ${denialText(op, denials)}`); }
@@ -483,7 +500,8 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
   if (done?.status === "done") { st.status = "already_done"; return fromHostOrAny(done.result, op); }
   if (done) unresolved(done);
   // Claim, then call (SPEC 10.4): never twice, not even across a crash or two executions at once.
-  const other = await c.journal.claim(key);
+  const other = await c.journal.claim(key, argsJson);
+  if (conflicts(other)) { st.status = "not_run"; throw new PlanHalted("conflict", conflictText(other!)); }
   if (other?.status === "done") { st.status = "already_done"; return fromHostOrAny(other.result, op); }
   if (other) unresolved(other);
   const record = (status: string, extra: object) => c.audit?.append("call", { step: Rational.of(index), operation: op.name, args: st.args, status, ...extra });
@@ -498,7 +516,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
       throw new PlanHalted("failed", `step ${index} (${op.name}) failed: ${e.message}`);
     }
     st.status = "unknown";
-    await c.journal.complete(key, "unknown", null);
+    await c.journal.complete(key, "unknown", null, argsJson);
     await record("unknown", { message: (e as Error).message });
     throw new PlanHalted("unknown", `step ${index} (${op.name}): the outcome is unknown (${(e as Error).message}); it will not be run again by itself`);
   }
@@ -507,12 +525,12 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
   catch (e) {
     // It ran, but answered with something that does not fit its declaration: it happened, in some way.
     st.status = "unknown";
-    await c.journal.complete(key, "unknown", null);
+    await c.journal.complete(key, "unknown", null, argsJson);
     await record("unknown", { message: (e as Error).message });
     throw new PlanHalted("unknown", `step ${index} (${op.name}) ran but ${(e as Error).message}; it will not be run again by itself`);
   }
   st.status = "done"; st.result = v;
-  await c.journal.complete(key, "done", parseJson(canonicalJson(v)));
+  await c.journal.complete(key, "done", parseJson(canonicalJson(v)), argsJson);
   await record("done", { result: v });
   return v;
 }

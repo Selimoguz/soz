@@ -59,7 +59,29 @@
         (format t "Outcome: ~a; steps: ~{~a~^, ~}~%Order lines in the ERP: ~d (nothing twice)~%"
                 (execution-outcome e) (mapcar #'step-status (execution-steps e)) (length *orders*))))
 
-    (banner "5. The audit record")
+    ;; The order number is the key (operations.json): the same goods the next day are a new order,
+    ;; the same order number with other goods is a conflict, never a silent "already done".
+    (flet ((replace-all (s old new)
+             (with-output-to-string (out)
+               (loop with start = 0
+                     for i = (search old s :start2 start)
+                     do (write-string s out :start start :end (or i (length s)))
+                        (if i (progn (write-string new out) (setf start (+ i (length old)))) (return))))))
+      (let ((good (read-file (merge-pathnames "good.soz" cl-user::*here*))))
+        (banner "5. The same goods the next day, under a new order number")
+        (let* ((p (preview (replace-all good "SO-24117" "SO-24131") :message (replace-all message "SO-24117" "SO-24131")
+                           :journal journal :audit audit))
+               (e (execute p (preview-hash p) :journal journal :audit audit :approved-by "demo user")))
+          (format t "Outcome: ~a; steps: ~{~a~^, ~}~%Order lines in the ERP: ~d~%"
+                  (execution-outcome e) (mapcar #'step-status (execution-steps e)) (length *orders*)))
+
+        (banner "6. The first order number again, with another quantity")
+        (format t "~a" (preview-summary (preview (replace-all good "quantity 20" "quantity 25")
+                                                 :message (replace-all message "20 crates" "25 crates")
+                                                 :journal journal :audit audit)))
+        (format t "Order lines in the ERP: ~d~%" (length *orders*))))
+
+    (banner "7. The audit record")
     (format t "~a: ~d lines, chain ~:[BROKEN~;intact~]~%" (file-namestring audit-path)
             (length (audit-lines audit)) (verify-audit audit-path))
     (let* ((lines (reverse (audit-lines audit)))

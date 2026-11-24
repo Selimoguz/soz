@@ -120,12 +120,11 @@ function scripts(tools: Json | undefined, log: Log): Implementations {
   return impls;
 }
 
-function preloadJournal(entries: Json | undefined): Journal {
-  const j = new Journal();
+function preloadJournal(entries: Json | undefined, j = new Journal()): Journal {
   for (const e of (entries ?? []) as Json[]) {
     const op = ops.get(nameFold(get(e, "operation") as string))!;
     const args = Object.entries(get(e, "args") as object).map(([k, v]) => [k, fromHost(v as Json, "any", "journal")] as [string, never]);
-    j.put(stepKeyText(op, args), (get(e, "status") ?? "done") as "done", null);
+    j.put(stepKeyText(op, args), (get(e, "status") ?? "done") as "done", null, get(e, "args")!);
   }
   return j;
 }
@@ -137,6 +136,7 @@ async function runExecutionCase(c: Json, message: string | null, policy: Rule[],
                                                        journal, policy, actor });
   if (has(c, "expect_preview")) comparePreview(get(c, "expect_preview")!, p);
   if (!has(c, "expect_execute")) return;
+  preloadJournal(get(c, "journal_after_preview"), journal);
   const tools = get(c, "execute_tools") ?? get(c, "tools");
   const log2: Log = [];
   const approvers = ((get(c, "approvers") ?? []) as Json[]).map(a => actorFromJson(a)!);

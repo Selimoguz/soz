@@ -300,7 +300,10 @@ The host declares the operations a plan may call. Declaration (JSON):
   side.
 - `required` defaults to true, `model_allowed` to false, `returns` to `{"type": "any"}`.
 - `key` (0.2) lists the parameters that make up the operation's idempotency key (section 10.3);
-  default: all of them.
+  default: all of them. A key names one thing done once, so it should be an identifier the host or
+  the user's system gives (an order number and a line number, an invoice number), not a description
+  of the goods: with `"key": ["customer", "product", "quantity"]` the same order placed again the
+  next day would be taken as already done. The same key with other arguments is a conflict (10.3).
 - `label` (optional) names the system its results come from, matching `[a-z][a-z0-9_-]*`
   (`"label": "erp"`); their source is then `tool:erp` (section 5.2). The gateway labels a server's
   tools with the server's name unless the configuration says otherwise (section 11.1).
@@ -409,14 +412,19 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
    under its declared name; an optional parameter that was not given is left out (not `null`).
    Implementations sharing a journal therefore produce the same key. A step whose key equals an
    earlier step's key in the same preview is a `duplicate-step` (the model wrote the same thing
-   twice); a preview with a duplicate step cannot be approved. A step whose key is already in the
+   twice); a preview with a duplicate step cannot be approved. If the step's key is in the journal
+   with **other arguments** (the journal keeps all of a step's arguments, not only its key's, 10.8;
+   compared as canonical JSON, and only when no argument is pending), the preview has the problem
+   `key-conflict`: the key names something that was done (or tried) with other values, so the step
+   is neither new nor already done, and a person must give it a new key or correct the arguments.
+   Otherwise, a step whose key is already in the
    host's **journal**, with any status, is marked `already_done`: it will not be called. Its
    `journal_status` says why, and the preview says it to the person: `done` (a previous plan did
    it) or `pending` / `unknown` (an earlier run may or may not have happened; execution stops there
    with `unresolved` until a person resolves it, 10.4 and 10.8).
 5. The preview's status is `ready` (it may be approved), `stopped` (a `stop` was reached; the steps
    before it are listed and may still be approved), `nothing` (no steps) or `error` (a run-time
-   error, `depends-on-write`, `duplicate-step`, or a failed read).
+   error, `depends-on-write`, `duplicate-step`, `key-conflict`, or a failed read).
 6. The **preview hash** is the SHA-256, in lower-case hex, of the canonical JSON (10.6) of
    `{"plan": PLAN-TEXT, "message": MESSAGE-OR-NULL, "steps": [{"operation", "args", "key"}...]}`.
 
@@ -431,12 +439,16 @@ with live reads. For every step reached, in order:
 1. If the preview has no step with that index, or its operation or arguments differ, execution stops
    with `changed` **before** calling it, and says what differs. A pending argument in the preview
    matches any value. (The balance moved, the stock ran out: the person approved something else.)
-2. If its key is in the journal as `done`, it is not called again; its status is `already_done`.
-3. If its key is in the journal as `pending` or `unknown`, it is not called either: it may have
+2. If its key is in the journal with other arguments (as in 10.3), it is not called: its status is
+   `not_run` and execution stops with `conflict`. (Another execution wrote that key after the
+   preview.)
+3. If its key is in the journal as `done`, it is not called again; its status is `already_done`.
+4. If its key is in the journal as `pending` or `unknown`, it is not called either: it may have
    happened. Its status is `unresolved` and execution stops with `unresolved`. A person checks
    and resolves the entry (section 10.8).
-4. Otherwise the step is **claimed**: its key goes into the journal as `pending`, atomically (if
-   another execution claimed it first, the step is `unresolved` as in 3). Only then is it called:
+5. Otherwise the step is **claimed**: its key goes into the journal as `pending`, with the step's
+   arguments, atomically (if another execution claimed it first, the step is in conflict as in 2,
+   already done as in 3 or `unresolved` as in 4). Only then is it called:
    - result: the entry becomes `done` with the result; status `done`;
    - failed: the claim is released (the operation did not happen and may run again); status
      `failed`; execution stops with `failed`;
@@ -481,13 +493,15 @@ value is `{"pending": N}` or `{"pending": N, "path": ["field", ...]}`.
 ### 10.7 Error and outcome codes
 
 Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, `duplicate-step`, `no-implementation`,
-`read-failed`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`,
-`changed`, `failed`, `unknown`, `unresolved`, `not-approved`, and with a policy `denied`.
+`read-failed`, `key-conflict`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`,
+`changed`, `conflict`, `failed`, `unknown`, `unresolved`, `not-approved`, and with a policy `denied`.
 
 ### 10.8 Journal and audit stores
 
-The journal maps a step key to an entry `{key, status, result}`, `status` one of `pending`, `done`,
-`unknown`. A host may keep it anywhere (a file, a database) as long as:
+The journal maps a step key to an entry `{key, status, result, args}`, `status` one of `pending`,
+`done`, `unknown`; `args` is the object of all the step's arguments (compared as canonical JSON, 10.6), written when the
+step is claimed and kept when it completes. An entry without `args` (written by an older version)
+is never in conflict. A host may keep it anywhere (a file, a database) as long as:
 
 - **claim** is atomic: of two executions claiming the same key at the same time, exactly one
   succeeds, and the other sees the winner's entry;

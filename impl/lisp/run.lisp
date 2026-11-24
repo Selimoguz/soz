@@ -221,20 +221,26 @@
 
 (defun journal-get (j key) (and j (gethash key (journal-entries j))))
 
-(defun journal-put (j key status result)
-  (let ((line (canonical-json (obj "key" key "status" status "result" result))))
+(defun journal-put (j key status result &optional (args nil args-p))
+  "Writes an entry. ARGS: all the step's arguments, not only the key's (SPEC 10.8); when not given,
+the entry keeps the ones it has."
+  (let* ((args (if args-p args (multiple-value-bind (old present) (gethash "args" (or (journal-get j key) (make-hash-table)))
+                                 (if present old :absent))))
+         (line (canonical-json (if (eq args :absent)
+                                   (obj "key" key "status" status "result" result)
+                                   (obj "key" key "status" status "result" result "args" args)))))
     (setf (gethash key (journal-entries j)) (json:json-oku line))
     (when (journal-path j)
       (with-open-file (s (journal-path j) :direction :output :if-exists :append :if-does-not-exist :create
                                           :external-format :utf-8)
         (write-line line s)))))
 
-(defun journal-claim (j key)
+(defun journal-claim (j key &optional (args nil args-p))
   "SPEC 10.4: if KEY has no entry, record it as pending and return NIL (claimed); otherwise return the
 entry that is there. One process: the check and the write cannot interleave. (The TypeScript
 implementation also claims atomically between processes.)"
   (or (journal-get j key)
-      (progn (journal-put j key "pending" :null) nil)))
+      (progn (if args-p (journal-put j key "pending" :null args) (journal-put j key "pending" :null)) nil)))
 
 (defun journal-release (j key)
   "The call did not happen: the step may run again."
@@ -426,6 +432,20 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                                 when (or (null keys) (member (name-fold k) keys :test #'string=))
                                                   collect (cons k v)))))))
 
+(defun has-pending-p (v)
+  (cond ((pending-p v) t)
+        ((rec-p v) (some (lambda (f) (has-pending-p (cdr f))) (cdr v)))
+        ((lst-p v) (some #'has-pending-p (cdr v)))))
+
+(defun journal-conflict-p (entry args)
+  "SPEC 10.3, 10.4: ENTRY has the step's key but other arguments (ARGS NIL: a pending argument, not compared)."
+  (and entry args (nth-value 1 (gethash "args" entry))
+       (string/= (canonical-json (gethash "args" entry)) (canonical-json args))))
+
+(defun conflict-text (index op key entry args)
+  (format nil "step ~d (~a) has the key ~a, which is in the journal (~a) with other arguments: ~a there, ~a now. It is neither run again nor taken as done; give it a new key (a new order number) if it is a new one, or correct the arguments"
+          index (op-name op) key (gethash "status" entry) (canonical-json (gethash "args" entry)) (canonical-json args)))
+
 (defun args-match-p (previewed actual)
   "A pending value in the preview matches anything; everything else must be equal."
   (cond ((pending-p previewed) t)
@@ -468,7 +488,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                    :sources (let ((c (find-if (lambda (c) (and (= (call-line c) (node-line node))
                                                                                (eql (call-column c) (node-column node))))
                                                               *checked-calls*)))
-                                              (and c (call-sources c))))))
+                                              (and c (call-sources c)))))
+               ;; The journal keeps every argument of a step, not only its key's (SPEC 10.8): the same key
+               ;; with other arguments is neither done already nor new (10.3, 10.4).
+               (args-json (and (not (has-pending-p (step-args st))) (step-args st))))
           (push st *steps*)
           (when (eq *mode* :preview)
             (multiple-value-bind (denials requires) (step-policy op argv)
@@ -480,6 +503,7 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
              (when (find key (rest *steps*) :key #'step-key :test #'string=)
                (problem "duplicate-step" "step ~d (~a) is the same as an earlier step: same operation, same key ~a"
                         index (op-name op) key))
+             (when (journal-conflict-p done args-json) (problem "key-conflict" "~a" (conflict-text index op key done args-json)))
              (make-pending :step index))
             (:execute
              (let ((p (find index *previewed* :key #'step-index)))
@@ -491,6 +515,9 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                                                           (op-name (step-operation p)) (canonical-json (step-args p))
                                                           (op-name op) (canonical-json (step-args st)))
                                                   (format nil "step ~d (~a) was not in the approved preview" index (op-name op)))))
+               (when (journal-conflict-p done args-json)
+                 (setf (step-status st) "not_run")
+                 (error 'plan-halted :outcome "conflict" :message (conflict-text index op key done args-json)))
                ;; What was approved is unchanged; the policy is applied again with the actual values
                ;; (a pending value from the preview is known now).
                (multiple-value-bind (denials requires) (step-policy op argv)
@@ -521,7 +548,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                    (return-from eval-call (from-host-or-any (gethash "result" done) op)))
                  (when done (unresolved done))
                  ;; Claim, then call (SPEC 10.4): never twice, not even across a crash.
-                 (let ((other (journal-claim *journal* key)))
+                 (let ((other (if args-json (journal-claim *journal* key args-json) (journal-claim *journal* key))))
+                   (when (journal-conflict-p other args-json)
+                     (setf (step-status st) "not_run")
+                     (error 'plan-halted :outcome "conflict" :message (conflict-text index op key other args-json)))
                    (when (and other (equal (gethash "status" other) "done"))
                      (setf (step-status st) "already_done")
                      (return-from eval-call (from-host-or-any (gethash "result" other) op)))

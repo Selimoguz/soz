@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 269 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 271 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 269 conformance cases, the example, defineOperation, the stores with real processes, the gateway
+npm test          # type check (tsc, strict), the 271 conformance cases, the example, defineOperation, the stores with real processes, the renderer, the order example, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -40,7 +40,7 @@ const p = await preview(planFromTheModel, { message: whatTheUserWrote, operation
 console.log(previewSummary(p));           // show it to the person
 // ... the person approves p.hash ...
 const e = await execute(p, p.hash!, { implementations, journal, audit });
-console.log(e.outcome);                    // done, stopped, changed, failed, unknown, not-approved, denied
+console.log(e.outcome);                    // done, stopped, changed, conflict, failed, unknown, unresolved, not-approved, denied
 ```
 
 ### Declaring operations in TypeScript
@@ -165,12 +165,15 @@ A store of your own implements four methods:
 ```ts
 interface JournalStore {
   get(key: string): JournalEntry | undefined | Promise<...>;
-  claim(key: string): JournalEntry | null | Promise<...>;      // null: claimed by you; else the entry that was there
-  complete(key: string, status: "done" | "unknown", result: Json): void | Promise<void>;
+  claim(key: string, args?: Json): JournalEntry | null | Promise<...>;   // null: claimed by you; else the entry that was there
+  complete(key: string, status: "done" | "unknown", result: Json, args?: Json): void | Promise<void>;
   release(key: string): void | Promise<void>;
 }
 ```
 
+Keep `args` (all the step's arguments) with the entry and return it from `get` and `claim`: a step with
+the same key and other arguments is then a conflict (SPEC 10.3), not "already done". A store that drops
+them still never runs a step twice, but cannot tell the two apart.
 On Postgres, for example, `claim` is an `INSERT ... ON CONFLICT DO NOTHING RETURNING`; the audit sink
 takes the previous hash inside the transaction that inserts the next record.
 

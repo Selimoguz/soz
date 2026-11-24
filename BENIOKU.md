@@ -16,8 +16,10 @@ Model araçları tek tek çağırmak yerine işin tamamını küçük bir plan o
 
 Geçerli bir plan önce **önizlenir**: okumalar çalışır, yazmalar yalnızca adım olarak listelenir.
 Kişi önizlemenin bütününü **bir kez** onaylar. **Yürütme** planı canlı verilerle yeniden çalıştırır ve
-onaylanandan farklı bir adıma gelirse durur. **Tekrar anahtarı** iş verisinden türetilir: aynı adım
-ikinci kez çalışmaz. Sonucu bilinmeyen bir işlem tekrar denenmez. Her şey SHA-256 ile zincirlenmiş bir
+onaylanandan farklı bir adıma gelirse durur. **Tekrar anahtarı** iş verisinden türetilir (sipariş
+numarası gibi): aynı adım ikinci kez çalışmaz; aynı anahtar başka değerlerle gelirse çakışma olarak
+durur, sessizce "yapıldı" sayılmaz. Sonucu bilinmeyen bir işlem (zaman aşımı, ya da yazdıktan sonra
+hata veren bir araç) tekrar denenmez. Her şey SHA-256 ile zincirlenmiş bir
 **denetim kaydına** yazılır.
 
 **Politika:** ev sahibi, talebi yapan kişi için kurallar koyar. Kurallar yasaklayabilir ("saha
