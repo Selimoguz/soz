@@ -12,6 +12,7 @@
 //   soz-guard scan [--json] [--base REF]   only the static scan, as in 0.1
 //   soz-guard pre-commit [--checks]    a git pre-commit hook: the verdict on what is being committed
 //   soz-guard track                    PreToolUse/PostToolUse: the files this session touched (init --sessions)
+//   soz-guard gate install|pre-receive|check|approve|log   on the server that holds the repository (gate.ts)
 //   soz-guard init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]
 //                                      installs the hooks (Claude Code by default), a .soz-guard.json and
 //                                      soz-guard's section in CLAUDE.md / AGENTS.md
@@ -27,6 +28,7 @@ import { scan, report, repoRoot, loadConfig, configAt, CONFIG_FILE, OWN_DIR, git
 import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
 import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
+import { gate } from "./gate.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -228,10 +230,10 @@ function ci(args: string[]): number {
   // the change is the branch's commits, not whatever else lies in the folder: on a server where someone
   // checked the branch out among other files, those files are not the branch's
   const dirty = args.includes("--checks") ? filesOutside(root, base, "HEAD") : [];
-  const { verdict } = evaluate(root, { range: { base, head: "HEAD" }, checks: args.includes("--checks") && !dirty.length, reuse: false, record: false });
-  // "--criteria report": for a team that reviews changes to the tests in the pull request itself
-  if (criteriaMode === "report" && verdict.state === "open" && !verdict.findings.length && !verdict.checks.some(c => c.status === "failed"))
-    verdict.state = verdict.checks.length ? "verified" : "unchecked";
+  // "--criteria report": for a team that reviews changes to the tests in the pull request itself; the
+  // checks run all the same
+  const { verdict } = evaluate(root, { range: { base, head: "HEAD" }, checks: args.includes("--checks") && !dirty.length, reuse: false, record: false,
+                                       ...(criteriaMode ? { criteriaChanges: criteriaMode as "block" | "report" } : {}) });
   // the checks were asked for and could not run on exactly the branch: no answer, so not finished
   if (dirty.length && finished(verdict.state)) verdict.state = "unverified";
   const note = dirty.length ? `\nThe required checks were not run: ${dirty.length} file(s) in the folder differ from the branch's last commit `
@@ -516,6 +518,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "replay") return replay(rest);
   if (cmd === "accept") return accept(rest);
   if (cmd === "log") return logCommand(rest);
+  if (cmd === "gate") return gate(rest);
   if (cmd === "scan" || cmd === undefined) {
     const json = rest.includes("--json");
     const { root, findings } = scan(process.cwd(), flag(rest, "--base") ?? "HEAD");

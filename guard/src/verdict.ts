@@ -126,6 +126,9 @@ export type EvaluateOptions = {
   guardBase?: GuardState;
   /** Judge only these files (the ones this session touched); the rest of the change is another session's. */
   only?: Set<string>;
+  /** How a criteria change counts, instead of the config's "criteriaChanges": ci --criteria, for a team that
+   * reviews such changes in the pull request. With "report" the checks still run. */
+  criteriaChanges?: "block" | "report";
   /** For the log: which session, and what asked for the verdict. */
   session?: string;
   source?: string;
@@ -199,7 +202,7 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
                     detail: "an acceptance is in git: a person accepts on their own machine, and an acceptance never travels with the change (git rm --cached it)" });
   const accepted = committed === null ? readAccepted(root) : null;
   const criteriaAccepted = criteria.length > 0 && accepted !== null && accepted.criteria === criteriaFingerprint(criteria) ? accepted.reason : null;
-  const criteriaOpen = criteria.length > 0 && before.config.criteriaChanges === "block" && !criteriaAccepted;
+  const criteriaOpen = criteria.length > 0 && (o.criteriaChanges ?? before.config.criteriaChanges) === "block" && !criteriaAccepted;
   // a changed config, accepted by a person: from now on it is the rules
   // (a proposed config is read all the same, so that a mistake in it is said at once, not after accepting)
   const proposed = currentText !== before.text ? parseConfig(currentText || null) : before.config;

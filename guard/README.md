@@ -37,12 +37,12 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.3.4.tgz`, attached to this repository's
+dependencies, `soz-guard-0.4.0.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
 Install it once per machine, then set it up in the project:
 
 ```sh
-npm install -g path/to/soz-guard-0.3.4.tgz
+npm install -g path/to/soz-guard-0.4.0.tgz
 cd path/to/your/project
 soz-guard init
 ```
@@ -220,6 +220,35 @@ with `actions/checkout`, set `fetch-depth: 0` (a shallow clone is said plainly, 
 number, or a commit of soz-guard's own repository pinned by hash. Never from a copy inside the
 repository being checked, which the agent's branch could have edited. (soz-guard is not on npm yet;
 until it is, pin a commit of this repository.)
+
+## On the server: the gate in front of what goes live
+
+Where the repository lives on a server of your own (and a push to it is what goes live, or goes to the
+tests before it), the gate sits in that repository as a git `pre-receive` hook. A push to a protected
+branch is let in only when soz-guard says the work is finished: the pushed commit is checked out in a
+folder of its own, the setup command installs what the checks need, and the checks run on exactly that
+commit. Otherwise git turns the push down and the pusher sees why. Other branches are let in as they are,
+for an integrator to look at.
+
+```sh
+cd /srv/git/shop.git                       # the repository on the server
+soz-guard gate install --branches main --setup "npm ci"
+soz-guard gate check feature/x --base main  # by hand: the verdict on a branch, before merging it
+soz-guard gate approve 3f9c2a1b7e44 "the old pricing test covered a rule we removed"
+soz-guard gate log --last 50                # every verdict, who pushed, what it found; --verify the chain
+```
+
+A change to the tests or rules is approved by a person on the server, in a terminal, for exactly that
+commit (the hash the gate printed; git does not keep a push it turned down, the gate's report does).
+An approval accepts those changes only: the checks still have to pass.
+
+**The gate holds only if the people who push, and their agents, cannot write to it.** Make the repository
+belong to a user of its own (`git`, say), let the developers reach it only through git over ssh
+(`git@server:/srv/git/shop.git`, with `git-shell`), and install soz-guard for that user, outside any
+project. This matters most when an agent works on the server itself, as with VS Code's Remote-SSH: the
+agent then runs commands on the server as its developer, so the developer's user must not be able to
+write the repository's hooks or `.soz-guard/` folder, nor become the `git` user without a password
+(`sudo` that asks for one). Approving is then `sudo -u git soz-guard gate approve ...`, typed by a person.
 
 ## Integrity: soz-guard's own footing
 

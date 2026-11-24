@@ -11,6 +11,7 @@ declare module "node:fs" {
   export function statSync(path: string): { size: number; mtimeMs: number };
   export function copyFileSync(from: string, to: string): void;
   export function appendFileSync(path: string, data: string, encoding: "utf8"): void;
+  export function chmodSync(path: string, mode: number): void;
 }
 
 declare module "node:path" {
@@ -24,6 +25,7 @@ declare module "node:path" {
 declare module "node:os" {
   export function tmpdir(): string;
   export function homedir(): string;
+  export function userInfo(): { username: string };
 }
 
 declare module "node:url" {
