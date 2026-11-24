@@ -1,7 +1,7 @@
 // rules.ts — What counts as work left unfinished without saying so.
 //
 // Each rule looks at one added line at a time. A rule may apply only to some file types and may
-// skip some paths. A line that carries "soz-guard: ignore" is never reported: unfinished work is
+// skip some paths. A line that carries "soz-guard: ignore <reason>" is never reported: unfinished work is
 // allowed, unsaid unfinished work is not.
 
 export type Rule = {
@@ -107,6 +107,20 @@ export const defaultExclude = [
 ];
 
 export const IGNORE_MARK = /soz-guard:\s*ignore\b/i;
+
+/** The reason given after a "soz-guard: ignore" mark on LINE: null if there is no mark, "" if there is no
+ * reason. A mark keeps a line from being reported only with a reason (what is left, and why); without one
+ * it excuses nothing, since "unfinished, never silently" is the whole point of it. */
+export function ignoreReason(line: string): string | null {
+  const m = IGNORE_MARK.exec(line);
+  if (!m) return null;
+  // the mark quoted or named in prose ("...ignore" needs a reason, ...ignore <why>) is a mention, not a mark
+  if (/^\s*["'`<)\]]/.test(line.slice(m.index + m[0].length))) return null;
+  const reason = line.slice(m.index + m[0].length)
+    .replace(/\s*(?:\*\/|-->|#\}|%>|\}\}).*$/, "")          // the end of the comment it is in
+    .trim().replace(/^[:\-–—,;(\[]+\s*/, "").replace(/[)\]]+\s*$/, "").trim();
+  return /\p{L}{3}/u.test(reason) ? reason.slice(0, 200) : "";
+}
 
 /** "**" any path, "*" anything but "/", "?" one character. Paths use "/". */
 export function globToRegExp(glob: string): RegExp {

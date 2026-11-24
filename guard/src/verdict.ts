@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, configAt, parseConfig, readDiff, repoRoot, scanLines,
+import { type Check, type Config, type Finding, type Deferred, type Range, CONFIG_FILE, OWN_DIR, configAt, parseConfig, readDiff, repoRoot, scanMarked,
          gitShow, gitIgnored, gitTracked } from "./scan.ts";
 import { type CriteriaChange, criteriaChanges } from "./criteria.ts";
 import { runnerChanges } from "./runners.ts";
@@ -33,6 +33,9 @@ export type State = "verified" | "unchecked" | "unverified" | "open";
 export type Verdict = {
   state: State; change: string; config: string; at: string; range: Range;
   findings: Finding[]; criteria: CriteriaChange[]; criteriaAccepted: string | null; checks: CheckResult[];
+  /** Lines the change marked "soz-guard: ignore <reason>": left as they are on the agent's word, told to the
+   * person (see deferredReport). They do not keep the work open. */
+  deferred: Deferred[];
   /** With several sessions in one folder: files changed since the baseline that this session did not touch,
    * left to the sessions that did (they are not judged here, but the checks run on them too). */
   foreign?: string[];
@@ -209,7 +212,7 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   const config = criteriaAccepted !== null ? proposed : before.config;
   const configText = config === before.config ? before.text : currentText;
   const configHash = sha256(configText);
-  const findings = scanLines(diff.added, config);
+  const { findings, deferred } = scanMarked(diff.added, config);
 
   // Checks run only when nothing static is open: unfinished work has to be finished first anyway.
   let checks: CheckResult[] = [];
@@ -232,18 +235,26 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     : checks.some(c => c.status === "timeout" || c.status === "error") ? "unverified"
     : todo.length && o.checks !== false ? "verified"
     : "unchecked";
-  const verdict: Verdict = { state, change, config: configHash, at: new Date().toISOString(), range, findings, criteria, criteriaAccepted, checks,
+  const verdict: Verdict = { state, change, config: configHash, at: new Date().toISOString(), range, findings, criteria, criteriaAccepted, checks, deferred,
                             ...(foreign ? { foreign } : {}) };
   if (o.record !== false) {
     writeOwn(root, "last.json", verdict);
     appendLog(root, {
       event: "verdict", source: o.source ?? "check", session: o.session ?? null, state, change, config: configHash,
       base: range.base, findings: findings.map(f => `${f.file}:${f.line} ${f.rule}`),
-      criteria: criteria.map(c => `${c.file} ${c.kind}`), criteriaAccepted, ...(foreign ? { foreign: foreign.length } : {}),
+      criteria: criteria.map(c => `${c.file} ${c.kind}`), criteriaAccepted,
+      deferred: deferred.map(d => `${d.file}:${d.line} ${d.reason.slice(0, 100)}`), ...(foreign ? { foreign: foreign.length } : {}),
       checks: checks.map(c => ({ name: c.name, status: c.status, seconds: c.seconds, reused: !!c.reused })),
     });
   }
   return { root, config, verdict };
+}
+
+/** What the agent left as it is, on its own word, for the person: never only in the agent's final message. */
+export function deferredReport(v: Pick<Verdict, "deferred">): string {
+  if (!v.deferred?.length) return "";
+  return `Left as it is, on the agent's word (soz-guard: ignore), ${v.deferred.length} line(s):\n`
+    + v.deferred.map(d => `  ${d.file}:${d.line}${d.rule ? `  [${d.rule}]` : ""}  ${d.reason}`).join("\n");
 }
 
 /** The verdict in words, for the agent (in the hook) or a person (in a terminal or CI log). */
@@ -271,6 +282,7 @@ export function verdictReport(v: Verdict, forAgent: boolean): string {
     parts.push(`Other sessions in this folder have changed ${v.foreign.length} file(s) you did not touch (${v.foreign.slice(0, 5).join(", ")}${v.foreign.length > 5 ? ", ..." : ""}).\n`
       + `The checks ran on the whole folder, their work included.`
       + (forAgent ? ` If the failure is in their files, do not edit them: say so in your final message\nand stop; fix only what is yours.` : ""));
+  if (!forAgent && v.deferred?.length) parts.push(deferredReport(v));
   const passed = v.checks.filter(c => c.status === "passed");
   if (passed.length) parts.push(`Passed: ${passed.map(c => `${c.name} (${c.seconds}s${c.reused ? ", same change as before" : ""})`).join(", ")}`);
   const head = { verified: "Verified: the checks ran on this change and passed.", unchecked: "Nothing open; no check applies to this change.",

@@ -37,12 +37,12 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.4.0.tgz`, attached to this repository's
+dependencies, `soz-guard-0.4.1.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
 Install it once per machine, then set it up in the project:
 
 ```sh
-npm install -g path/to/soz-guard-0.4.0.tgz
+npm install -g path/to/soz-guard-0.4.1.tgz
 cd path/to/your/project
 soz-guard init
 ```
@@ -389,8 +389,22 @@ can decide. Then the line stays, marked:
 return 0; // soz-guard: ignore the stock service has no release call yet
 ```
 
-and the agent says so in its final message. The marker is the point: the gap is now visible in
-the code, in the diff and in review.
+The marker is the point: the gap is now visible in the code, in the diff and in review. It needs its
+reason after it (what is left, and why); a bare `soz-guard: ignore`, or one with a reason that says
+nothing, excuses nothing and the line is reported as before.
+
+What was left is not left to the agent's final message either. Every marked line the change adds is
+recorded in the verdict (`deferred` in `.soz-guard/last.json`: file, line, what it would have been reported
+as, the reason) and in the log, and when the hook lets the agent stop, soz-guard tells the person itself:
+
+```
+soz-guard: the agent may stop (unchecked), but it left work as it is:
+Left as it is, on the agent's word (soz-guard: ignore), 1 line(s):
+  src/stock.ts:12  [todo]  the stock service has no release call yet
+```
+
+`soz-guard check`, `ci` and the gate show the same list. A marked line does not keep the work open: it is
+the agent saying what it left, which a person then sees.
 
 ## The static rules
 

@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
 import { scan, report, repoRoot, loadConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
-import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
+import { evaluate, verdictReport, deferredReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
 import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
 import { gate } from "./gate.ts";
@@ -118,8 +118,12 @@ function hook(): number {
   const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
   if (finished(verdict.state)) {
     writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
-    log("finished");
-    process.stdout.write("{}\n");                    // Codex expects JSON from a Stop hook that lets the agent stop
+    log(verdict.deferred.length ? `finished, ${verdict.deferred.length} line(s) left as they are on the agent's word` : "finished");
+    // Codex expects JSON from a Stop hook that lets the agent stop; what the agent left is told to the person
+    // here, by soz-guard, not left to the agent's final message
+    process.stdout.write(verdict.deferred.length
+      ? JSON.stringify({ systemMessage: `soz-guard: the agent may stop (${verdict.state}), but it left work as it is:\n${deferredReport(verdict)}` }) + "\n"
+      : "{}\n");
     return 0;
   }
   // Open only because the tests or rules changed, which a person accepts and the agent cannot. Once told, the
@@ -164,7 +168,7 @@ function check(args: string[]): number {
   const { verdict } = evaluate(process.cwd(), { range: { base: flag(args, "--base") ?? "HEAD" }, checks: !args.includes("--no-checks") });
   if (args.includes("--json")) process.stdout.write(JSON.stringify(verdict, null, 2) + "\n");
   else process.stdout.write(`soz-guard: ${verdict.state}${args.includes("--no-checks") ? " (checks not run: --no-checks)" : ""}\n`
-    + `${args.includes("--no-checks") && verdict.state === "unchecked" ? "Nothing open in what changed." : verdictReport(verdict, false)}\n`);
+    + `${args.includes("--no-checks") && verdict.state === "unchecked" ? ["Nothing open in what changed.", deferredReport(verdict)].filter(Boolean).join("\n") : verdictReport(verdict, false)}\n`);
   return finished(verdict.state) ? 0 : 1;
 }
 
@@ -281,8 +285,8 @@ function logCommand(args: string[]): number {
   const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(l => l.trim()) : [];
   for (const l of lines.slice(-Number(flag(args, "--last") ?? 20))) {
     try {
-      const e = JSON.parse(l) as { seq: number; at: string; event: string; state?: string; decision?: string; reason?: string; source?: string; findings?: unknown[]; criteria?: unknown[]; checks?: { name: string; status: string }[] };
-      const what = e.event === "verdict" ? `${e.state} (${e.source}): ${e.findings?.length ?? 0} unfinished, ${e.criteria?.length ?? 0} criteria${e.checks?.length ? ", " + e.checks.map(c => `${c.name} ${c.status}`).join(", ") : ""}`
+      const e = JSON.parse(l) as { seq: number; at: string; event: string; state?: string; decision?: string; reason?: string; source?: string; findings?: unknown[]; criteria?: unknown[]; deferred?: unknown[]; checks?: { name: string; status: string }[] };
+      const what = e.event === "verdict" ? `${e.state} (${e.source}): ${e.findings?.length ?? 0} unfinished, ${e.criteria?.length ?? 0} criteria${e.deferred?.length ? `, ${e.deferred.length} left on the agent's word` : ""}${e.checks?.length ? ", " + e.checks.map(c => `${c.name} ${c.status}`).join(", ") : ""}`
         : e.event === "hook" ? e.decision : e.event === "accept" ? `accepted: ${e.reason}` : e.event;
       process.stdout.write(`${String(e.seq).padStart(4)}  ${e.at}  ${e.event.padEnd(7)}  ${what}\n`);
     } catch { process.stdout.write(`      (unreadable line)\n`); }

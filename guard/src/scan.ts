@@ -4,10 +4,14 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { type Rule, defaultRules, defaultExclude, IGNORE_MARK, matchesAny } from "./rules.ts";
+import { type Rule, defaultRules, defaultExclude, ignoreReason, matchesAny } from "./rules.ts";
 import { defaultRunners } from "./runners.ts";
 
 export type Finding = { file: string; line: number; column: number; rule: string; message: string; text: string };
+
+/** A line the change marked "soz-guard: ignore <reason>": left as it is on the agent's word, so the person is
+ * told, whatever the agent says at the end. RULE is what it would have been reported as, if anything. */
+export type Deferred = { file: string; line: number; rule: string | null; reason: string; text: string };
 
 /** A check the repository's owner requires, run by soz-guard itself (never taken on the agent's word). */
 export type Check = {
@@ -215,21 +219,26 @@ export function changedLines(root: string, base = "HEAD", exclude: string[] = []
 }
 
 export function scanLines(lines: Map<string, [number, string][]>, config: Config): Finding[] {
+  return scanMarked(lines, config).findings;
+}
+
+/** The scan, and the lines the change marked to stay as they are (with a reason). */
+export function scanMarked(lines: Map<string, [number, string][]>, config: Config): { findings: Finding[]; deferred: Deferred[] } {
   const rules = config.rules.filter(r => !config.disable.includes(r.id)).map(r => ({ r, re: new RegExp(r.pattern, r.flags) }));
-  const findings: Finding[] = [];
+  const findings: Finding[] = [], deferred: Deferred[] = [];
   for (const [file, ls] of lines) {
     if (matchesAny(file, config.exclude)) continue;
     const ext = file.slice(file.lastIndexOf(".")).toLowerCase();
     const applicable = rules.filter(({ r }) => (!r.extensions || r.extensions.includes(ext)) && !(r.exclude && matchesAny(file, r.exclude)));
     for (const [line, text] of ls) {
-      if (IGNORE_MARK.test(text)) continue;
-      for (const { r, re } of applicable) {
-        const m = re.exec(text);
-        if (m) { findings.push({ file, line, column: m.index + 1, rule: r.id, message: r.message, text: text.trim().slice(0, 160) }); break; }
-      }
+      const reason = ignoreReason(text);
+      const hit = applicable.map(({ r, re }) => ({ r, m: re.exec(text) })).find(x => x.m);
+      if (reason) { deferred.push({ file, line, rule: hit?.r.id ?? null, reason, text: text.trim().slice(0, 160) }); continue; }
+      if (hit) findings.push({ file, line, column: hit.m!.index + 1, rule: hit.r.id, text: text.trim().slice(0, 160),
+                               message: hit.r.message + (reason === "" ? `; "soz-guard: ignore" needs its reason after it` : "") });
     }
   }
-  return findings;
+  return { findings, deferred };
 }
 
 /** Everything that changed in the repository at DIR, scanned. */
