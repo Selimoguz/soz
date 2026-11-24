@@ -1,8 +1,9 @@
 # soz-guard: tasks and acceptance — draft 0.1
 
-Status: **draft for review, not implemented.** Nothing here changes how soz-guard 0.4 behaves until it is
-accepted and built. Where this draft and the README disagree, the README describes today and this
-describes what is proposed.
+Status: **approved; built in soz-guard 0.5.0 for deliveries that are commits** (`soz-guard gate task`, and
+the gate judging every task a push carries). Not built yet: deliveries that are packages (step 10's
+package part, §9.3), screenshots as evidence (step 11), and feedback from the tasks in the local hook.
+The proposed answers to §9.1, 9.2, 9.4 and 9.5 are what was built.
 
 ## 1. The promise
 
@@ -214,3 +215,7 @@ while releases go out as they do today. Counted per task:
 4. **Who writes the tests**: the agent (proposed), with the person able to hold one out (a holdout test
    the agent never sees) for items that matter most.
 5. **The name and place of the task record**: `acceptance/<task-id>.json` in the repository (proposed).
+6. **A push that does not carry the task.** The gate judges the tasks a push carries (their file added or
+   changed in it). Code for a task pushed without its task file is judged as any change, and the task stays
+   open in `gate task status`. Whether a protected branch should accept only pushes that carry an approved
+   task is the person's choice; not built.

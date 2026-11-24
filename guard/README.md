@@ -37,12 +37,12 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.4.1.tgz`, attached to this repository's
+dependencies, `soz-guard-0.5.0.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
 Install it once per machine, then set it up in the project:
 
 ```sh
-npm install -g path/to/soz-guard-0.4.1.tgz
+npm install -g path/to/soz-guard-0.5.0.tgz
 cd path/to/your/project
 soz-guard init
 ```
@@ -249,6 +249,38 @@ project. This matters most when an agent works on the server itself, as with VS 
 agent then runs commands on the server as its developer, so the developer's user must not be able to
 write the repository's hooks or `.soz-guard/` folder, nor become the `git` user without a password
 (`sudo` that asks for one). Approving is then `sudo -u git soz-guard gate approve ...`, typed by a person.
+
+## Tasks: what the user asked for, proved on the delivery
+
+The checks say the code works; they do not say the user got what they asked for (the contract page is
+there, but no menu links to it). With the gate, a task can say it, as [SPEC.md](SPEC.md) lays out:
+
+1. The agent writes the task as 2 to 5 behaviours in the user's words, in `acceptance/<task>.json`, and one
+   test per behaviour, named with the item's tag (`[A1] ...`), that writes a JUnit report to
+   `$SOZ_GUARD_JUNIT` (`npx playwright test e2e/a1.spec.ts --reporter=junit`, with the runner's output
+   file set to it). An item can instead be proved by a person.
+2. The person approves the items in words, on the server: `soz-guard gate task approve T1 <branch>`.
+   Changing an item, its test or its command afterwards voids the approval.
+3. When the task is pushed to a protected branch, the gate runs each item's test **on what was live before
+   the task** and **on the delivery**. An item is proven when its test failed before and passes now. A test
+   that passed before too (the behaviour was already there) waits for the person to confirm it once
+   (`gate task confirm T1 A1 <commit>`): a test that cannot fail looks the same. A test that cannot run
+   proves nothing.
+4. The push is let in only when every required item is proven, confirmed by the person, or taken out by
+   them (`gate task descope T1 A1 "<why>"`). A `soz-guard: ignore` mark makes a gap visible; it never closes
+   an item.
+
+```
+soz-guard gate: main 3f9c2a1b7e: open, not let in
+Task T1 (Contract reachable from the Terms menu): incomplete, A1 missing
+  MISS A1  In the Terms of Use menu, the Distance Sales Contract link opens the contract
+         missing: the terms menu has no link to Mesafeli Satis Sozlesmesi
+```
+
+`soz-guard gate task status T1` gives the task's state on what is live, worked out then and there; the
+model saying "done" changes nothing. Approving, confirming and taking out need a terminal, on the server:
+an agent cannot do them. For now the delivery is the pushed commit; a package built and started as it
+ships is next (SPEC §9.3).
 
 ## Integrity: soz-guard's own footing
 
