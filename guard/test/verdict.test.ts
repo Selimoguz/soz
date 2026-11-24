@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { criteriaFingerprint } from "../src/verdict.ts";
+import { canonicalCommand } from "../src/guard.ts";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 let failed = 0;
@@ -160,6 +161,71 @@ check("... and counts what it would have stopped (the TODO, the dropped assertio
 const rj = JSON.parse(run(["replay", "main..feature", "--json"]).stdout) as { state: string; unfinished: number; criteria: number }[];
 check("--json: per commit, for a pilot's numbers", rj.length === 3 && rj[0].unfinished === 1 && rj[2].criteria === 1);
 check("a root commit can be replayed too", run(["replay", git("rev-list", "--max-parents=0", "HEAD")]).status === 0);
+
+console.log("\nFound in review: what a branch could slip through the gate");
+git("checkout", "-q", "main"); git("checkout", "-q", "-b", "gate");
+git("rm", "-q", "test/stock.test.ts"); git("commit", "-q", "-m", "drop the test");
+const g1 = JSON.parse(run(["ci", "--base", "main", "--json"]).stdout) as { state: string; criteria: never[] };
+mkdirSync(join(repo, ".soz-guard"), { recursive: true });
+writeFileSync(join(repo, ".soz-guard", "accepted.json"), JSON.stringify({ criteria: criteriaFingerprint(g1.criteria), reason: "written by the agent", at: "now" }));
+git("add", "-f", ".soz-guard/accepted.json"); git("commit", "-q", "-m", "accept it ourselves");
+const g2 = run(["ci", "--base", "main"]);
+check("an acceptance committed with the change accepts nothing in ci, and is itself reported", g1.state === "open" && g2.status === 1
+      && g2.stdout.includes(".soz-guard/accepted.json") && !g2.stdout.includes("accepted by a person"), g2.stdout);
+git("checkout", "-q", "main"); git("checkout", "-q", "-b", "moved");
+mkdirSync(join(repo, "old"), { recursive: true });
+git("mv", "test/stock.test.ts", "old/stock.ts"); git("commit", "-q", "-m", "move the test");
+const g3 = run(["ci", "--base", "main"]);
+check("a test moved out of the tests is a test gone", g3.status === 1 && g3.stdout.includes("moved out of the tests, to old/stock.ts"), g3.stdout);
+git("checkout", "-q", "main");
+owner({ checks: [], assertions: "any-change" });
+git("checkout", "-q", "-b", "crlf");
+write("test/stock.test.ts", readFileSync(join(repo, "test", "stock.test.ts"), "utf8").replace(/\n/g, "\r\n"));
+git("add", "-A"); git("commit", "-q", "-m", "line endings");
+const g4 = run(["ci", "--base", "main"]);
+check('"any-change": only the line endings changed (LF to CRLF): no assertion changed', g4.status === 0, g4.stdout);
+git("checkout", "-q", "main");
+owner({ checks: [] });
+
+console.log("\nFound in review: a change only a person can accept stops the agent once, not every turn");
+const told = `told-${Date.now()}`;
+const hookAs = () => run(["hook"], JSON.stringify({ cwd: repo, session_id: told, hook_event_name: "Stop" }));
+write(".soz-guard.json", JSON.stringify({ checks: [], disable: ["todo"] }));
+const t1 = hookAs(), t2 = hookAs();
+check("the rules changed: the agent is stopped once, and told it will not be again", t1.status === 2 && t1.stderr.includes("will not be stopped for these same changes again"), t1.stderr);
+check("... then let go, and the person told it waits for them", t2.status === 0 && JSON.parse(t2.stdout).systemMessage.includes("still waiting for you"), t2.stdout);
+write(".soz-guard.json", JSON.stringify({ checks: [], disable: ["todo", "fake-data"] }));
+check("... a further change to the rules: stopped again", hookAs().status === 2);
+git("checkout", "-q", "--", ".soz-guard.json");
+
+console.log("\nFound in review: soz-guard's hooks on more than one machine");
+const elsewhere = `"C:\\Program Files\\nodejs\\node.exe" --experimental-strip-types --disable-warning=ExperimentalWarning "C:\\elsewhere\\soz\\guard\\src\\cli.ts" hook`;
+const here = `${JSON.stringify(process.execPath)} --experimental-strip-types --disable-warning=ExperimentalWarning ${JSON.stringify(cli)} hook`;
+check("soz-guard's own command, from outside the repository, is the same on any machine", canonicalCommand(elsewhere) === "soz-guard hook");
+check("... but not when its script is inside the repository, where the change could have written it",
+      canonicalCommand(`node "${repo.replace(/\\/g, "/")}/tools/cli.js" hook`, repo) !== "soz-guard hook" && canonicalCommand('node "tools/cli.js" hook') !== "soz-guard hook");
+check("... nor, where it must be there, when it is not on this machine", canonicalCommand(elsewhere, repo, true) === elsewhere
+      && canonicalCommand(here, repo, true) === "soz-guard hook");
+const stopHook = (command: string) => JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } }, null, 2);
+write(".claude/settings.json", stopHook(elsewhere)); git("add", "-A"); git("commit", "-q", "-m", "hooks from another machine");
+write(".claude/settings.json", stopHook(here));
+check("init on this machine points the hook here: not a change to what counts as finished",
+      !JSON.parse(run(["check", "--no-checks", "--json"]).stdout).criteria.some((c: { file: string }) => c.file === ".claude/settings.json"));
+write(".claude/settings.json", stopHook(elsewhere.replace("elsewhere", "nowhere")));
+check("pointed at a soz-guard that is not on this machine: a guard change", JSON.parse(run(["check", "--no-checks", "--json"]).stdout)
+      .criteria.some((c: { file: string; kind: string }) => c.file === ".claude/settings.json" && c.kind === "guard"));
+git("checkout", "-q", "--", ".claude/settings.json");
+const l1 = run(["init", "--local"]);
+const localSettings = () => JSON.parse(readFileSync(join(repo, ".claude", "settings.local.json"), "utf8"));
+check("init --local: the hooks go to settings.local.json, and git ignores it", l1.status === 0 && localSettings().hooks.Stop[0].hooks[0].command.endsWith(" hook")
+      && readFileSync(join(repo, ".gitignore"), "utf8").includes(".claude/settings.local.json"), l1.stdout + l1.stderr);
+check("... and it says the committed settings still run soz-guard from another machine", l1.stdout.includes("init --local"));
+const stale = localSettings(); stale.hooks.Stop[0].hooks[0].command = elsewhere;
+writeFileSync(join(repo, ".claude", "settings.local.json"), JSON.stringify(stale, null, 2));
+const l2 = run(["init", "--local"]);
+check("init again where the hook runs another machine's soz-guard: updated, not left broken", l2.stdout.includes("Stop hook updated")
+      && localSettings().hooks.Stop.length === 1 && localSettings().hooks.Stop[0].hooks[0].command !== elsewhere, l2.stdout);
+check("... and once it is right, init changes nothing", run(["init", "--local"]).stdout.includes("the Stop hook is already there"));
 
 rmSync(repo, { recursive: true, force: true });
 rmSync(dirname(counter), { recursive: true, force: true });

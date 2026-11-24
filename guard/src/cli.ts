@@ -12,7 +12,7 @@
 //   soz-guard scan [--json] [--base REF]   only the static scan, as in 0.1
 //   soz-guard pre-commit [--checks]    a git pre-commit hook: the verdict on what is being committed
 //   soz-guard track                    PreToolUse/PostToolUse: the files this session touched (init --sessions)
-//   soz-guard init [DIR] [--claude] [--sessions] [--codex] [--git [--checks]]
+//   soz-guard init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]
 //                                      installs the hooks (Claude Code by default), a .soz-guard.json and
 //                                      soz-guard's section in CLAUDE.md / AGENTS.md
 
@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { scan, report, repoRoot, loadConfig, CONFIG_FILE, OWN_DIR } from "./scan.ts";
+import { scan, report, repoRoot, loadConfig, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath } from "./scan.ts";
 import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
 import { MARK } from "./guard.ts";
@@ -35,8 +35,6 @@ const here = dirname(self);
  * compiled package. */
 const selfCommand = (sub: string) =>
   `"${process.execPath}" ${self.endsWith(".ts") ? "--experimental-strip-types --disable-warning=ExperimentalWarning " : ""}"${self}" ${sub}`;
-const isOurHook = (command: string | undefined) =>
-  !!command && (command.includes(self) || /soz-guard/.test(command) || /cli\.(ts|js)" hook$/.test(command));
 
 const finished = (state: string) => state === "verified" || state === "unchecked";
 
@@ -108,13 +106,32 @@ function hook(): number {
   const only = baseline && input.session_id && trackingInstalled(root) ? (readTouched(root, input.session_id) ?? new Set<string>()) : undefined;
   const { verdict, config } = evaluate(dir, { range, only, guardBase: baseline?.guard, session: input.session_id, source: "hook" });
   const stateFile = join(tmpdir(), `soz-guard-${(input.session_id ?? "default").replace(/[^\w-]/g, "")}.json`);
-  const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number } : { blocks: 0 };
+  const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number; told?: string } : { blocks: 0 };
   const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
   if (finished(verdict.state)) {
     writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
     log("finished");
     process.stdout.write("{}\n");                    // Codex expects JSON from a Stop hook that lets the agent stop
     return 0;
+  }
+  // Open only because the tests or rules changed, which a person accepts and the agent cannot: the agent is told
+  // once. Stopping it again for the same changes, turn after turn, only keeps it from answering the person.
+  const waitsForPerson = verdict.state === "open" && !verdict.findings.length && !verdict.checks.length
+    && verdict.criteria.length > 0 && !verdict.criteriaAccepted;
+  const criteriaKey = waitsForPerson ? criteriaFingerprint(verdict.criteria) : undefined;
+  if (criteriaKey && state.told === criteriaKey) {
+    log("let the agent stop: the same changes to the criteria still wait for a person");
+    process.stdout.write(JSON.stringify({
+      systemMessage: `soz-guard: still waiting for you, not for the agent:\n${verdictReport(verdict, false)}\nAccept in a terminal with  soz-guard accept "<why>", or undo the change.`,
+    }) + "\n");
+    return 0;
+  }
+  if (criteriaKey) {
+    writeFileSync(stateFile, JSON.stringify({ blocks: 0, told: criteriaKey }));
+    log("stopped the agent once: the criteria changed, a person decides");
+    process.stderr.write(`soz-guard: you are about to finish, but the work is not finished yet.\n${verdictReport(verdict, true)}\n`
+      + `You will not be stopped for these same changes again; say plainly in your final message that they wait for the user.\n`);
+    return 2;
   }
   state.blocks++;
   writeFileSync(stateFile, JSON.stringify(state));
@@ -303,24 +320,42 @@ function installGitHook(root: string, checks: boolean): string {
     + `      soz-guard's own setup changes the criteria: commit it yourself with  git commit --no-verify`;
 }
 
+type HookList = { matcher?: string; hooks: { type: string; command: string }[] }[];
+
+/** Puts soz-guard's SUB hook in LIST with this machine's command: adds it, or updates one of soz-guard's that
+ * runs it from somewhere else (another machine, or Node or soz-guard moved since). OURS tells soz-guard's
+ * own command for SUB from the others, which are never touched. */
+function upsertHook(list: HookList, sub: string, ours: (command: string) => boolean, matcher?: string): "added" | "updated" | "there" {
+  const command = selfCommand(sub);
+  for (const m of list) for (const h of m.hooks ?? []) {
+    if (!ours(h.command ?? "")) continue;
+    if (h.command === command) return "there";
+    h.command = command;
+    return "updated";
+  }
+  list.push({ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command }] });
+  return "added";
+}
+const ourCommand = (sub: string) => (c: string) =>
+  (c.includes(self) || /soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && c.trimEnd().endsWith(` ${sub}`);
+const upsertNote = (r: "added" | "updated" | "there", what: string, where: string) =>
+  r === "there" ? `${where}: the ${what} is already there` : r === "added" ? `${where}: ${what} added` : `${where}: ${what} updated to this machine's Node and soz-guard`;
+
 /** Codex: SessionStart and Stop hooks in the project's .codex/hooks.json, the same commands as for Claude
  * Code (Codex sends the same fields and reads exit code 2 with stderr as "continue"). */
 function installCodexHooks(root: string): string {
   const path = join(root, ".codex", "hooks.json");
-  type Hooks = Record<string, { hooks: { type: string; command: string }[] }[]>;
-  const j: { hooks?: Hooks } = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  const j: { hooks?: Record<string, HookList> } = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   j.hooks ??= {};
-  const added: string[] = [];
+  const notes: string[] = [];
   for (const [event, sub] of [["SessionStart", "session-start"], ["Stop", "hook"]] as const) {
-    const list = (j.hooks[event] ??= []);
-    if (list.some(m => m.hooks?.some(h => /soz-guard|cli\.(ts|js)"/.test(h.command ?? "") && h.command.trimEnd().endsWith(` ${sub}`)))) continue;
-    list.push({ hooks: [{ type: "command", command: selfCommand(sub) }] });
-    added.push(event);
+    const r = upsertHook(j.hooks[event] ??= [], sub, ourCommand(sub));
+    if (r !== "there") notes.push(upsertNote(r, `${event} hook`, ".codex/hooks.json"));
   }
-  if (!added.length) return ".codex/hooks.json: the hooks are already there";
+  if (!notes.length) return ".codex/hooks.json: the hooks are already there";
   mkdirSync(join(root, ".codex"), { recursive: true });
   writeFileSync(path, JSON.stringify(j, null, 2) + "\n");
-  return `.codex/hooks.json: ${added.join(" and ")} hook added (Codex asks you to trust them once, in /hooks)`;
+  return `${notes.join("\n  ")} (Codex asks you to trust them once, in /hooks)`;
 }
 
 /** soz-guard's section in an instructions file (CLAUDE.md for Claude Code, AGENTS.md for Codex and others). */
@@ -347,41 +382,48 @@ function init(dir: string, args: string[] = []): number {
   const done: string[] = [];
 
   if (claude) {
-  const settingsPath = join(root, ".claude", "settings.json");
-  type Hooks = Record<string, { hooks: { type: string; command: string }[] }[]>;
-  let settings: { hooks?: Hooks } = {};
+  // --local: the hooks go to settings.local.json, which stays on this machine. In a team each person runs
+  // init --local on their own machine, and no machine's paths are committed for the others.
+  const local = args.includes("--local");
+  const settingsName = local ? ".claude/settings.local.json" : ".claude/settings.json";
+  const settingsPath = join(root, settingsName);
+  let settings: { hooks?: Record<string, HookList> } = {};
   if (existsSync(settingsPath)) settings = JSON.parse(readFileSync(settingsPath, "utf8"));   // a broken file stops here, untouched
   settings.hooks ??= {};
   let changed = false;
   // SessionStart records where the session began; Stop judges what changed since then
   for (const [event, sub] of [["SessionStart", "session-start"], ["Stop", "hook"]] as const) {
-    const list = (settings.hooks[event] ??= []);
-    const ours = (c: string | undefined) => !!c && (c.includes(self) || /soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && c.trimEnd().endsWith(` ${sub}`);
-    if (list.some(m => m.hooks?.some(h => ours(h.command) || (event === "Stop" && isOurHook(h.command)))))
-      done.push(`.claude/settings.json: the ${event} hook is already there`);
-    else {
-      list.push({ hooks: [{ type: "command", command: selfCommand(sub) }] });
-      changed = true;
-      done.push(`.claude/settings.json: ${event} hook added`);
-    }
+    const r = upsertHook(settings.hooks[event] ??= [], sub, ourCommand(sub));
+    changed ||= r !== "there";
+    done.push(upsertNote(r, `${event} hook`, settingsName));
   }
   // several sessions in one folder: each answers for the files it touched (opt-in: a shell command costs two
   // snapshots, and a change made some way the hooks do not see is then nobody's)
   if (args.includes("--sessions")) {
     for (const event of ["PreToolUse", "PostToolUse"] as const) {
-      const list = (settings.hooks[event] ??= []) as { matcher?: string; hooks: { type: string; command: string }[] }[];
-      if (list.some(m => m.hooks?.some(h => /soz-guard|cli\.(ts|js)"/.test(h.command ?? "") && h.command.trimEnd().endsWith(" track"))))
-        done.push(`.claude/settings.json: the ${event} tracking hook is already there`);
-      else {
-        list.push({ matcher: event === "PreToolUse" ? SHELL_TOOLS.join("|") : TRACK_MATCHER, hooks: [{ type: "command", command: selfCommand("track") }] });
-        changed = true;
-        done.push(`.claude/settings.json: ${event} tracking hook added (each session answers for the files it touched)`);
-      }
+      const r = upsertHook(settings.hooks[event] ??= [], "track", ourCommand("track"), event === "PreToolUse" ? SHELL_TOOLS.join("|") : TRACK_MATCHER);
+      changed ||= r !== "there";
+      done.push(upsertNote(r, `${event} tracking hook`, settingsName) + (r === "added" ? " (each session answers for the files it touched)" : ""));
     }
   }
   if (changed) {
     mkdirSync(join(root, ".claude"), { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  }
+  if (local) {
+    if (!gitIgnoredPath(root, settingsName)) {
+      const ignorePath = join(root, ".gitignore");
+      const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+      writeFileSync(ignorePath, (ignore ? ignore.replace(/\s*$/, "\n") : "") + `${settingsName}\n`);
+      done.push(`.gitignore: ${settingsName} added (it holds this machine's paths)`);
+    }
+    try {
+      const shared = JSON.parse(readFileSync(join(root, ".claude", "settings.json"), "utf8")) as { hooks?: Record<string, HookList> };
+      const commands = Object.values(shared.hooks ?? {}).flat().flatMap(m => (m.hooks ?? []).map(h => h.command ?? ""));
+      if (["session-start", "hook", "track"].some(sub => commands.some(ourCommand(sub))))
+        done.push(`.claude/settings.json also runs soz-guard, with the paths of the machine that committed it; on other machines\n`
+          + `      that one fails. The repository's owner removes it from there, once everyone has run init --local.`);
+    } catch { /* no shared settings: nothing to point out */ }
   }
   }
   if (codex) done.push(installCodexHooks(root));
@@ -429,7 +471,7 @@ async function main(argv: string[]): Promise<number> {
     else process.stdout.write(findings.length ? `Unfinished work in what changed:\n${report(findings)}\n` : "Nothing unfinished in what changed.\n");
     return findings.length ? 1 : 0;
   }
-  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--sessions] [--codex] [--git [--checks]]\n');
+  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]\n');
   return 2;
 }
 

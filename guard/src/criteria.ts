@@ -24,6 +24,16 @@ export function criteriaChanges(diff: Diff, config: Config): CriteriaChange[] {
   const out: CriteriaChange[] = [];
   for (const [file, status] of [...diff.status].sort((a, b) => a[0] < b[0] ? -1 : 1)) {
     const evidence = evidenceOf(diff, file);
+    // renamed: judged by where it was too. A test moved out of the tests (test/a.test.ts to old/a.ts) no
+    // longer runs as one, and soz-guard's config renamed away is gone.
+    const from = status === "R" ? diff.renamed.get(file) : undefined;
+    const isCriteria = (f: string) => f === CONFIG_FILE || (!matchesAny(f, config.exclude) && matchesAny(f, config.criteria));
+    if (from !== undefined && isCriteria(from) && (from === CONFIG_FILE || !isCriteria(file))) {
+      out.push(from === CONFIG_FILE
+        ? { file: from, kind: "config", evidence, detail: `the rules that decide what counts as finished (${CONFIG_FILE}) were renamed to ${file}` }
+        : { file: from, kind: "deleted", evidence, detail: `a test or CI file was moved out of the tests, to ${file}, where it no longer runs as one` });
+      continue;
+    }
     if (file === CONFIG_FILE) {
       out.push({ file, kind: "config", evidence,
                  detail: `the rules that decide what counts as finished (${CONFIG_FILE}) were ${status === "D" ? "deleted" : status === "A" ? "added" : "changed"}` });

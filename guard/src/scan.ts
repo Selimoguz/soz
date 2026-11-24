@@ -93,6 +93,11 @@ export function gitShow(root: string, rev: string, file: string): string | null 
   try { return git(root, ["show", `${rev}:${file}`]); } catch { return null; }
 }
 
+/** Whether FILE is tracked in git's index (committed, or staged to be). */
+export function gitTracked(root: string, file: string): boolean {
+  try { return git(root, ["ls-files", "--", file]).trim() !== ""; } catch { return false; }
+}
+
 /** Whether git ignores FILE (.gitignore and the like). */
 export function gitIgnored(root: string, file: string): boolean {
   try { git(root, ["check-ignore", "-q", file]); return true; } catch { return false; }
@@ -116,6 +121,8 @@ export type Diff = {
   added: Map<string, [number, string][]>;
   removed: Map<string, [number, string][]>;
   status: Map<string, string>;
+  /** A renamed file's path before (keyed by its path now): a test moved out of the tests is a test gone. */
+  renamed: Map<string, string>;
   fingerprint: string;
 };
 
@@ -128,6 +135,7 @@ const LARGE = 2 * 1024 * 1024;
  * left out, whatever EXCLUDE says, so a change to it is always seen. */
 export function readDiff(root: string, range: Range = { base: "HEAD" }, exclude: string[] = []): Diff {
   const added = new Map<string, [number, string][]>(), removed = new Map<string, [number, string][]>(), status = new Map<string, string>();
+  const renamed = new Map<string, string>();
   const push = (m: Map<string, [number, string][]>, file: string, n: number, text: string) => {
     if (own(file)) return;
     if (!m.has(file)) m.set(file, []);
@@ -151,15 +159,21 @@ export function readDiff(root: string, range: Range = { base: "HEAD" }, exclude:
     git(root, ["-c", "core.quotepath=false", "ls-files", ...extra, "--others", "--exclude-standard", ...paths]).split("\n").filter(Boolean);
   if (!range.head && range.base === "HEAD" && !hasHead(root)) {
     for (const f of untracked(["--cached"])) whole(f);
-    return { added, removed, status, fingerprint: hash.digest("hex") };
+    return { added, removed, status, renamed, fingerprint: hash.digest("hex") };
   }
   const span = range.head ? [range.base, range.head] : [range.base];
-  for (const line of git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--name-status", "-M", ...span, ...paths]).split("\n")) {
+  const nameStatus = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--name-status", "-M", ...span, ...paths]);
+  for (const line of nameStatus.split("\n")) {
     const parts = line.split("\t");
-    if (parts.length >= 2 && !own(parts[parts.length - 1])) status.set(parts[parts.length - 1], parts[0][0]);
+    if (parts.length >= 2 && !own(parts[parts.length - 1])) {
+      status.set(parts[parts.length - 1], parts[0][0]);
+      if (parts[0][0] === "R" && parts.length >= 3) renamed.set(parts[2], parts[1]);
+    }
   }
-  const diffText = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", ...span, ...paths]);
-  hash.update(diffText, "utf8");
+  // a line whose only change is its ending (LF and CRLF, as Windows and other machines check files out) has
+  // not changed: it is neither added code to scan nor an assertion removed
+  const diffText = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", "--ignore-cr-at-eol", ...span, ...paths]);
+  hash.update(nameStatus, "utf8").update(diffText, "utf8");
   let oldFile: string | null = null, newFile: string | null = null, o = 0, n = 0;
   for (const line of diffText.split("\n")) {
     if (line.startsWith("--- ")) { oldFile = line === "--- /dev/null" ? null : line.slice(6); continue; }
@@ -171,7 +185,7 @@ export function readDiff(root: string, range: Range = { base: "HEAD" }, exclude:
     else if (line.startsWith("-") && (newFile ?? oldFile)) push(removed, newFile ?? oldFile!, o++, line.slice(1).replace(/\r$/, ""));
   }
   if (!range.head) for (const f of untracked([])) whole(f);
-  return { added, removed, status, fingerprint: hash.digest("hex") };
+  return { added, removed, status, renamed, fingerprint: hash.digest("hex") };
 }
 
 /** Added lines per file: changes against BASE (default HEAD), plus untracked files whole. */

@@ -58,7 +58,20 @@ npx soz-guard init
 
 Every Claude Code session in that project, in every tab, then runs it when the agent tries to stop.
 The hook calls this Node by its full path, because a desktop app's PATH may not include it; after
-moving Node or the package, run `init` again.
+moving Node or the package, run `init` again: it updates soz-guard's hooks to where they are now.
+
+**In a team**, those full paths are one machine's. Each person runs, on their own machine:
+
+```sh
+npx soz-guard init --local
+```
+
+which puts the hooks in `.claude/settings.local.json` and adds that file to `.gitignore`, so no
+machine's paths are committed for the others. (If `.claude/settings.json` already runs soz-guard from
+the machine that committed it, `init --local` says so; the owner removes it there once everyone has
+run `init --local`.) Where soz-guard lives is not part of what counts as finished: its hook pointed at
+another Node or another copy of soz-guard is not a change a person has to accept, as long as that
+copy is on this machine.
 
 ## Required checks
 
@@ -129,7 +142,10 @@ assert the same line, and an edited old one would hide behind it. Start with `"f
 
 Which files count: `.soz-guard.json`, `test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`,
 `*_test.*`, `test_*.py`, `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, and whatever you add
-under `"criteria"`. With `"criteriaChanges": "report"` such changes are only reported.
+under `"criteria"`. A file renamed out of them (`test/pay.test.ts` to `old/pay.ts`) no longer runs as
+a test, so it counts as deleted. A line whose only change is its ending (LF and CRLF, as different
+machines check files out) has not changed. With `"criteriaChanges": "report"` such changes are only
+reported.
 
 A test sometimes really is obsolete. Then a person accepts the change, in a terminal:
 
@@ -142,6 +158,10 @@ acceptance is bound to exactly these changes; any further change to the tests or
 accepting again. Be clear about what this is: on one machine an agent can do whatever its user can,
 so locally this slows an agent down rather than stops it. **CI is where the rule is enforced**, on
 the pull request, where the agent cannot accept anything.
+
+The acceptance stays on the machine where it was typed (`.soz-guard/`, which git ignores). One that is
+in git, or in the commit being judged, came with the change (an agent can write one and `git add -f`
+it), so it accepts nothing and is reported as a change of its own, in CI and everywhere else.
 
 ## In CI
 
@@ -168,6 +188,8 @@ much as the tests do. A change to them is a criteria change (`guard`) that a per
 | Change | Verdict |
 |---|---|
 | a hook removed or changed in `.claude/settings.json` or `.claude/settings.local.json` | `open` |
+| soz-guard's own hook pointed at a soz-guard that is not on this machine | `open` |
+| soz-guard's own hook run from another Node or copy of soz-guard on this machine (`init` again) | fine |
 | `disableAllHooks` set in either | `open` |
 | a hook removed or changed in `.codex/hooks.json`, or a line about hooks in `.codex/config.toml` | `open` |
 | soz-guard's section in `CLAUDE.md` or `AGENTS.md` rewritten or removed | `open` |
@@ -239,6 +261,11 @@ and tells the agent what is open, so it continues instead of stopping. To never 
 loop, it does this at most `maxBlocks` times (3); after that it lets the agent stop and tells the
 person, plainly, that the work is not finished. Outside a git repository it does nothing. If it
 fails itself, it says so and does not block.
+
+When the only thing open is a change to the tests or rules, the agent cannot resolve it: a person
+accepts it. Then the hook stops the agent once, so it says so in its final message, and after that
+lets it stop, telling the person each time that the change still waits for them. A further change to
+the tests or rules stops the agent again.
 
 ## Other agents: a git hook, and Codex
 

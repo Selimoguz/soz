@@ -10,6 +10,7 @@
 // so these are read from the files themselves, not from the diff.
 
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { type CriteriaChange } from "./criteria.ts";
 
 export const MARK = "<!-- soz-guard -->";
@@ -56,13 +57,51 @@ export function guardState(read: (file: string) => string | null): GuardState {
   return state;
 }
 
+/** soz-guard's own hook command, as init writes it: a Node, by full path, running soz-guard's cli by full path. */
+const OWN_COMMAND = /^\s*"?[^"]*?node(?:\.exe)?"?\s+(?:--[\w=-]+\s+)*"([^"]+[\\/]cli\.(?:ts|js))"\s+(hook|session-start|track)\s*$/i;
+
+/** soz-guard's own commands with a path outside the repository become "soz-guard <sub>": where Node and
+ * soz-guard live differs from one machine to the next, and running init on another machine, or after moving
+ * them, is not a change to what counts as finished. A command whose script is inside the repository stays as
+ * it is: that script is part of the change, and could be anything. With EXISTS, so does one whose script is
+ * not on this machine: pointing soz-guard's hook at nothing switches it off as surely as removing it. */
+export function canonicalCommand(command: string, root?: string, exists = false): string {
+  const m = OWN_COMMAND.exec(command);
+  if (!m) return command;
+  const script = m[1].replace(/\\/g, "/");
+  if (!/^([A-Za-z]:)?\//.test(script)) return command;                    // relative: inside the repository
+  if (exists && !existsSync(m[1])) return command;
+  if (root) {
+    const r = root.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
+    const inside = process.platform === "win32" ? script.toLowerCase().startsWith(r.toLowerCase()) : script.startsWith(r);
+    if (inside) return command;
+  }
+  return `soz-guard ${m[2]}`;
+}
+
+/** A settings state with soz-guard's own commands made canonical (see canonicalCommand). */
+function canonicalState(v: string | null | undefined, root?: string, exists = false): string | null | undefined {
+  if (!v || !v.startsWith("{")) return v;
+  try {
+    const j = JSON.parse(v) as { hooks: unknown; disableAllHooks: unknown };
+    const walk = (x: unknown): unknown => Array.isArray(x) ? x.map(walk)
+      : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, k === "command" && typeof y === "string" ? canonicalCommand(y, root, exists) : walk(y)]))
+      : x;
+    return JSON.stringify({ hooks: walk(j.hooks), disableAllHooks: j.disableAllHooks });
+  } catch { return v; }
+}
+
 /** Differences between two guard states, as criteria changes. A part that was not there and is not there
- * now is no change; settings that hold no hooks count as none. */
-export function guardChanges(before: GuardState, after: GuardState): CriteriaChange[] {
+ * now is no change; settings that hold no hooks count as none. ROOT, the repository, tells soz-guard's own
+ * commands from others (see canonicalCommand). */
+export function guardChanges(before: GuardState, after: GuardState, root?: string): CriteriaChange[] {
   const none = (v: string | null | undefined) => v === null || v === undefined || v === JSON.stringify({ hooks: null, disableAllHooks: null });
   const out: CriteriaChange[] = [];
   for (const f of Object.keys(after).sort()) {
-    const a = before[f], b = after[f];
+    if (before[f] === after[f]) continue;
+    // where soz-guard lives may differ from before, but now it has to be there
+    const settingsFile = SETTINGS.includes(f);
+    const a = settingsFile ? canonicalState(before[f], root) : before[f], b = settingsFile ? canonicalState(after[f], root, true) : after[f];
     if (a === b || (none(a) && none(b))) continue;
     // soz-guard's section added where there was none only adds rules; changing or removing one is the risk
     if (INSTRUCTIONS.includes(f) && (a === null || a === undefined)) continue;

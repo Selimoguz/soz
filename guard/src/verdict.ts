@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } fr
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, loadConfig, readDiff, repoRoot, scanLines,
-         gitShow, gitIgnored } from "./scan.ts";
+         gitShow, gitIgnored, gitTracked } from "./scan.ts";
 import { type CriteriaChange, criteriaChanges } from "./criteria.ts";
 import { type GuardState, guardState, guardChanges } from "./guard.ts";
 import { matchesAny } from "./rules.ts";
@@ -95,6 +95,18 @@ export function readAccepted(root: string): Accepted | null {
   try { return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) as Accepted : null; } catch { return null; }
 }
 
+const ACCEPTED = `${OWN_DIR}/accepted.json`;
+
+/** A person accepts on their own machine, and .soz-guard/ stays out of git. An acceptance that is in git, or
+ * in the commit being judged, came with the change: an agent can write one and commit it (git add -f), so it
+ * accepts nothing, and is itself a change to what counts as finished. Its text, or null if there is none. */
+function committedAcceptance(root: string, range: Range): string | null {
+  const atHead = range.head ? gitShow(root, range.head, ACCEPTED) : null;
+  if (atHead !== null) return atHead;
+  if (!gitTracked(root, ACCEPTED)) return null;
+  return gitShow(root, "HEAD", ACCEPTED) ?? (existsSync(join(root, ACCEPTED)) ? readFileSync(join(root, ACCEPTED), "utf8") : "");
+}
+
 export function writeOwn(root: string, file: string, data: unknown) {
   mkdirSync(join(root, OWN_DIR), { recursive: true });
   writeFileSync(join(root, OWN_DIR, file), JSON.stringify(data, null, 2) + "\n");
@@ -162,7 +174,8 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   if (o.only) {
     const only = o.only;
     foreign = [...diff.status.keys()].filter(f => !only.has(f)).sort();
-    for (const m of [diff.added, diff.removed, diff.status]) for (const f of [...m.keys()]) if (!only.has(f)) m.delete(f);
+    for (const m of [diff.added, diff.removed, diff.status, diff.renamed] as Map<string, unknown>[])
+      for (const f of [...m.keys()]) if (!only.has(f)) m.delete(f);
   }
   const change = sha256(diff.fingerprint), configHash = sha256(configText);
   const findings = scanLines(diff.added, config);
@@ -171,11 +184,15 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   const worktree = (f: string) => existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : null;
   const atRev = (rev: string) => (f: string) => gitShow(root, rev, f);
   const guard = o.guardBase
-    ? guardChanges(o.guardBase, guardState(worktree))
-    : guardChanges(guardState(atRev(range.base)), guardState(range.head ? atRev(range.head) : worktree))
+    ? guardChanges(o.guardBase, guardState(worktree), root)
+    : guardChanges(guardState(atRev(range.base)), guardState(range.head ? atRev(range.head) : worktree), root)
         .filter(c => range.head || !gitIgnored(root, c.file));
   const criteria = [...criteriaChanges(diff, config), ...guard];
-  const accepted = readAccepted(root);
+  const committed = committedAcceptance(root, range);
+  if (committed !== null)
+    criteria.push({ file: ACCEPTED, kind: "guard", evidence: sha256(`${ACCEPTED}\n${committed}`),
+                    detail: "an acceptance is in git: a person accepts on their own machine, and an acceptance never travels with the change (git rm --cached it)" });
+  const accepted = committed === null ? readAccepted(root) : null;
   const criteriaAccepted = criteria.length && accepted && accepted.criteria === criteriaFingerprint(criteria) ? accepted.reason : null;
   const criteriaOpen = criteria.length > 0 && config.criteriaChanges === "block" && !criteriaAccepted;
 
