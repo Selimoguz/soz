@@ -47,6 +47,7 @@ A case with a `tools` field is an execution case. Instead of `expect` it has:
   "tools": {"erp.find_customer": [{"result": {"code": "C1"}}], "erp.add_order_line": [{"result": null}]},
   "execute_tools": {"...": "optional; the scripts for the execution pass (default: tools again)"},
   "journal": [{"operation": "erp.add_order_line", "args": {"customer": "C1", "product": "tomatoes", "quantity": 20}}],
+  "journal_after_preview": [{"operation": "...", "args": {}}],
   "approve": false,
   "expect_preview": {"status": "ready", "hash": "...", "stop_reason": null, "problems": ["duplicate-step"],
                      "steps": [{"operation": "...", "args": {}, "already_done": false}]},
@@ -61,6 +62,10 @@ A case with a `tools` field is an execution case. Instead of `expect` it has:
   `{"failed": "why"}` or `{"unknown": "why"}`; when the script runs out, the last answer repeats.
   An operation without a script has no implementation.
 - `journal` entries are keys in the journal before the case starts: `done`, or with `"status"` `pending` or `unknown`.
+  The entry's key is made from `args` as SPEC 10.3 says, and the entry keeps `args` as its arguments
+  (SPEC 10.8), so a step with the same key and other arguments is a `key-conflict`.
+- `journal_after_preview` entries are added the same way after the preview and before execution (another
+  execution wrote them in between).
 - The preview runs with `tools`; then, if `expect_execute` is present, execution runs with
   `execute_tools` (or fresh copies of `tools`) and the preview's hash as the approval, or a wrong
   approval when `"approve": false`. `expect_execute_again` executes the same preview once more.

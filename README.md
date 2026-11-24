@@ -50,7 +50,7 @@ sbcl --script impl/lisp/soz-check.lisp examples/order/operations.json examples/o
 ```
 
 ```
-Plan: Order for Yilmaz Market
+Plan: Order SO-24117 for Yilmaz Market
 Effects: read, write (needs approval)
 - erp.find_customer (read)
 - erp.add_order_line (write, up to 2 times, conditional)
@@ -61,10 +61,10 @@ The same plan with a quantity and a product the user never asked for (`examples/
 
 ```
 The plan did not run. Fix these and send it again:
-1. line 5, column 67 [invented-value]: 25 is not in the message; a value the model wrote cannot go
+1. line 5, column 72 [invented-value]: 25 is not in the message; a value the model wrote cannot go
    to parameter quantity of erp.add_order_line. Use the value from the message or from a read
    operation; if it is unknown, ask the user with (stop "...").
-2. line 6, column 47 [invented-value]: "eggplant" is not in the message; ...
+2. line 6, column 52 [invented-value]: "eggplant" is not in the message; ...
 ```
 
 The error text is written for the model: it says where, why, and what to do instead. Add `--json`
@@ -92,19 +92,29 @@ sbcl --script examples/order/demo.lisp
 
 On a pretend ERP, the demo shows the plan with invented values refused; the corrected plan
 previewed (reads run, nothing is written); the person's approval and an execution that does exactly
-that; the same plan run again, where nothing happens twice; and the audit record, whose hash chain
-breaks when someone edits a line:
+that; the same plan run again, where nothing happens twice; the same goods the next day under a new
+order number, which run; the first order number with another quantity, which is a conflict and does
+not run; and the audit record, whose hash chain breaks when someone edits a line. The order number
+and the line number are the key of an order line (`"key": ["order_id", "line_id"]` in
+`operations.json`); the number comes with the request, as the invoice number does in the payments
+example.
 
 ```
 If you approve, these will happen:
-  1. erp.add_order_line customer=C-1042 product=tomatoes quantity=20
-  2. erp.add_order_line customer=C-1042 product=peppers quantity=5
-Preview: 49481a3da04a
+  1. erp.add_order_line customer=C-1042 (from a tool) line_id=1 (from the message) order_id=SO-24117 (from the message) product=tomatoes (from the message) quantity=20 (from the message)
+  2. erp.add_order_line customer=C-1042 (from a tool) line_id=2 (from the message) order_id=SO-24117 (from the message) product=peppers (from the message) quantity=5 (from the message)
+Preview: 25467c3a8704
 ...
 Outcome: done; steps: already_done, already_done
 Order lines in the ERP: 2 (nothing twice)
 ...
-demo-audit.jsonl: 9 lines, chain intact
+=== 5. The same goods the next day, under a new order number ===
+Outcome: done; steps: done, done
+...
+=== 6. The first order number again, with another quantity ===
+Cannot run: step 1 (erp.add_order_line) has the key ["erp.add-order-line",{"line_id":1,"order_id":"SO-24117"}], which is in the journal (done) with other arguments: ...
+...
+demo-audit.jsonl: 15 lines, chain intact
 Someone edits line 3 (a 5 becomes 9): chain broken at line 3
 ```
 
@@ -115,7 +125,7 @@ system that does whatever it is told.
 
 | Example | What goes wrong without soz | What soz does |
 |---|---|---|
-| [`examples/order`](examples/order) | the model orders 25 crates when 20 were asked, or a product nobody named | refuses the plan; a repeated order is a no-op |
+| [`examples/order`](examples/order) | the model orders 25 crates when 20 were asked, or a product nobody named | refuses the plan; a repeated order (same order number) is a no-op, the same order number with other quantities a conflict |
 | [`examples/payments`](examples/payments) (`effect: money`) | the model pays a rounded amount to an IBAN from its memory; the bank pays the same invoice twice; the supplier changes the invoice after you looked | refuses invented amounts and IBANs (they must come from the invoice); the invoice number is the idempotency key; the plan compares the invoice with your request and stops |
 | [`examples/devops`](examples/devops) (custom effect `infra.restart`) | the model looks in production when you said staging, and restarts what it found there; a server fails after you approved | a lookup with a made-up value cannot drive a change; one restart per server per ticket; a server not in the approved preview is never touched |
 
@@ -160,8 +170,9 @@ Ali's approval alone pays nothing; Ali and Ayşe from finance together pay once.
   arguments differ from what was approved (the balance moved, the customer changed).
 - **Idempotency keys** come from business data (the parameters an operation names as its key), are
   kept in a journal, and make a step that was already done a no-op: a retry, a double click or a
-  message the model copied twice does not order twice.
-- **Unknown outcomes** (a timeout) stop the plan, are recorded, and are never retried by themselves.
+  message the model copied twice does not order twice. The same key with other arguments is a
+  conflict that stops the plan, never a silent "already done".
+- **Unknown outcomes** (a timeout, or a write whose tool reports an error: it may have written first) stop the plan, are recorded, and are never retried by themselves.
 - **Audit record**: preview, approval, every call and the outcome, one JSON line each, chained by
   SHA-256.
 
@@ -204,7 +215,7 @@ whatever it is told, which is the point:
 ```json
 {
   "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"]}},
-  "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"], "model_allowed": ["note"]}},
+  "operations": {"erp.add_order_line": {"key": ["order_id", "line_id"], "model_allowed": ["note"]}},
   "approval": "auto"
 }
 ```
@@ -241,7 +252,7 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | Part | State |
 |---|---|
 | [Specification](SPEC.md) 0.4: syntax, provenance, effects, bounds, preview, approval, execution, journal (claimed before each call), audit, policy | draft |
-| [Conformance suite](conformance/): 269 language-neutral cases in JSON (231 checker, 38 preview and execution), every convertible checker case in both syntaxes | done |
+| [Conformance suite](conformance/): 271 language-neutral cases in JSON (231 checker, 40 preview and execution), every convertible checker case in both syntaxes | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | [TypeScript implementation](impl/ts/README.md) (`impl/ts/`), no dependencies | passes the suite |
 | MCP gateway over stdio, in Lisp and in TypeScript (both without dependencies), with elicitation or approval-code approval, resources and a prompt; end-to-end tests | available |
@@ -263,7 +274,7 @@ sbcl --script impl/lisp/run-conformance.lisp      # the Lisp reference implement
 cd impl/ts && npm run conformance                 # the TypeScript implementation against the same suite
 ```
 
-Two implementations in two very different languages pass the same 269 cases, including one that
+Two implementations in two very different languages pass the same 271 cases, including one that
 pins the preview hash computed independently in Python: the suite, not either implementation, is
 what defines soz.
 

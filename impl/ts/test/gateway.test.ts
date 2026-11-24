@@ -23,7 +23,7 @@ function writeConfig(name: string, approval: string, extra: Obj = {}): string {
   const path = join(dir, name);
   writeFileSync(path, JSON.stringify({
     servers: { erp: { command: process.execPath, args: [...NODE, join(here, "fake-erp.ts")] } },
-    operations: { "erp.add_order_line": { key: ["customer", "product", "quantity"], model_allowed: ["note"] } },
+    operations: { "erp.add_order_line": { key: ["order_id", "line_id"], model_allowed: ["note"] } },
     approval, journal: "journal.jsonl", audit: "audit.jsonl", ...extra,
   }));
   return path;
@@ -61,13 +61,13 @@ const text = (r: Obj): string => r.content?.[0]?.text ?? "";
 const previewId = (r: Obj) => /preview_id: ([0-9a-f]{64})/.exec(text(r))?.[1];
 const orders = async (c: Client) => JSON.parse(text(await c.call("erp_list_orders"))).length;
 
-const MESSAGE = "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.";
+const MESSAGE = "Order SO-1001: please send Yilmaz Market 20 crates of tomatoes (line 1) and 5 crates of peppers (line 2) tomorrow.";
 const GOOD = `(plan "Order for Yilmaz Market"
   (let ((c (erp.find_customer name "Yilmaz Market")))
     (if (> (get c balance) (get c limit))
         (stop "over the limit")
-        (for-each (line (list (record product "tomatoes" quantity 20) (record product "peppers" quantity 5)))
-          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))`;
+        (for-each (line (list (record id 1 product "tomatoes" quantity 20) (record id 2 product "peppers" quantity 5)))
+          (erp.add_order_line order_id "SO-1001" line_id (get line id) customer (get c code) product (get line product) quantity (get line quantity))))))`;
 
 console.log("\nGateway with elicitation");
 {
@@ -105,6 +105,19 @@ console.log("\nGateway with elicitation");
   check("the same plan again orders nothing twice", text(again).includes("already done") && text(r4).includes("1 already_done, 2 already_done") && await orders(c) === 2);
   check("an unknown preview_id is refused", (await c.call("soz_execute", { preview_id: "0123456789abcdef" })).isError);
 
+  // The ERP saves the line, then reports an error (it could not print the delivery note).
+  const LEMONS = "Order SO-1010, Yilmaz Market: 3 crates of lemons, please.";
+  const lemons = `(plan "Lemons" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line order_id "SO-1010" customer (get c code) product "lemons" quantity 3)))`;
+  const lemonLines = async () => (JSON.parse(text(await c.call("erp_list_orders"))) as Obj[]).filter(o => o.product === "lemons").length;
+  const runLemons = async () => text(await c.call("soz_execute", { preview_id: previewId(await c.call("soz_preview", { plan: lemons, message: LEMONS })) }));
+  const l1 = await runLemons();
+  check("a tool error after the write reached the ERP: the outcome is unknown, not failed", l1.includes("Outcome: unknown") && await lemonLines() === 1);
+  const l2 = await runLemons();
+  check("the same request again is not run again: unresolved, and the ERP has exactly one line", l2.includes("Outcome: unresolved") && await lemonLines() === 1);
+  const nobody = await c.call("soz_preview", { plan: '(plan "x" (let ((c (erp.find_customer name "Nobody Ltd"))) (erp.add_order_line order_id "SO-1011" customer (get c code) product "lemons" quantity 3)))',
+                                               message: "Order SO-1011, Nobody Ltd: 3 crates of lemons" });
+  check("a read that reports an error still fails, as before", nobody.isError && text(nobody).includes("erp.find_customer failed: no such customer"));
+
   const resources = ((await c.request("resources/list")).resources as Obj[]).map(r => r.uri);
   check("resources: guide, operations, policy", ["soz://guide", "soz://operations", "soz://policy"].every(u => resources.includes(u)));
   const ops = JSON.parse((await c.request("resources/read", { uri: "soz://operations" })).contents[0].text) as Obj[];
@@ -124,7 +137,7 @@ console.log("\nGateway with elicitation");
 console.log("\nClient without elicitation, approval=elicitation");
 {
   const c = await new Client(writeConfig("g2.json", "elicitation")).init(false);
-  const r = await c.call("soz_execute", { preview_id: previewId(await c.call("soz_preview", { plan: GOOD, message: "Yilmaz Market: 20 tomatoes, 5 peppers" })) });
+  const r = await c.call("soz_execute", { preview_id: previewId(await c.call("soz_preview", { plan: GOOD, message: "Order SO-1001, Yilmaz Market: 20 tomatoes (line 1), 5 peppers (line 2)" })) });
   check("a client that cannot ask the user runs nothing", r.isError && text(r).includes("cannot ask the user"));
   c.close();
 }
@@ -133,8 +146,8 @@ console.log("\nApproval code (approval=auto, client without elicitation)");
 {
   const codeFile = join(dir, "code.txt");
   const c = await new Client(writeConfig("g3.json", "auto"), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
-  const msg = "Yilmaz Market: 7 tomatoes and 3 peppers";
-  const plan = GOOD.replace("quantity 20", "quantity 7").replace("quantity 5", "quantity 3");
+  const msg = "Orders SO-1002 and SO-1003, Yilmaz Market: 7 tomatoes (line 1) and 3 peppers (line 2)";
+  const plan = GOOD.replace("quantity 20", "quantity 7").replace("quantity 5", "quantity 3").replace("SO-1001", "SO-1002");
   const p = await c.call("soz_preview", { plan, message: msg });
   const id = previewId(p)!;
   check("the preview tells the model the user will be shown a code", text(p).includes("approval code outside this chat"));
@@ -150,7 +163,7 @@ console.log("\nApproval code (approval=auto, client without elicitation)");
   const ok = await c.call("soz_execute", { preview_id: id, approval_code: code.toLowerCase().replace("-", "") });
   check("the user's code, typed loosely, runs the plan", text(ok).includes("Outcome: done") && await orders(c) === 2);
   check("the same code cannot be used twice", (await c.call("soz_execute", { preview_id: id, approval_code: code })).isError);
-  const id2 = previewId(await c.call("soz_preview", { plan: plan.replace("quantity 7", "quantity 3"), message: msg }))!;
+  const id2 = previewId(await c.call("soz_preview", { plan: plan.replace("quantity 7", "quantity 3").replace("SO-1002", "SO-1003"), message: msg }))!;
   await c.call("soz_execute", { preview_id: id2 });
   const code2 = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
   for (let i = 0; i < 3; i++) await c.call("soz_execute", { preview_id: id2, approval_code: "WRONG1" });
@@ -168,16 +181,16 @@ console.log("\nPolicy (actor ali, role sales)");
       { name: "orders over 10 need a manager", when: { operation: "erp.add_order_line", args: { quantity: { ">": 10 } } }, then: { approve_by: "manager" } },
       { name: "no order line of 100 or more", when: { operation: "erp.add_order_line", args: { quantity: { ">=": 100 } } }, then: { deny: "too large" } }] },
   }), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
-  const msg = "Yilmaz Market: 30 tomatoes, 8 peppers, or 200 tomatoes";
-  const line = (product: string, q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "${product}" quantity ${q})))`;
+  const msg = "Orders SO-1004, SO-1005, SO-1006, Yilmaz Market: 30 tomatoes, 8 peppers, or 200 tomatoes";
+  const line = (order: string, product: string, q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line order_id "${order}" customer (get c code) product "${product}" quantity ${q})))`;
   check("the guide lists the policy in force", text(await c.call("soz_guide")).includes("orders over 10 need a manager"));
-  const p = await c.call("soz_preview", { plan: line("tomatoes", 30), message: msg });
+  const p = await c.call("soz_preview", { plan: line("SO-1004", "tomatoes", 30), message: msg });
   check("the preview shows the approval a step needs", text(p).includes("needs approval by manager"));
   const r = await c.call("soz_execute", { preview_id: previewId(p) });
   check("a manager's approval cannot be collected here: nothing runs, no code shown", r.isError && text(r).includes("needs approval by manager") && !existsSync(codeFile) && await orders(c) === 0);
-  const d = await c.call("soz_preview", { plan: line("tomatoes", 200), message: msg });
+  const d = await c.call("soz_preview", { plan: line("SO-1005", "tomatoes", 200), message: msg });
   check("a denied value: the preview says the policy does not allow it", d.isError && text(d).includes("policy does not allow") && text(d).includes("too large"));
-  const id = previewId(await c.call("soz_preview", { plan: line("peppers", 8), message: msg }));
+  const id = previewId(await c.call("soz_preview", { plan: line("SO-1006", "peppers", 8), message: msg }));
   const shown = await c.call("soz_execute", { preview_id: id });
   const code = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
   const done = await c.call("soz_execute", { preview_id: id, approval_code: code });
@@ -202,8 +215,8 @@ console.log("\nAnother person's approval (four eyes, signed)");
                         then: { approve_by: "finance", four_eyes: true } }] },
   }), { SOZ_TEST_CODE_FILE: codeFile }).init(false);
   const before = await orders(c);
-  const plan = `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "tomatoes" quantity 30)))`;
-  const id = previewId(await c.call("soz_preview", { plan, message: "Yilmaz Market: 30 tomatoes" }))!;
+  const plan = `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line order_id "SO-1007" customer (get c code) product "tomatoes" quantity 30)))`;
+  const id = previewId(await c.call("soz_preview", { plan, message: "Order SO-1007, Yilmaz Market: 30 tomatoes" }))!;
   const asked = await c.call("soz_execute", { preview_id: id });
   const path = /written to:\n  (.+)\n/.exec(text(asked))?.[1] ?? "";
   check("the gateway writes an approval request and names who can approve (not ali himself)",
@@ -237,7 +250,7 @@ console.log("\nAnother person's approval (four eyes, signed)");
     check(`${what} is not accepted, nothing runs`, r.isError && text(r).includes(why) && !existsSync(codeFile) && await orders(c) === before);
   }
   // The same plan previewed again is another preview: an approval of the first one does not carry over.
-  check("previewing the same plan again gives the same preview_id", previewId(await c.call("soz_preview", { plan, message: "Yilmaz Market: 30 tomatoes" })) === id);
+  check("previewing the same plan again gives the same preview_id", previewId(await c.call("soz_preview", { plan, message: "Order SO-1007, Yilmaz Market: 30 tomatoes" })) === id);
   const replay = await c.call("soz_execute", { preview_id: id, approvals: [ayseTok] });
   check("but ayse's approval of the earlier preview is not taken for it (its nonce differs)", replay.isError && text(replay).includes("not ayse's approval") && !existsSync(codeFile));
   await c.call("soz_execute", { preview_id: id });                       // writes the new preview's request
@@ -290,31 +303,32 @@ console.log("\nA server over streamable HTTP");
   const tools = ((await c.request("tools/list")).tools as Obj[]).map(t => t.name);
   check("the gateway connects over HTTP and passes the read tools through, not the write", tools.includes("erp_find_customer") && !tools.includes("erp_add_order_line"));
   check("a read answered as server-sent events, after a question from the server it declines", text(await c.call("erp_find_customer", { name: "Yilmaz" })).includes("C-1042"));
-  const run = async (plan: string, message = MESSAGE) => {
+  const HMSG = "Orders SO-2001, SO-2002, SO-2003, SO-2004, SO-2005, Yilmaz Market: 20 tomatoes, 5 peppers, 9 tomatoes, 5 tomatoes, 20 peppers";
+  const run = async (plan: string, message = HMSG) => {
     const id = previewId(await c.call("soz_preview", { plan, message }));
     await c.call("soz_execute", { preview_id: id });
     const code = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(codeFile, "utf8"))?.[1];
     return text(await c.call("soz_execute", { preview_id: id, approval_code: code }));
   };
-  const line = (product: string, q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "${product}" quantity ${q})))`;
-  check("a plan's write goes to the HTTP server after approval", (await run(line("tomatoes", 20))).includes("Outcome: done") && await orders(c) === 1);
+  const line = (order: string, product: string, q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line order_id "${order}" customer (get c code) product "${product}" quantity ${q})))`;
+  check("a plan's write goes to the HTTP server after approval", (await run(line("SO-2001", "tomatoes", 20))).includes("Outcome: done") && await orders(c) === 1);
   await control("forget");
-  check("the server forgot the session: the gateway starts a new one and goes on", (await run(line("peppers", 5))).includes("Outcome: done") && await orders(c) === 2);
+  check("the server forgot the session: the gateway starts a new one and goes on", (await run(line("SO-2002", "peppers", 5))).includes("Outcome: done") && await orders(c) === 2);
   await control("lose-session");
-  const lost = await run(line("tomatoes", 9), "Yilmaz Market: 9 crates of tomatoes");
+  const lost = await run(line("SO-2003", "tomatoes", 9));
   check("the session is lost during a write: it is not sent again, the outcome is unknown", lost.includes("Outcome: unknown") && lost.includes("whether it ran is unknown"));
   check("... and the gateway has a new session for what comes next", await orders(c) === 2);
   await control("fail500");
-  const r500 = await run(line("tomatoes", 5));
+  const r500 = await run(line("SO-2004", "tomatoes", 5));
   await control("normal");
   check("a 500 after sending: the outcome is unknown, never assumed", r500.includes("Outcome: unknown") && await orders(c) === 3);
-  check("and the step is not run again: unresolved", (await run(line("tomatoes", 5))).includes("Outcome: unresolved") && await orders(c) === 3);
+  check("and the step is not run again: unresolved", (await run(line("SO-2004", "tomatoes", 5))).includes("Outcome: unresolved") && await orders(c) === 3);
   await control("slow");
-  const slow = await run(line("peppers", 20));
+  const slow = await run(line("SO-2005", "peppers", 20));
   await control("normal");
   check("no answer within timeout_seconds: unknown", slow.includes("Outcome: unknown"));
-  const lone = `(plan "x" (erp.add_order_line customer "C-1042" product "tomatoes" quantity 7))`;
-  const loneId = previewId(await c.call("soz_preview", { plan: lone, message: "Add 7 tomatoes for customer C-1042" }));
+  const lone = `(plan "x" (erp.add_order_line order_id "SO-2006" customer "C-1042" product "tomatoes" quantity 7))`;
+  const loneId = previewId(await c.call("soz_preview", { plan: lone, message: "Order SO-2006: add 7 tomatoes for customer C-1042" }));
   fake.kill();
   await new Promise(r => setTimeout(() => r(null), 300));
   await c.call("soz_execute", { preview_id: loneId });
@@ -337,8 +351,9 @@ console.log("\nSource labels: a server's results are labelled with its name");
     { name: "customer codes come from the ERP", when: { operation: "erp.add_order_line" }, then: { args_from: { customer: ["tool:erp"] } } }] } })).init(false);
   const ops = JSON.parse((await c.request("resources/read", { uri: "soz://operations" })).contents?.[0]?.text ?? "[]") as Obj[];
   check("soz://operations shows the label", ops.find(o => o.name === "erp.find_customer")?.label === "erp");
-  const fromErp = await c.call("soz_preview", { plan: `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "tomatoes" quantity 20)))`, message: MESSAGE });
-  const typed = await c.call("soz_preview", { plan: `(plan "x" (erp.add_order_line customer "Yilmaz Market" product "tomatoes" quantity 20))`, message: MESSAGE });
+  const LMSG = "Order SO-1008, Yilmaz Market: 20 tomatoes";
+  const fromErp = await c.call("soz_preview", { plan: `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line order_id "SO-1008" customer (get c code) product "tomatoes" quantity 20)))`, message: LMSG });
+  const typed = await c.call("soz_preview", { plan: `(plan "x" (erp.add_order_line order_id "SO-1008" customer "Yilmaz Market" product "tomatoes" quantity 20))`, message: LMSG });
   check("args_from tool:erp: the customer from the ERP passes, one from the message does not",
         !fromErp.isError && !!previewId(fromErp) && typed.isError && text(typed).includes("[policy-source]") && text(typed).includes("tool:erp"));
   c.close();
@@ -348,8 +363,8 @@ console.log("\nA plan in the JSON syntax");
 {
   console.log("  (and a language profile)");
   const tr = await new Client(writeConfig("g7.json", "auto", { profile: join(here, "..", "..", "..", "profiles", "tr.json") })).init(false);
-  const yirmi = (q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "domates" quantity ${q})))`;
-  const msg = "Yılmaz Market'e yirmi koli domates";
+  const yirmi = (q: number) => `(plan "x" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line order_id "SO-1009" customer (get c code) product "domates" quantity ${q})))`;
+  const msg = "Sipariş SO-1009: Yılmaz Market'e yirmi koli domates";
   const ok20 = await tr.call("soz_preview", { plan: yirmi(20), message: msg });
   const bad21 = await tr.call("soz_preview", { plan: yirmi(21), message: msg });
   check("with the Turkish profile, yirmi in the message is 20; 21 is still invented", !ok20.isError && !!previewId(ok20) && bad21.isError && text(bad21).includes("[invented-value]"));
@@ -361,7 +376,8 @@ console.log("\nA plan in the JSON syntax");
   check("the resource soz://plan-schema is the plan's JSON Schema", schema?.required?.includes("plan") && schema?.$defs?.expr?.anyOf?.length === 13);
   const plan = JSON.stringify({ plan: "Order for Yilmaz Market", body: [
     { let: [{ name: "c", value: { call: "erp.find_customer", args: [{ name: "name", value: "Yilmaz Market" }] } }],
-      body: [{ call: "erp.add_order_line", args: [{ name: "customer", value: { get: { var: "c" }, field: "code" } },
+      body: [{ call: "erp.add_order_line", args: [{ name: "order_id", value: "SO-1001" }, { name: "line_id", value: 1 },
+                                                 { name: "customer", value: { get: { var: "c" }, field: "code" } },
                                                  { name: "product", value: "tomatoes" }, { name: "quantity", value: 20 }] }] }] });
   const p = await c.call("soz_preview", { plan, message: MESSAGE });
   check("a JSON plan is previewed like an s-expression", !p.isError && text(p).includes("erp.add_order_line") && !!previewId(p));

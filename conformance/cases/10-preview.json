@@ -623,6 +623,54 @@
           "bad-result"
         ]
       }
+    },
+    {
+      "name": "a step whose key is in the journal with other arguments is a key-conflict, not already done",
+      "message": "Yilmaz Market: 20 tomatoes, deliver to the back door",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20 note \"deliver to the back door\")))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "journal": [
+        {
+          "operation": "erp.add_order_line",
+          "args": {
+            "customer": "C1",
+            "product": "tomatoes",
+            "quantity": 20
+          }
+        }
+      ],
+      "expect_preview": {
+        "status": "error",
+        "problems": [
+          "key-conflict"
+        ],
+        "steps": [
+          {
+            "operation": "erp.add_order_line",
+            "already_done": false
+          }
+        ]
+      }
     }
   ]
 }

@@ -17,14 +17,15 @@ const tools = [
     inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "list_orders", description: "All order lines.", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} } },
   { name: "add_order_line", description: "Add an order line.",
-    inputSchema: { type: "object", required: ["customer", "product", "quantity"],
-                   properties: { customer: { type: "string" }, product: { type: "string" }, quantity: { type: "number" } } } },
+    inputSchema: { type: "object", required: ["order_id", "customer", "product", "quantity"],
+                   properties: { order_id: { type: "string" }, line_id: { type: "number" }, customer: { type: "string" },
+                                 product: { type: "string" }, quantity: { type: "number" } } } },
 ];
 
 function call(name: string, args: Obj) {
   if (name === "find_customer") return text(JSON.stringify({ code: "C-1042", title: "Yilmaz Market", balance: 4200, limit: 10000 }));
   if (name === "list_orders") return text(JSON.stringify(orders));
-  if (name === "add_order_line") { orders.push({ customer: args.customer, product: args.product, quantity: args.quantity }); return text(JSON.stringify({ line: orders.length })); }
+  if (name === "add_order_line") { orders.push({ order_id: args.order_id, line_id: args.line_id ?? null, customer: args.customer, product: args.product, quantity: args.quantity }); return text(JSON.stringify({ line: orders.length })); }
   return text("unknown tool", true);
 }
 

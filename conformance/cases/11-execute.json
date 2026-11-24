@@ -702,6 +702,71 @@
           "erp.create_order"
         ]
       }
+    },
+    {
+      "name": "the same key with other arguments, journalled after the preview: not called, conflict",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "    (for-each (line (list (record product \"tomatoes\" quantity 20)",
+        "                          (record product \"peppers\" quantity 5)))",
+        "      (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity)))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "journal_after_preview": [
+        {
+          "operation": "erp.add_order_line",
+          "args": {
+            "customer": "C1",
+            "product": "tomatoes",
+            "quantity": 20,
+            "note": "by phone"
+          }
+        }
+      ],
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "already_done": false
+          },
+          {
+            "already_done": false
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "conflict",
+        "steps": [
+          {
+            "index": 1,
+            "status": "not_run"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.find_customer"
+        ]
+      }
     }
   ]
 }

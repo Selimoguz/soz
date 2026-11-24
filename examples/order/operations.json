@@ -17,7 +17,10 @@
   {
     "name": "erp.add_order_line",
     "effect": "write",
+    "key": ["order_id", "line_id"],
     "params": {
+      "order_id": {"type": "text"},
+      "line_id": {"type": "number"},
       "customer": {"type": "text"},
       "product": {"type": "text"},
       "quantity": {"type": "number"},

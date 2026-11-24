@@ -163,16 +163,20 @@
   (format nil "~{~a~^~%~}" (loop for c across (or (gethash "content" r) #())
                                  when (equal (gethash "type" c) "text") collect (gethash "text" c))))
 
-(defun call-tool (server tool args)
-  "Implementation of a soz operation: failed on a tool error, unknown when the server does not answer."
-  (let ((response (handler-case (server-request server "tools/call" (obj "name" tool "arguments" args))
-                    (downstream-timeout ()
-                      (error 'operation-unknown :message (format nil "~a did not answer" (server-name server)))))))
-    (cond ((gethash "error" response)
-           (error 'operation-failed :message (or (jget response "error" "message") "error")))
-          ((eq (jget response "result" "isError") :true)
-           (error 'operation-failed :message (result-text (gethash "result" response))))
-          (t (tool-result-value (gethash "result" response))))))
+(defun call-tool (server tool args read-only)
+  "Implementation of a soz operation (SPEC 11.1): unknown when the server does not answer. A tool error
+fails a read; a write may have written before the error (the order saved, then its document failed),
+so its outcome is unknown."
+  (let* ((response (handler-case (server-request server "tools/call" (obj "name" tool "arguments" args))
+                     (downstream-timeout ()
+                       (error 'operation-unknown :message (format nil "~a did not answer" (server-name server))))))
+         (message (cond ((gethash "error" response) (or (jget response "error" "message") "error"))
+                        ((eq (jget response "result" "isError") :true) (result-text (gethash "result" response))))))
+    (cond ((null message) (tool-result-value (gethash "result" response)))
+          (read-only (error 'operation-failed :message message))
+          (t (error 'operation-unknown
+                    :message (format nil "~a reported an error after the request reached it, so it may have happened: ~a"
+                                     (server-name server) message))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Configuration
@@ -237,7 +241,8 @@
                            (tool-name (gethash "name" tool)) (srv s))
                        (setf (gethash (name-fold (soz::op-name op)) *operations*) op
                              (gethash (name-fold (soz::op-name op)) *implementations*)
-                             (lambda (args) (call-tool srv tool-name args)))
+                             (let ((read-only (not (soz::side-effect-p (soz::op-effect op)))))
+                               (lambda (args) (call-tool srv tool-name args read-only))))
                        (when (and expose-reads (not (soz::side-effect-p (soz::op-effect op))))
                          (push (list (format nil "~a_~a" name tool-name) s tool) (gateway-passthrough g)))))
                    (log-line "~a: ~d tools" name (length (server-tools s))))))

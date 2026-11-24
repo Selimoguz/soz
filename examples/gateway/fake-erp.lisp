@@ -23,8 +23,10 @@
    (json:json-nesne "name" "list_orders" "description" "All order lines entered so far."
                     "inputSchema" (schema '())
                     "annotations" (json:json-nesne "readOnlyHint" :true))
-   (json:json-nesne "name" "add_order_line" "description" "Add an order line for a customer."
-                    "inputSchema" (schema '("customer" "product" "quantity")
+   (json:json-nesne "name" "add_order_line" "description" "Add a line to an order: the order number comes with the request."
+                    "inputSchema" (schema '("order_id" "customer" "product" "quantity")
+                                          "order_id" (prop "string" "Order number")
+                                          "line_id" (prop "number" "Line number within the order")
                                           "customer" (prop "string" "Customer code")
                                           "product" (prop "string" "Product")
                                           "quantity" (prop "number" "Quantity")
@@ -38,10 +40,15 @@
         ((equal name "list_orders")
          (text (json:json-yaz (coerce (reverse *orders*) 'vector))))
         ((equal name "add_order_line")
-         (push (json:json-nesne "customer" (gethash "customer" args) "product" (gethash "product" args)
+         (push (json:json-nesne "order_id" (gethash "order_id" args) "line_id" (or (gethash "line_id" args) :null)
+                                "customer" (gethash "customer" args) "product" (gethash "product" args)
                                 "quantity" (gethash "quantity" args))
                *orders*)
-         (text (format nil "{\"line\": ~d}" (length *orders*))))
+         ;; It saves the line and then fails at something after it: the tool error does not mean
+         ;; the write did not happen.
+         (if (equal (gethash "product" args) "lemons")
+             (text "order line saved, but its delivery note could not be printed" t)
+             (text (format nil "{\"line\": ~d}" (length *orders*)))))
         (t (text "unknown tool" t))))
 
 (loop for line = (read-line *standard-input* nil)

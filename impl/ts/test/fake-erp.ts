@@ -22,8 +22,9 @@ const tools = [
     annotations: { readOnlyHint: true } },
   { name: "cancel_order", description: "Cancel an order.",
     inputSchema: { type: "object", properties: { order: prop("string", "Order id") }, required: ["order"] } },
-  { name: "add_order_line", description: "Add an order line for a customer.",
-    inputSchema: { type: "object", required: ["customer", "product", "quantity"], properties: {
+  { name: "add_order_line", description: "Add a line to an order: the order number comes with the request.",
+    inputSchema: { type: "object", required: ["order_id", "customer", "product", "quantity"], properties: {
+      order_id: prop("string", "Order number"), line_id: prop("number", "Line number within the order"),
       customer: prop("string", "Customer code"), product: prop("string", "Product"),
       quantity: prop("number", "Quantity"), note: prop("string", "Free note") } } },
 ];
@@ -37,7 +38,10 @@ function call(name: string, args: Obj) {
   if (name === "get_order") return { ...text(""), structuredContent: { id: String(args.id), status: "open" } };
   if (name === "cancel_order") return text(JSON.stringify({ cancelled: args.order }));
   if (name === "add_order_line") {
-    orders.push({ customer: args.customer, product: args.product, quantity: args.quantity });
+    orders.push({ order_id: args.order_id, line_id: args.line_id ?? null, customer: args.customer, product: args.product, quantity: args.quantity });
+    // An ERP that saves the line and then fails at something after it: the tool error does not
+    // mean the write did not happen.
+    if (args.product === "lemons") return text("order line saved, but its delivery note could not be printed", true);
     return text(JSON.stringify({ line: orders.length }));
   }
   return text("unknown tool", true);

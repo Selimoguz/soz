@@ -2,13 +2,13 @@
 
 A second implementation of [soz](../../README.md), with no dependencies: the checker, preview,
 execution, journal, audit record and policy. It passes the whole
-[conformance suite](../../conformance/README.md), the same 269 cases as the reference implementation.
+[conformance suite](../../conformance/README.md), the same 271 cases as the reference implementation.
 
 Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
 `--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
 
 ```sh
-npm test          # type check (tsc, strict), the 269 conformance cases, the example, defineOperation, the stores with real processes, the gateway
+npm test          # type check (tsc, strict), the 271 conformance cases, the example, defineOperation, the stores with real processes, the renderer, the order example, the gateway
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed
@@ -24,8 +24,9 @@ const operations = operationsFromJson(parseJson(`[
   {"name": "erp.find_customer", "effect": "read", "params": {"name": {"type": "text"}},
    "returns": {"type": "record", "fields": {"code": {"type": "text"}, "balance": {"type": "number"},
                                             "limit": {"type": "number"}}}},
-  {"name": "erp.add_order_line", "effect": "write", "key": ["customer", "product", "quantity"],
-   "params": {"customer": {"type": "text"}, "product": {"type": "text"}, "quantity": {"type": "number"}}}
+  {"name": "erp.add_order_line", "effect": "write", "key": ["order_id", "line_id"],
+   "params": {"order_id": {"type": "text"}, "line_id": {"type": "number"},
+              "customer": {"type": "text"}, "product": {"type": "text"}, "quantity": {"type": "number"}}}
 ]`));
 
 const implementations = new Map([
@@ -40,7 +41,7 @@ const p = await preview(planFromTheModel, { message: whatTheUserWrote, operation
 console.log(previewSummary(p));           // show it to the person
 // ... the person approves p.hash ...
 const e = await execute(p, p.hash!, { implementations, journal, audit });
-console.log(e.outcome);                    // done, stopped, changed, failed, unknown, not-approved, denied
+console.log(e.outcome);                    // done, stopped, changed, conflict, failed, unknown, unresolved, not-approved, denied
 ```
 
 ### Declaring operations in TypeScript
@@ -62,10 +63,11 @@ const findCustomer = defineOperation({
 const addLine = defineOperation({
   name: "erp.add_order_line",
   effect: "write",
-  params: { customer: t.text(), product: t.text(), quantity: t.number(),
+  params: { order_id: t.text(), line_id: t.number(), customer: t.text(), product: t.text(), quantity: t.number(),
             note: t.text().optional().modelAllowed() },
-  key: ["customer", "product", "quantity"],
-  run: async ({ customer, product, quantity, note }) => erp.orders.addLine(customer, product, quantity, note),
+  key: ["order_id", "line_id"],   // the order number names the line; the goods do not (SPEC 6)
+  run: async ({ order_id, line_id, customer, product, quantity, note }) =>
+    erp.orders.addLine(order_id, line_id, customer, product, quantity, note),
 });
 
 const { operations, implementations } = defineOperations(findCustomer, addLine);
@@ -165,12 +167,15 @@ A store of your own implements four methods:
 ```ts
 interface JournalStore {
   get(key: string): JournalEntry | undefined | Promise<...>;
-  claim(key: string): JournalEntry | null | Promise<...>;      // null: claimed by you; else the entry that was there
-  complete(key: string, status: "done" | "unknown", result: Json): void | Promise<void>;
+  claim(key: string, args?: Json): JournalEntry | null | Promise<...>;   // null: claimed by you; else the entry that was there
+  complete(key: string, status: "done" | "unknown", result: Json, args?: Json): void | Promise<void>;
   release(key: string): void | Promise<void>;
 }
 ```
 
+Keep `args` (all the step's arguments) with the entry and return it from `get` and `claim`: a step with
+the same key and other arguments is then a conflict (SPEC 10.3), not "already done". A store that drops
+them still never runs a step twice, but cannot tell the two apart.
 On Postgres, for example, `claim` is an `INSERT ... ON CONFLICT DO NOTHING RETURNING`; the audit sink
 takes the previous hash inside the transaction that inserts the next record.
 
@@ -213,8 +218,9 @@ Only `https`, unless the server is on this machine or `"allow_http": true` is gi
 from the environment variable, not the file. The gateway keeps the session the server gives, starts a
 new one when the server forgot it, and reads answers sent as JSON or as server-sent events. What
 matters for writes: a call fails (and may run again) only when the request certainly did not reach the
-server (refused, no such host, an untrusted certificate, 4xx); a timeout or 5xx leaves it unknown, so
-the step is `unresolved` until a person checks. The Lisp gateway has no TLS without dependencies, so
+server (refused, no such host, an untrusted certificate, 4xx); a timeout, a 5xx or a tool error from
+a write (the server may have saved the order and then failed) leaves it unknown, so the step is
+`unresolved` until a person checks. The Lisp gateway has no TLS without dependencies, so
 it starts stdio servers only.
 
 ### Another person's approval

@@ -376,9 +376,13 @@ async function callTool(d: Downstream, tool: string, args: Json, readOnly: boole
     if (e instanceof NotSent) throw new OperationFailed(`${d.name} could not be reached; nothing was sent (${e.message})`);
     throw new OperationUnknown(`${d.name} did not answer (${(e as Error).message})`);
   }
-  if (r.error) throw new OperationFailed(isObject(r.error) ? String(r.error.message) : "error");
-  if (isObject(r.result) && r.result.isError === true) throw new OperationFailed(resultText(r.result));
-  return toolValue(r.result ?? null);
+  const error = r.error ? (isObject(r.error) ? String(r.error.message) : "error")
+    : isObject(r.result) && r.result.isError === true ? resultText(r.result) : null;
+  if (error === null) return toolValue(r.result ?? null);
+  // The request reached the server. A read that reports an error failed; a write may have written
+  // before the error (the order saved, then its document failed), so its outcome is unknown (SPEC 11.1).
+  if (readOnly) throw new OperationFailed(error);
+  throw new OperationUnknown(`${d.name} reported an error after the request reached it, so it may have happened: ${error}`);
 }
 
 // --- What the model sees ---------------------------------------------------------------------------------

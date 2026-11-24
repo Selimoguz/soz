@@ -7,8 +7,9 @@ const operations = operationsFromJson(parseJson(`[
   {"name": "erp.find_customer", "effect": "read", "params": {"name": {"type": "text"}},
    "returns": {"type": "record", "fields": {"code": {"type": "text"}, "balance": {"type": "number"},
                                             "limit": {"type": "number"}}}},
-  {"name": "erp.add_order_line", "effect": "write", "key": ["customer", "product", "quantity"],
-   "params": {"customer": {"type": "text"}, "product": {"type": "text"}, "quantity": {"type": "number"}}}
+  {"name": "erp.add_order_line", "effect": "write", "key": ["order_id", "line_id"],
+   "params": {"order_id": {"type": "text"}, "line_id": {"type": "number"},
+              "customer": {"type": "text"}, "product": {"type": "text"}, "quantity": {"type": "number"}}}
 ]`));
 
 const orders: unknown[] = [];
@@ -17,13 +18,14 @@ const implementations = new Map<string, Implementation>([
   ["erp.add-order-line", async args => { orders.push(args); return null; }],
 ]);
 
-const message = "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.";
+const message = "Order SO-24117: please send Yilmaz Market 20 crates of tomatoes (line 1) and 5 crates of peppers (line 2) tomorrow.";
 const plan = `(plan "Order for Yilmaz Market"
   (let ((c (erp.find_customer name "Yilmaz Market")))
     (if (> (get c balance) (get c limit))
         (stop "over the limit")
-        (for-each (line (list (record product "tomatoes" quantity 20) (record product "peppers" quantity 5)))
-          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))`;
+        (for-each (line (list (record id 1 product "tomatoes" quantity 20) (record id 2 product "peppers" quantity 5)))
+          (erp.add_order_line order_id "SO-24117" line_id (get line id)
+                              customer (get c code) product (get line product) quantity (get line quantity))))))`;
 
 const journal = new Journal();
 const bad = await preview(plan.replace("quantity 20", "quantity 25"), { message, operations, implementations, journal });
