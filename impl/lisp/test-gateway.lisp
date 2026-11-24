@@ -25,7 +25,7 @@
   (let ((path (merge-pathnames name *dir*)))
     (with-open-file (s path :direction :output :if-exists :supersede :external-format :utf-8)
       (format s "{\"servers\": {\"erp\": {\"command\": \"sbcl\", \"args\": [\"--script\", ~s]}},
- \"operations\": {\"erp.add_order_line\": {\"key\": [\"customer\", \"product\", \"quantity\"], \"model_allowed\": [\"note\"]}},
+ \"operations\": {\"erp.add_order_line\": {\"key\": [\"order_id\", \"line_id\"], \"model_allowed\": [\"note\"]}},
  ~@[~a,~] \"approval\": ~s, \"journal\": \"journal.jsonl\", \"audit\": \"audit.jsonl\"}"
               (substitute #\/ #\\ (namestring (merge-pathnames "../../examples/gateway/fake-erp.lisp" *here*))) extra approval))
     path))
@@ -76,13 +76,13 @@
   (ignore-errors (close (client-in c)))
   (ignore-errors (sb-ext:process-wait (client-process c))))
 
-(defparameter *message* "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.")
+(defparameter *message* "Order SO-1001: please send Yilmaz Market 20 crates of tomatoes (line 1) and 5 crates of peppers (line 2) tomorrow.")
 (defparameter *good* "(plan \"Order for Yilmaz Market\"
   (let ((c (erp.find_customer name \"Yilmaz Market\")))
     (if (> (get c balance) (get c limit))
         (stop \"over the limit\")
-        (for-each (line (list (record product \"tomatoes\" quantity 20) (record product \"peppers\" quantity 5)))
-          (erp.add_order_line customer (get c code) product (get line product) quantity (get line quantity))))))")
+        (for-each (line (list (record id 1 product \"tomatoes\" quantity 20) (record id 2 product \"peppers\" quantity 5)))
+          (erp.add_order_line order_id \"SO-1001\" line_id (get line id) customer (get c code) product (get line product) quantity (get line quantity))))))")
 
 (ensure-directories-exist *dir*)
 (format t "~%Gateway with elicitation~%")
@@ -135,8 +135,8 @@
   (check "an unknown preview_id is refused" (error-p (call c "soz_execute" (json:json-nesne "preview_id" "0123456789abcdef"))))
   ;; The ERP saves the line, then reports an error (it could not print the delivery note).
   (flet ((run-lemons ()
-           (let ((r (call c "soz_preview" (json:json-nesne "plan" "(plan \"Lemons\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"lemons\" quantity 3)))"
-                                                           "message" "Yilmaz Market: 3 crates of lemons, please."))))
+           (let ((r (call c "soz_preview" (json:json-nesne "plan" "(plan \"Lemons\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line order_id \"SO-1010\" customer (get c code) product \"lemons\" quantity 3)))"
+                                                           "message" "Order SO-1010, Yilmaz Market: 3 crates of lemons, please."))))
              (text-of (call c "soz_execute" (json:json-nesne "preview_id" (preview-id r))
                             :on-elicit (lambda (m) (declare (ignore m)) :accept-yes)))))
          (lemon-lines ()
@@ -148,8 +148,8 @@
     (let ((r2 (run-lemons)))
       (check "the same request again is not run again: unresolved, and the ERP has exactly one line"
              (and (search "Outcome: unresolved" r2) (= 1 (lemon-lines))))))
-  (let ((r (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Nobody Ltd\"))) (erp.add_order_line customer (get c code) product \"lemons\" quantity 3)))"
-                                                  "message" "Nobody Ltd: 3 crates of lemons"))))
+  (let ((r (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Nobody Ltd\"))) (erp.add_order_line order_id \"SO-1011\" customer (get c code) product \"lemons\" quantity 3)))"
+                                                  "message" "Order SO-1011, Nobody Ltd: 3 crates of lemons"))))
     (check "a read that reports an error still fails, as before" (and (error-p r) (search "erp.find_customer failed: no such customer" (text-of r)))))
   (close-client c))
 
@@ -160,7 +160,7 @@
 (format t "~%Client without elicitation~%")
 (let ((c (connect (write-config "gateway2.json" "elicitation") :elicitation nil)))
   (let ((id (preview-id (call c "soz_preview" (json:json-nesne "plan" *good*
-                                                              "message" "Yilmaz Market: 20 tomatoes, 5 peppers")))))
+                                                              "message" "Order SO-1001, Yilmaz Market: 20 tomatoes (line 1), 5 peppers (line 2)")))))
     (check "with approval=elicitation, a client that cannot ask the user runs nothing"
            (let ((r (call c "soz_execute" (json:json-nesne "preview_id" id))))
              (and (error-p r) (search "cannot ask the user" (text-of r))))))
@@ -175,8 +175,9 @@
 
 (let* ((code-file (merge-pathnames "code.txt" *dir*))
        (c (connect (write-config "gateway3.json" "auto") :elicitation nil :code-file code-file))
-       (msg "Yilmaz Market: 7 tomatoes and 3 peppers")
-       (plan (substitute-string (substitute-string *good* "quantity 20" "quantity 7") "quantity 5" "quantity 3"))
+       (msg "Orders SO-1002 and SO-1003, Yilmaz Market: 7 tomatoes (line 1) and 3 peppers (line 2)")
+       (plan (substitute-string (substitute-string (substitute-string *good* "quantity 20" "quantity 7") "quantity 5" "quantity 3")
+                                "SO-1001" "SO-1002"))
        (id (preview-id (call c "soz_preview" (json:json-nesne "plan" plan "message" msg)))))
   (check "the preview tells the model the user will be shown a code"
          (search "approval code outside this chat" (text-of (call c "soz_preview" (json:json-nesne "plan" plan "message" msg)))))
@@ -200,7 +201,7 @@
              (and (search "Outcome: done" (text-of r)) (= 2 (orders c)))))
     (check "the same code cannot be used twice"
            (error-p (call c "soz_execute" (json:json-nesne "preview_id" id "approval_code" code)))))
-  (let* ((plan2 (substitute-string plan "quantity 7" "quantity 3"))
+  (let* ((plan2 (substitute-string (substitute-string plan "quantity 7" "quantity 3") "SO-1002" "SO-1003"))
          (id2 (preview-id (call c "soz_preview" (json:json-nesne "plan" plan2 "message" msg)))))
     (call c "soz_execute" (json:json-nesne "preview_id" id2))
     (let ((code (read-code code-file)))
@@ -218,22 +219,22 @@
    {\"name\": \"orders over 10 need a manager\", \"when\": {\"operation\": \"erp.add_order_line\", \"args\": {\"quantity\": {\">\": 10}}}, \"then\": {\"approve_by\": \"manager\"}},
    {\"name\": \"no order line of 100 or more\", \"when\": {\"operation\": \"erp.add_order_line\", \"args\": {\"quantity\": {\">=\": 100}}}, \"then\": {\"deny\": \"too large\"}}]}")
                    :elicitation nil :code-file code-file))
-       (msg "Yilmaz Market: 30 tomatoes, 8 peppers, or 200 tomatoes")
-       (line (lambda (product qty)
-               (format nil "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product ~s quantity ~d)))" product qty))))
+       (msg "Orders SO-1004, SO-1005, SO-1006, Yilmaz Market: 30 tomatoes, 8 peppers, or 200 tomatoes")
+       (line (lambda (order product qty)
+               (format nil "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line order_id ~s customer (get c code) product ~s quantity ~d)))" order product qty))))
   (when (probe-file code-file) (delete-file code-file))
   (check "the guide lists the policy in force" (search "orders over 10 need a manager" (text-of (call c "soz_guide" (json:json-nesne)))))
-  (let* ((r (call c "soz_preview" (json:json-nesne "plan" (funcall line "tomatoes" 30) "message" msg)))
+  (let* ((r (call c "soz_preview" (json:json-nesne "plan" (funcall line "SO-1004" "tomatoes" 30) "message" msg)))
          (id (preview-id r)))
     (check "the preview shows the approval a step needs" (search "needs approval by manager" (text-of r)))
     (let ((r2 (call c "soz_execute" (json:json-nesne "preview_id" id))))
       (check "the gateway cannot collect a manager's approval: it says so and nothing runs"
              (and (error-p r2) (search "needs approval by manager" (text-of r2)) (= 0 (orders c))))
       (check "no approval code was shown to the user for it" (not (probe-file code-file)))))
-  (let ((r (call c "soz_preview" (json:json-nesne "plan" (funcall line "tomatoes" 200) "message" msg))))
+  (let ((r (call c "soz_preview" (json:json-nesne "plan" (funcall line "SO-1005" "tomatoes" 200) "message" msg))))
     (check "a denied value: the preview says the policy does not allow it"
            (and (error-p r) (search "policy does not allow" (text-of r)) (search "too large" (text-of r)))))
-  (let* ((id (preview-id (call c "soz_preview" (json:json-nesne "plan" (funcall line "peppers" 8) "message" msg))))
+  (let* ((id (preview-id (call c "soz_preview" (json:json-nesne "plan" (funcall line "SO-1006" "peppers" 8) "message" msg))))
          (r (call c "soz_execute" (json:json-nesne "preview_id" id))))
     (check "a step the policy asks nothing more for goes through the user's own approval"
            (and (search "approval code is now shown" (text-of r))
@@ -270,8 +271,8 @@
                                                (gethash "ayse" pub) (gethash "ali" pub) (gethash "veli" pub)))
                          :elicitation nil :code-file code-file))
              (before (orders c))
-             (id (preview-id (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 30)))"
-                                                                  "message" "Yilmaz Market: 30 tomatoes"))))
+             (id (preview-id (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line order_id \"SO-1007\" customer (get c code) product \"tomatoes\" quantity 30)))"
+                                                                  "message" "Order SO-1007, Yilmaz Market: 30 tomatoes"))))
              (asked (call c "soz_execute" (json:json-nesne "preview_id" id)))
              (path (let* ((s (text-of asked)) (i (search "written to:" s)))
                      (and i (string-trim '(#\Space #\Newline #\Return) (subseq s (+ i 11) (position #\Newline s :start (+ i 13)))))))
@@ -325,9 +326,9 @@
 (format t "~%Source labels: a server's results are labelled with its name~%")
 (let* ((c (connect (write-config "gateway8.json" "elicitation"
                                  "\"policy\": {\"rules\": [{\"name\": \"customer codes come from the ERP\", \"when\": {\"operation\": \"erp.add_order_line\"}, \"then\": {\"args_from\": {\"customer\": [\"tool:erp\"]}}}]}")))
-       (msg "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow.")
-       (from-erp (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20)))" "message" msg)))
-       (typed (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))" "message" msg))))
+       (msg "Order SO-1008, Yilmaz Market: 20 tomatoes")
+       (from-erp (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line order_id \"SO-1008\" customer (get c code) product \"tomatoes\" quantity 20)))" "message" msg)))
+       (typed (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (erp.add_order_line order_id \"SO-1008\" customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))" "message" msg))))
   (check "args_from tool:erp: the customer from the ERP passes, one from the message does not"
          (and (not (error-p from-erp)) (preview-id from-erp) (error-p typed) (search "[policy-source]" (text-of typed)) (search "tool:erp" (text-of typed))))
   (close-client c))
@@ -336,8 +337,8 @@
 (let* ((c (connect (write-config "gateway7.json" "elicitation"
                                  (format nil "\"profile\": ~s"
                                          (substitute #\/ #\\ (namestring (merge-pathnames "../../profiles/tr.json" *here*)))))))
-       (plan (lambda (q) (format nil "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"domates\" quantity ~d)))" q)))
-       (msg "Yılmaz Market'e yirmi koli domates"))
+       (plan (lambda (q) (format nil "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line order_id \"SO-1009\" customer (get c code) product \"domates\" quantity ~d)))" q)))
+       (msg "Sipariş SO-1009: Yılmaz Market'e yirmi koli domates"))
   (let ((ok (call c "soz_preview" (json:json-nesne "plan" (funcall plan 20) "message" msg)))
         (bad (call c "soz_preview" (json:json-nesne "plan" (funcall plan 21) "message" msg))))
     (check "with the Turkish profile, yirmi in the message is 20; 21 is still invented"
@@ -346,8 +347,8 @@
 
 (format t "~%A plan in the JSON syntax~%")
 (let* ((c (connect (write-config "gateway6.json" "elicitation")))
-       (plan (lambda (q) (format nil "{\"plan\": \"Order\", \"body\": [{\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]}}], \"body\": [{\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}}, {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": ~d}]}]}]}" q)))
-       (msg "Please send Yilmaz Market 20 crates of tomatoes and 5 crates of peppers tomorrow."))
+       (plan (lambda (q) (format nil "{\"plan\": \"Order\", \"body\": [{\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz Market\"}]}}], \"body\": [{\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"order_id\", \"value\": \"SO-1001\"}, {\"name\": \"line_id\", \"value\": 1}, {\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}}, {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": ~d}]}]}]}" q)))
+       (msg *message*))
   (let ((r (call c "soz_preview" (json:json-nesne "plan" (funcall plan 20) "message" msg))))
     (check "a JSON plan is previewed like an s-expression"
            (and (not (error-p r)) (search "erp.add_order_line" (text-of r)) (preview-id r))))
