@@ -485,7 +485,7 @@ function init(dir: string, args: string[] = []): number {
   if (existsSync(configPath)) done.push(`${CONFIG_FILE}: already there`);
   else {
     const checks = suggestedChecks(root);
-    writeFileSync(configPath, JSON.stringify({ checks, criteria: [], criteriaChanges: "block", assertions: "fewer", disable: [], exclude: [], maxBlocks: 3, rules: [] }, null, 2) + "\n");
+    writeFileSync(configPath, JSON.stringify({ checks, criteria: [], runners: [], criteriaChanges: "block", assertions: "fewer", disable: [], exclude: [], maxBlocks: 3, rules: [] }, null, 2) + "\n");
     done.push(`${CONFIG_FILE}: created` + (checks.length ? ` with the check "${checks[0].run}": work is finished only when it passes`
       : `; add the checks that must pass ("checks": [{"name": "tests", "run": "..."}])`));
   }

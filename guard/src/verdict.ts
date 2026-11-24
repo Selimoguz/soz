@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, configAt, parseConfig, readDiff, repoRoot, scanLines,
          gitShow, gitIgnored, gitTracked } from "./scan.ts";
 import { type CriteriaChange, criteriaChanges } from "./criteria.ts";
+import { runnerChanges } from "./runners.ts";
 import { type GuardState, guardState, guardChanges } from "./guard.ts";
 import { matchesAny } from "./rules.ts";
 
@@ -190,7 +191,8 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     ? guardChanges(o.guardBase, guardState(worktree), root)
     : guardChanges(guardState(atRev(range.base)), guardState(range.head ? atRev(range.head) : worktree), root)
         .filter(c => range.head || !gitIgnored(root, c.file));
-  const criteria = [...criteriaChanges(diff, before.config), ...guard];
+  const after = range.head ? atRev(range.head) : worktree;
+  const criteria = [...criteriaChanges(diff, before.config), ...runnerChanges(diff, before.config, atRev(range.base), after), ...guard];
   const committed = committedAcceptance(root, range);
   if (committed !== null)
     criteria.push({ file: ACCEPTED, kind: "guard", evidence: sha256(`${ACCEPTED}\n${committed}`),

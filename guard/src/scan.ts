@@ -5,6 +5,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { type Rule, defaultRules, defaultExclude, IGNORE_MARK, matchesAny } from "./rules.ts";
+import { defaultRunners } from "./runners.ts";
 
 export type Finding = { file: string; line: number; column: number; rule: string; message: string; text: string };
 
@@ -28,6 +29,9 @@ export type Config = {
   /** The files that define what "finished" means (tests, CI, this config): an agent may add to them,
    * but deleting them or removing assertions needs a person. */
   criteria: string[];
+  /** The test runners' config files (jest.config.*, pytest.ini, conftest.py...): any change to one is a
+   * criteria change, since it decides which tests run (see runners.ts). */
+  runners: string[];
   /** "block" (default): a change to the criteria keeps the work open until a person accepts it;
    * "report": it is only reported. */
   criteriaChanges: "block" | "report";
@@ -59,13 +63,13 @@ export function configAt(root: string, rev: string): { config: Config; text: str
 /** The defaults, changed by TEXT, a .soz-guard.json (null: there is none). */
 export function parseConfig(text: string | null): Config {
   const config: Config = { rules: [...defaultRules], exclude: [...defaultExclude], disable: [], maxBlocks: 3,
-                           checks: [], criteria: [...defaultCriteria], criteriaChanges: "block", assertions: "fewer" };
+                           checks: [], criteria: [...defaultCriteria], runners: [...defaultRunners], criteriaChanges: "block", assertions: "fewer" };
   if (text === null) return config;
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch (e) { throw new Error(`${CONFIG_FILE} is not valid JSON: ${(e as Error).message}`); }
   const j = parsed as Partial<{
     rules: Rule[]; exclude: string[]; disable: string[]; maxBlocks: number;
-    checks: Check[]; criteria: string[]; criteriaChanges: string; assertions: string;
+    checks: Check[]; criteria: string[]; runners: string[]; criteriaChanges: string; assertions: string;
   }>;
   if (j.assertions !== undefined && j.assertions !== "fewer" && j.assertions !== "any-change")
     throw new Error(`${CONFIG_FILE}: "assertions" is "fewer" or "any-change", not ${JSON.stringify(j.assertions)}`);
@@ -78,6 +82,7 @@ export function parseConfig(text: string | null): Config {
     config.checks.push(c);
   }
   config.criteria.push(...(j.criteria ?? []));
+  config.runners.push(...(j.runners ?? []));
   if (j.criteriaChanges === "report" || j.criteriaChanges === "block") config.criteriaChanges = j.criteriaChanges;
   for (const r of j.rules ?? []) {
     new RegExp(r.pattern, r.flags);                          // a bad pattern fails here, not silently later

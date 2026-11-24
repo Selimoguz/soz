@@ -37,12 +37,12 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.3.3.tgz`, attached to this repository's
+dependencies, `soz-guard-0.3.4.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
 Install it once per machine, then set it up in the project:
 
 ```sh
-npm install -g path/to/soz-guard-0.3.3.tgz
+npm install -g path/to/soz-guard-0.3.4.tgz
 cd path/to/your/project
 soz-guard init
 ```
@@ -140,6 +140,9 @@ belong to the repository's owner. soz-guard treats a change to them as a person'
 | fewer assertions in a file than before | `open` | `open` |
 | a test or CI file deleted | `open` | `open` |
 | `.soz-guard.json` changed | `open` | `open` |
+| a test switched off or narrowed: `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `@Disabled` | `open` | `open` |
+| a real assertion swapped for one that cannot fail (`expect(true).toBe(true)`, `assert True`) | `open` | `open` |
+| what runs the tests changed (see below) | `open` | `open` |
 
 `"fewer"` catches a test being emptied; `"any-change"` also catches an expected value quietly bent to
 fit the code (`toBe(80)` becoming `toBe(70)`), which `"fewer"` lets through. A live trial showed why
@@ -153,6 +156,24 @@ under `"criteria"`. A file renamed out of them (`test/pay.test.ts` to `old/pay.t
 a test, so it counts as deleted. A line whose only change is its ending (LF and CRLF, as different
 machines check files out) has not changed. With `"criteriaChanges": "report"` such changes are only
 reported.
+
+**What runs the tests is part of the tests.** A required check is a command such as `npm test`; what it
+runs is decided elsewhere, and an agent that sets the test script to `exit 0`, or tells jest to leave a
+folder out, has weakened the tests without touching one. So these are criteria changes too:
+
+- in `package.json`, an existing script changed or removed (adding a script, or a dependency, is fine), and
+  the runners' sections (`"jest"`, `"ava"`, `"mocha"`, `"vitest"`, `"c8"`, `"nyc"`). More commands added at
+  the **end** of a script with `&&` are fine: they run only after everything before them passed, so they
+  can add a failure but never hide one. A command put anywhere earlier could delete the tests that run
+  after it, so that one is accepted by a person;
+- a test runner's config file, any change, a new one included: `jest.config.*`, `vitest.config.*`,
+  `playwright.config.*`, `cypress.config.*`, `karma.conf.*`, `.mocharc*`, `ava.config.*`, jest's and
+  vitest's setup files, `pytest.ini`, `tox.ini`, `conftest.py`, `noxfile.py`, `phpunit.xml`, `.rspec`;
+- pytest's section in `pyproject.toml` or `setup.cfg` (the rest of those files is free);
+- whatever you add under `"runners"` in `.soz-guard.json` (a `Makefile`, if `make test` is your check).
+
+A `soz-guard: ignore` comment does not excuse any of these: it is the agent's word that something is
+unfinished, not a person's acceptance.
 
 **A change is judged by the rules from before it.** `.soz-guard.json` is read as it is at the base (the
 session's start, `HEAD`, or the pull request's base), not as the change leaves it: a branch that deletes
@@ -382,6 +403,25 @@ soz-guard scan               # the static rules only
 soz-guard log                # the last verdicts, hook decisions and acceptances
 soz-guard log --verify       # whether the log's chain is intact
 ```
+
+## What it guards against, and what it does not
+
+soz-guard is a seatbelt for an agent that cuts corners: one that says "done" with work left, or makes a
+failing test pass by weakening it. That is the common failure, and it catches it. It is **not a security
+boundary against an agent set on getting past it**, and should not be taken for one:
+
+- **On the machine where the agent works, the agent can do whatever its user can.** It can write
+  `.soz-guard/accepted.json` itself (the fingerprint is computed from data it can read), append to the log
+  (anyone can compute the chain), or delete the hook's state. The terminal check in `soz-guard accept`
+  guards the command, not the file. Locally, soz-guard slows a determined agent down and leaves traces; it
+  does not stop it.
+- **The gate is where the rule holds**: `soz-guard ci` run where the agent cannot write (a CI runner, the
+  server's own user for its git hooks), from a soz-guard the change cannot edit, on the branch's commits.
+  There a committed acceptance accepts nothing and the rules are those from before the change.
+- **Even there, it judges what changed, not whether the code is right.** Code written to the tests
+  (`if (n === 2) return 2`) passes them; holdout checks, which the agent never sees, are the answer to that.
+  The static rules read lines, so unfinished work written without the words they look for passes them.
+- A person still looks at the change before it goes live. soz-guard tells them where to look.
 
 ## What it is not
 

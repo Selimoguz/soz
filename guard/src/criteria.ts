@@ -11,7 +11,7 @@ import { matchesAny } from "./rules.ts";
 /** EVIDENCE is the SHA-256 of exactly what changed in the file (its removed and added lines): a person's
  * acceptance is bound to it, so a further change, even of the same kind, needs accepting again. */
 export type CriteriaChange = {
-  file: string; kind: "config" | "deleted" | "assertions-removed" | "assertions-changed" | "guard"; detail: string; evidence: string;
+  file: string; kind: "config" | "deleted" | "assertions-removed" | "assertions-changed" | "tests-skipped" | "runner" | "guard"; detail: string; evidence: string;
 };
 
 const evidenceOf = (diff: Diff, file: string) =>
@@ -19,6 +19,15 @@ const evidenceOf = (diff: Diff, file: string) =>
 
 /** A line that asserts something, in most test frameworks. */
 const ASSERTION = /\b(expect|assert\w*|check|verify|should)\s*[.(]|\.(to|not\.to)(Be|Equal|StrictEqual|Have|Throw|Match|Contain)\w*\s*\(|\bassert\b|\bt\.(is|true|false|deepEqual|equal|throws)\s*\(/;
+
+/** An assertion that cannot fail: the same literal on both sides, or a bare true. It asserts nothing, so it
+ * does not make up for one removed. */
+const TRIVIAL = /\bexpect\(\s*(true|false|null|undefined|-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*\)\.(?:toBe|toEqual|toStrictEqual)\(\s*\1\s*\)|\bassert\s+True\b|\bassert\s*\(\s*true\s*\)|\bassert(?:\.ok)?\(\s*true\s*\)|\bassertTrue\(\s*(?:true|True)\s*\)|\bassertEquals?\(\s*(-?\d+|true|"[^"]*")\s*,\s*\2\s*\)|\bt\.(?:true|pass)\(\s*(?:true)?\s*\)/;
+const asserts = (t: string) => ASSERTION.test(t) && !TRIVIAL.test(t);
+
+/** A test switched off or narrowed down: .skip, .only (every other test then does not run), xit, a skip
+ * decorator. Assertion counts do not see it: the test is still there, it just no longer runs. */
+const SKIP = /\b(?:it|test|describe|context|suite|specify)\s*\.\s*(?:skip|only)\b|\b(?:xit|xtest|xdescribe|xcontext|fit|fdescribe|ftest)\s*\(|@pytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.skip\s*\(|@unittest\.skip|\bself\.skipTest\s*\(|\bt\.Skip(?:Now|f)?\s*\(|@(?:Disabled|Ignore)\b|\bmarkTestSkipped\s*\(/;
 
 export function criteriaChanges(diff: Diff, config: Config): CriteriaChange[] {
   const out: CriteriaChange[] = [];
@@ -42,9 +51,13 @@ export function criteriaChanges(diff: Diff, config: Config): CriteriaChange[] {
     // node_modules, dist, build...: a package's own tests are not the project's criteria
     if (matchesAny(file, config.exclude) || !matchesAny(file, config.criteria)) continue;
     if (status === "D") { out.push({ file, kind: "deleted", evidence, detail: "a test or CI file was deleted" }); continue; }
-    const removed = (diff.removed.get(file) ?? []).filter(([, t]) => ASSERTION.test(t));
-    const added = (diff.added.get(file) ?? []).filter(([, t]) => ASSERTION.test(t));
     const lines = (ls: [number, string][]) => ls.slice(0, 3).map(([n, t]) => `line ${n} "${t.trim().slice(0, 80)}"`).join(", ");
+    const skipsAdded = (diff.added.get(file) ?? []).filter(([, t]) => SKIP.test(t));
+    const skipsRemoved = (diff.removed.get(file) ?? []).filter(([, t]) => SKIP.test(t));
+    if (skipsAdded.length > skipsRemoved.length)
+      out.push({ file, kind: "tests-skipped", evidence, detail: `tests switched off or narrowed (.skip, .only, a skip mark): ${lines(skipsAdded)}` });
+    const removed = (diff.removed.get(file) ?? []).filter(([, t]) => asserts(t));
+    const added = (diff.added.get(file) ?? []).filter(([, t]) => asserts(t));
     if (removed.length > added.length) {
       out.push({ file, kind: "assertions-removed", evidence, detail: `${removed.length - added.length} assertion(s) fewer: ${lines(removed)}` });
       continue;
