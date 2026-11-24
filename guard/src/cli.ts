@@ -163,6 +163,16 @@ function check(args: string[]): number {
   return finished(verdict.state) ? 0 : 1;
 }
 
+/** Files in the working tree that differ from the index (AGAINST omitted) or from a commit (AGAINST "HEAD"),
+ * untracked ones included and soz-guard's own folder and the excluded paths left out: checks run on the working
+ * tree, so with any of these they would not be running on what is being judged. */
+function filesOutside(root: string, against?: string): string[] {
+  const exclude = loadConfig(root).exclude.filter(g => g !== CONFIG_FILE).map(g => `:(exclude,glob)${g}`);
+  const changed = gitOut(root, ["-c", "core.quotepath=false", "diff", "--name-only", ...(against ? [against] : []), "--", ".", ...exclude]);
+  const untracked = gitOut(root, ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "--", ".", ...exclude]);
+  return [...changed.split("\n"), ...untracked.split("\n")].filter(f => f && !f.startsWith(`${OWN_DIR}/`));
+}
+
 /** A git pre-commit hook, for any agent and for people: the verdict on exactly what is being committed (the
  * index against HEAD). With --checks the required checks run too, but only when the working tree is what is
  * being committed: tests that pass on files left out of the commit prove nothing about the commit. */
@@ -175,10 +185,7 @@ function preCommit(args: string[]): number {
   let runChecks = args.includes("--checks");
   let note = "";
   if (runChecks) {
-    const exclude = loadConfig(root).exclude.filter(g => g !== CONFIG_FILE).map(g => `:(exclude,glob)${g}`);
-    const unstaged = gitOut(root, ["-c", "core.quotepath=false", "diff", "--name-only", "--", ".", ...exclude]);
-    const untracked = gitOut(root, ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "--", ".", ...exclude]);
-    const left = [...unstaged.split("\n"), ...untracked.split("\n")].filter(f => f && !f.startsWith(`${OWN_DIR}/`));
+    const left = filesOutside(root);
     if (left.length) {
       runChecks = false;
       note = `The required checks were not run: ${left.length} file(s) differ from what is being committed (${left.slice(0, 5).join(", ")}${left.length > 5 ? ", ..." : ""}),\n`
@@ -203,12 +210,20 @@ function ci(args: string[]): number {
   const base = gitOut(root, ["merge-base", baseRef, "HEAD"]);
   const criteriaMode = flag(args, "--criteria");
   if (criteriaMode && criteriaMode !== "block" && criteriaMode !== "report") throw new Error("--criteria is block or report");
-  const { verdict } = evaluate(root, { range: { base }, checks: args.includes("--checks"), reuse: false, record: false });
+  // the change is the branch's commits, not whatever else lies in the folder: on a server where someone
+  // checked the branch out among other files, those files are not the branch's
+  const dirty = args.includes("--checks") ? filesOutside(root, "HEAD") : [];
+  const { verdict } = evaluate(root, { range: { base, head: "HEAD" }, checks: args.includes("--checks") && !dirty.length, reuse: false, record: false });
   // "--criteria report": for a team that reviews changes to the tests in the pull request itself
   if (criteriaMode === "report" && verdict.state === "open" && !verdict.findings.length && !verdict.checks.some(c => c.status === "failed"))
     verdict.state = verdict.checks.length ? "verified" : "unchecked";
-  if (args.includes("--json")) process.stdout.write(JSON.stringify(verdict, null, 2) + "\n");
-  else process.stdout.write(`soz-guard ci (against ${baseRef}): ${verdict.state}\n${verdictReport(verdict, false)}\n`);
+  // the checks were asked for and could not run on exactly the branch: no answer, so not finished
+  if (dirty.length && finished(verdict.state)) verdict.state = "unverified";
+  const note = dirty.length ? `\nThe required checks were not run: ${dirty.length} file(s) in the folder differ from the branch's last commit `
+    + `(${dirty.slice(0, 5).join(", ")}${dirty.length > 5 ? ", ..." : ""}),\nand checks run on the folder would not be checking the branch. `
+    + `Run soz-guard ci in a clean checkout of the branch.\n` : "";
+  if (args.includes("--json")) process.stdout.write(JSON.stringify(dirty.length ? { ...verdict, notRun: dirty } : verdict, null, 2) + "\n");
+  else process.stdout.write(`soz-guard ci (against ${baseRef}): ${verdict.state}\n${verdictReport(verdict, false)}\n${note}`);
   return finished(verdict.state) ? 0 : 1;
 }
 

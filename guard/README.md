@@ -37,12 +37,12 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.3.1.tgz`, attached to this repository's
+dependencies, `soz-guard-0.3.2.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
 On the machine that will use it, in the project:
 
 ```sh
-npm install --save-dev path/to/soz-guard-0.3.1.tgz
+npm install --save-dev path/to/soz-guard-0.3.2.tgz
 npx soz-guard init
 ```
 
@@ -172,8 +172,11 @@ npx soz-guard ci --criteria report              # a team that reviews test chang
 ```
 
 On GitHub Actions `--base` defaults to the pull request's base branch. The change is everything the
-branch adds since it left the base (the merge base). In CI the tests usually run in their own step;
-`--checks` is for when soz-guard should run them itself.
+branch adds since it left the base (the merge base), up to its last commit: files lying uncommitted in
+the folder are not the branch's and are not judged. In CI the tests usually run in their own step;
+`--checks` is for when soz-guard should run them itself. The checks run on the folder, so `--checks` runs
+them only when the folder is exactly the branch's last commit; otherwise the verdict is `unverified` and
+names the files in the way. On a shared server, check the branch out on its own (a `git worktree`).
 
 **Run soz-guard in CI from a source the pull request cannot change**: a published version pinned by
 number, or a commit of soz-guard's own repository pinned by hash. Never from a copy inside the

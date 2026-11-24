@@ -186,6 +186,24 @@ const g4 = run(["ci", "--base", "main"]);
 check('"any-change": only the line endings changed (LF to CRLF): no assertion changed', g4.status === 0, g4.stdout);
 git("checkout", "-q", "main");
 owner({ checks: [] });
+git("checkout", "-q", "-b", "folder");
+write("src/branch.ts", "export const branch = 1;\n");
+git("add", "-A"); git("commit", "-q", "-m", "the branch's own work");
+write("scratch/notes.ts", "// TODO: someone else's file, left in the folder\n");   // soz-guard: ignore (test data)
+const g5 = run(["ci", "--base", "main"]);
+check("ci judges the branch's commits, not an untracked file someone left in the folder", g5.status === 0, g5.stdout);
+rmSync(join(repo, "scratch"), { recursive: true, force: true });
+git("checkout", "-q", "main");
+owner({ checks: [{ name: "fine", run: script("process.exit(0)") }] });
+git("checkout", "-q", "folder"); git("rebase", "-q", "main");
+write("scratch/notes.ts", "export const left = 1;\n");
+const g6 = run(["ci", "--base", "main", "--checks"]);
+check("... and with --checks in such a folder, does not run them on it: unverified, and says why", g6.status === 1
+      && g6.stdout.includes("unverified") && g6.stdout.includes("scratch/notes.ts"), g6.stdout);
+rmSync(join(repo, "scratch"), { recursive: true, force: true });
+check("... in a clean checkout of the branch they run", run(["ci", "--base", "main", "--checks"]).stdout.includes("verified"));
+git("checkout", "-q", "main");
+owner({ checks: [] });
 
 console.log("\nFound in review: a change only a person can accept stops the agent once, not every turn");
 const told = `told-${Date.now()}`;
