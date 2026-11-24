@@ -45,11 +45,25 @@ export const defaultCriteria = [
 
 /** The defaults, changed by the repository's .soz-guard.json if there is one. */
 export function loadConfig(root: string): Config {
+  const path = join(root, CONFIG_FILE);
+  return parseConfig(existsSync(path) ? readFileSync(path, "utf8") : null);
+}
+
+/** The config as it is at REV (a commit or a tree): the rules a change is judged by come from before it, so
+ * a change cannot loosen the rules it is judged by (see verdict.ts). */
+export function configAt(root: string, rev: string): { config: Config; text: string } {
+  const text = gitShow(root, rev, CONFIG_FILE);
+  return { config: parseConfig(text), text: text ?? "" };
+}
+
+/** The defaults, changed by TEXT, a .soz-guard.json (null: there is none). */
+export function parseConfig(text: string | null): Config {
   const config: Config = { rules: [...defaultRules], exclude: [...defaultExclude], disable: [], maxBlocks: 3,
                            checks: [], criteria: [...defaultCriteria], criteriaChanges: "block", assertions: "fewer" };
-  const path = join(root, CONFIG_FILE);
-  if (!existsSync(path)) return config;
-  const j = JSON.parse(readFileSync(path, "utf8")) as Partial<{
+  if (text === null) return config;
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch (e) { throw new Error(`${CONFIG_FILE} is not valid JSON: ${(e as Error).message}`); }
+  const j = parsed as Partial<{
     rules: Rule[]; exclude: string[]; disable: string[]; maxBlocks: number;
     checks: Check[]; criteria: string[]; criteriaChanges: string; assertions: string;
   }>;
@@ -173,7 +187,9 @@ export function readDiff(root: string, range: Range = { base: "HEAD" }, exclude:
   // a line whose only change is its ending (LF and CRLF, as Windows and other machines check files out) has
   // not changed: it is neither added code to scan nor an assertion removed
   const diffText = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", "--ignore-cr-at-eol", ...span, ...paths]);
-  hash.update(nameStatus, "utf8").update(diffText, "utf8");
+  // the fingerprint takes the diff as it is, line endings included: the checks run on the files as they are
+  const rawText = git(root, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", ...span, ...paths]);
+  hash.update(nameStatus, "utf8").update(rawText, "utf8");
   let oldFile: string | null = null, newFile: string | null = null, o = 0, n = 0;
   for (const line of diffText.split("\n")) {
     if (line.startsWith("--- ")) { oldFile = line === "--- /dev/null" ? null : line.slice(6); continue; }

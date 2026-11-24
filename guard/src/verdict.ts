@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, loadConfig, readDiff, repoRoot, scanLines,
+import { type Check, type Config, type Finding, type Range, CONFIG_FILE, OWN_DIR, configAt, parseConfig, readDiff, repoRoot, scanLines,
          gitShow, gitIgnored, gitTracked } from "./scan.ts";
 import { type CriteriaChange, criteriaChanges } from "./criteria.ts";
 import { type GuardState, guardState, guardChanges } from "./guard.ts";
@@ -95,7 +95,7 @@ export function readAccepted(root: string): Accepted | null {
   try { return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) as Accepted : null; } catch { return null; }
 }
 
-const ACCEPTED = `${OWN_DIR}/accepted.json`;
+export const ACCEPTED = `${OWN_DIR}/accepted.json`;
 
 /** A person accepts on their own machine, and .soz-guard/ stays out of git. An acceptance that is in git, or
  * in the commit being judged, came with the change: an agent can write one and commit it (git add -f), so it
@@ -167,9 +167,13 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
   const root = repoRoot(dir);
   if (!root) throw new Error(`${dir} is not in a git repository; soz-guard looks at what changed, so it needs git`);
   const range = o.range ?? { base: "HEAD" };
-  const config = loadConfig(root);
-  const configText = existsSync(join(root, CONFIG_FILE)) ? readFileSync(join(root, CONFIG_FILE), "utf8") : "";
-  const diff = readDiff(root, range, config.exclude);
+  // The rules come from before the change: a change that loosens them (criteriaChanges "report", maxBlocks 0,
+  // a rule switched off, a check removed) is itself a criteria change, and is judged by the rules it would
+  // replace. Once a person accepts it, the new rules apply.
+  const before = configAt(root, range.base);
+  const currentText = range.head ? (gitShow(root, range.head, CONFIG_FILE) ?? "")
+    : existsSync(join(root, CONFIG_FILE)) ? readFileSync(join(root, CONFIG_FILE), "utf8") : "";
+  const diff = readDiff(root, range, before.config.exclude);
   let foreign: string[] | undefined;
   if (o.only) {
     const only = o.only;
@@ -177,8 +181,7 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     for (const m of [diff.added, diff.removed, diff.status, diff.renamed] as Map<string, unknown>[])
       for (const f of [...m.keys()]) if (!only.has(f)) m.delete(f);
   }
-  const change = sha256(diff.fingerprint), configHash = sha256(configText);
-  const findings = scanLines(diff.added, config);
+  const change = sha256(diff.fingerprint);
   // the hooks and soz-guard's instructions: against the session's start if known, else against the base in
   // git (where a file git ignores, such as settings.local.json, cannot be compared and is left out)
   const worktree = (f: string) => existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : null;
@@ -187,14 +190,21 @@ export function evaluate(dir: string, o: EvaluateOptions = {}): { root: string; 
     ? guardChanges(o.guardBase, guardState(worktree), root)
     : guardChanges(guardState(atRev(range.base)), guardState(range.head ? atRev(range.head) : worktree), root)
         .filter(c => range.head || !gitIgnored(root, c.file));
-  const criteria = [...criteriaChanges(diff, config), ...guard];
+  const criteria = [...criteriaChanges(diff, before.config), ...guard];
   const committed = committedAcceptance(root, range);
   if (committed !== null)
     criteria.push({ file: ACCEPTED, kind: "guard", evidence: sha256(`${ACCEPTED}\n${committed}`),
                     detail: "an acceptance is in git: a person accepts on their own machine, and an acceptance never travels with the change (git rm --cached it)" });
   const accepted = committed === null ? readAccepted(root) : null;
-  const criteriaAccepted = criteria.length && accepted && accepted.criteria === criteriaFingerprint(criteria) ? accepted.reason : null;
-  const criteriaOpen = criteria.length > 0 && config.criteriaChanges === "block" && !criteriaAccepted;
+  const criteriaAccepted = criteria.length > 0 && accepted !== null && accepted.criteria === criteriaFingerprint(criteria) ? accepted.reason : null;
+  const criteriaOpen = criteria.length > 0 && before.config.criteriaChanges === "block" && !criteriaAccepted;
+  // a changed config, accepted by a person: from now on it is the rules
+  // (a proposed config is read all the same, so that a mistake in it is said at once, not after accepting)
+  const proposed = currentText !== before.text ? parseConfig(currentText || null) : before.config;
+  const config = criteriaAccepted !== null ? proposed : before.config;
+  const configText = config === before.config ? before.text : currentText;
+  const configHash = sha256(configText);
+  const findings = scanLines(diff.added, config);
 
   // Checks run only when nothing static is open: unfinished work has to be finished first anyway.
   let checks: CheckResult[] = [];

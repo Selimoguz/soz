@@ -22,10 +22,11 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { scan, report, repoRoot, loadConfig, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath } from "./scan.ts";
-import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog } from "./verdict.ts";
+import { createHash } from "node:crypto";
+import { scan, report, repoRoot, loadConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
+import { evaluate, verdictReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
-import { MARK } from "./guard.ts";
+import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -65,7 +66,8 @@ function track(): number {
   const input = hookInput();
   const root = repoRoot(input.cwd ?? process.cwd());
   const sid = input.session_id;
-  if (!root || !sid || !readBaseline(root, sid)) return 0;      // no baseline: the verdict is against HEAD anyway
+  const baseline = root && sid ? readBaseline(root, sid) : null;
+  if (!root || !sid || !baseline) return 0;                      // no baseline: the verdict is against HEAD anyway
   const tool = input.tool_name ?? "";
   const pre = input.hook_event_name === "PreToolUse";
   if (FILE_TOOLS.includes(tool)) {
@@ -73,7 +75,7 @@ function track(): number {
     const f = p ? repoPath(root, p) : null;
     if (f) recordTouched(root, sid, [f]);
   } else if (SHELL_TOOLS.includes(tool)) {
-    const exclude = loadConfig(root).exclude;
+    const exclude = configAt(root, baseline.tree).config.exclude;
     const key = input.tool_use_id ?? "shell";
     if (pre) beforeShell(root, sid, key, exclude); else afterShell(root, sid, key, exclude);
   }
@@ -100,13 +102,17 @@ function hook(): number {
   const root = repoRoot(dir);
   if (!root) return 0;                                            // not a git repository: nothing to compare
   const baseline = readBaseline(root, input.session_id);
-  const range = baseline ? { base: baseline.tree, head: snapshotTree(root, loadConfig(root).exclude) } : undefined;
+  // what the snapshot leaves out is for the session's start to say, not for the change
+  const range = baseline ? { base: baseline.tree, head: snapshotTree(root, configAt(root, baseline.tree).config.exclude) } : undefined;
   // with the tracking hooks installed, a session answers only for the files it touched (several sessions,
   // one folder); a session that touched nothing answers for nothing
   const only = baseline && input.session_id && trackingInstalled(root) ? (readTouched(root, input.session_id) ?? new Set<string>()) : undefined;
   const { verdict, config } = evaluate(dir, { range, only, guardBase: baseline?.guard, session: input.session_id, source: "hook" });
-  const stateFile = join(tmpdir(), `soz-guard-${(input.session_id ?? "default").replace(/[^\w-]/g, "")}.json`);
-  const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) as { blocks: number; told?: string } : { blocks: 0 };
+  // without a session id, one state per repository: two projects do not count each other's stops
+  const key = input.session_id ? input.session_id.replace(/[^\w-]/g, "") : `default-${createHash("sha256").update(root).digest("hex").slice(0, 12)}`;
+  const stateFile = join(tmpdir(), `soz-guard-${key}.json`);
+  let state: { blocks: number; told?: string } = { blocks: 0 };
+  try { if (existsSync(stateFile)) state = JSON.parse(readFileSync(stateFile, "utf8")); } catch { state = { blocks: 0 }; }
   const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
   if (finished(verdict.state)) {
     writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
@@ -114,30 +120,27 @@ function hook(): number {
     process.stdout.write("{}\n");                    // Codex expects JSON from a Stop hook that lets the agent stop
     return 0;
   }
-  // Open only because the tests or rules changed, which a person accepts and the agent cannot: the agent is told
-  // once. Stopping it again for the same changes, turn after turn, only keeps it from answering the person.
+  // Open only because the tests or rules changed, which a person accepts and the agent cannot. Once told, the
+  // agent may stop and hand them to the person, but only as it was told: if it changed anything since (went
+  // on working, or changed the criteria further) it is stopped again, within maxBlocks like any other stop.
   const waitsForPerson = verdict.state === "open" && !verdict.findings.length && !verdict.checks.length
     && verdict.criteria.length > 0 && !verdict.criteriaAccepted;
-  const criteriaKey = waitsForPerson ? criteriaFingerprint(verdict.criteria) : undefined;
-  if (criteriaKey && state.told === criteriaKey) {
-    log("let the agent stop: the same changes to the criteria still wait for a person");
+  const told = waitsForPerson ? `${criteriaFingerprint(verdict.criteria)}:${verdict.change}` : undefined;
+  if (told && state.told === told) {
+    log("let the agent stop: the changes to the criteria it was told about wait for a person");
     process.stdout.write(JSON.stringify({
       systemMessage: `soz-guard: still waiting for you, not for the agent:\n${verdictReport(verdict, false)}\nAccept in a terminal with  soz-guard accept "<why>", or undo the change.`,
     }) + "\n");
     return 0;
   }
-  if (criteriaKey) {
-    writeFileSync(stateFile, JSON.stringify({ blocks: 0, told: criteriaKey }));
-    log("stopped the agent once: the criteria changed, a person decides");
-    process.stderr.write(`soz-guard: you are about to finish, but the work is not finished yet.\n${verdictReport(verdict, true)}\n`
-      + `You will not be stopped for these same changes again; say plainly in your final message that they wait for the user.\n`);
-    return 2;
-  }
   state.blocks++;
-  writeFileSync(stateFile, JSON.stringify(state));
   if (state.blocks <= config.maxBlocks) {
-    log(`stopped the agent (${state.blocks} of ${config.maxBlocks})`);
-    process.stderr.write(`soz-guard: you are about to finish, but the work is not finished yet.\n${verdictReport(verdict, true)}\n(check ${state.blocks} of ${config.maxBlocks})\n`);
+    state.told = told;
+    writeFileSync(stateFile, JSON.stringify(state));
+    log(`stopped the agent (${state.blocks} of ${config.maxBlocks})${told ? ": the criteria changed, a person decides" : ""}`);
+    process.stderr.write(`soz-guard: you are about to finish, but the work is not finished yet.\n${verdictReport(verdict, true)}\n`
+      + (told ? `If you stop now and change nothing else, you will not be stopped for these same changes again; say plainly\nin your final message that they wait for the user. ` : "")
+      + `(check ${state.blocks} of ${config.maxBlocks})\n`);
     return 2;
   }
   // Stopped enough times: let the agent finish, but tell the person, plainly, that it is not finished.
@@ -166,8 +169,9 @@ function check(args: string[]): number {
 /** Files in the working tree that differ from the index (AGAINST omitted) or from a commit (AGAINST "HEAD"),
  * untracked ones included and soz-guard's own folder and the excluded paths left out: checks run on the working
  * tree, so with any of these they would not be running on what is being judged. */
-function filesOutside(root: string, against?: string): string[] {
-  const exclude = loadConfig(root).exclude.filter(g => g !== CONFIG_FILE).map(g => `:(exclude,glob)${g}`);
+function filesOutside(root: string, rules: string, against?: string): string[] {
+  // the excluded paths are those of the rules the change is judged by (RULES, a commit), not of the folder
+  const exclude = configAt(root, rules).config.exclude.filter(g => g !== CONFIG_FILE).map(g => `:(exclude,glob)${g}`);
   const changed = gitOut(root, ["-c", "core.quotepath=false", "diff", "--name-only", ...(against ? [against] : []), "--", ".", ...exclude]);
   const untracked = gitOut(root, ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "--", ".", ...exclude]);
   return [...changed.split("\n"), ...untracked.split("\n")].filter(f => f && !f.startsWith(`${OWN_DIR}/`));
@@ -185,7 +189,7 @@ function preCommit(args: string[]): number {
   let runChecks = args.includes("--checks");
   let note = "";
   if (runChecks) {
-    const left = filesOutside(root);
+    const left = filesOutside(root, base);
     if (left.length) {
       runChecks = false;
       note = `The required checks were not run: ${left.length} file(s) differ from what is being committed (${left.slice(0, 5).join(", ")}${left.length > 5 ? ", ..." : ""}),\n`
@@ -207,12 +211,23 @@ function ci(args: string[]): number {
   if (!root) throw new Error("not in a git repository");
   const baseRef = flag(args, "--base") ?? (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : undefined);
   if (!baseRef) throw new Error("which base? soz-guard ci --base origin/main (on GitHub Actions, GITHUB_BASE_REF is used)");
-  const base = gitOut(root, ["merge-base", baseRef, "HEAD"]);
+  let base: string;
+  try { base = gitOut(root, ["merge-base", baseRef, "HEAD"]); }
+  catch {
+    let shallow = false;
+    try { shallow = gitOut(root, ["rev-parse", "--is-shallow-repository"]) === "true"; } catch { shallow = false; }
+    let known = true;
+    try { gitOut(root, ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]); } catch { known = false; }
+    throw new Error(!known ? `${baseRef} is not in this clone; fetch it first (git fetch origin ${baseRef.replace(/^origin\//, "")})`
+      : shallow ? `this clone is shallow, so the branch and ${baseRef} have no common commit in it; fetch the history `
+        + `(actions/checkout with fetch-depth: 0, or git fetch --unshallow)`
+      : `the branch and ${baseRef} have no commit in common`);
+  }
   const criteriaMode = flag(args, "--criteria");
   if (criteriaMode && criteriaMode !== "block" && criteriaMode !== "report") throw new Error("--criteria is block or report");
   // the change is the branch's commits, not whatever else lies in the folder: on a server where someone
   // checked the branch out among other files, those files are not the branch's
-  const dirty = args.includes("--checks") ? filesOutside(root, "HEAD") : [];
+  const dirty = args.includes("--checks") ? filesOutside(root, base, "HEAD") : [];
   const { verdict } = evaluate(root, { range: { base, head: "HEAD" }, checks: args.includes("--checks") && !dirty.length, reuse: false, record: false });
   // "--criteria report": for a team that reviews changes to the tests in the pull request itself
   if (criteriaMode === "report" && verdict.state === "open" && !verdict.findings.length && !verdict.checks.some(c => c.status === "failed"))
@@ -221,7 +236,7 @@ function ci(args: string[]): number {
   if (dirty.length && finished(verdict.state)) verdict.state = "unverified";
   const note = dirty.length ? `\nThe required checks were not run: ${dirty.length} file(s) in the folder differ from the branch's last commit `
     + `(${dirty.slice(0, 5).join(", ")}${dirty.length > 5 ? ", ..." : ""}),\nand checks run on the folder would not be checking the branch. `
-    + `Run soz-guard ci in a clean checkout of the branch.\n` : "";
+    + `Run soz-guard ci in a clean checkout of the branch; files a build makes (outputs, reports) go in "exclude" in ${CONFIG_FILE}.\n` : "";
   if (args.includes("--json")) process.stdout.write(JSON.stringify(dirty.length ? { ...verdict, notRun: dirty } : verdict, null, 2) + "\n");
   else process.stdout.write(`soz-guard ci (against ${baseRef}): ${verdict.state}\n${verdictReport(verdict, false)}\n${note}`);
   return finished(verdict.state) ? 0 : 1;
@@ -280,14 +295,20 @@ function logCommand(args: string[]): number {
 async function accept(args: string[]): Promise<number> {
   const reason = args.filter(a => !a.startsWith("--")).join(" ").trim();
   if (!reason) throw new Error('why? soz-guard accept "<why these changes to the tests or rules are right>"');
+  const root = repoRoot(process.cwd());
+  if (!root) throw new Error("not in a git repository");
+  // an acceptance in git is never honoured (verdict.ts): saying "Accepted" here would be untrue
+  if (gitTracked(root, ACCEPTED) || gitShow(root, "HEAD", ACCEPTED) !== null) {
+    process.stderr.write(`${ACCEPTED} is in git, and an acceptance that travels with the change accepts nothing.\n`
+      + `Take it out of git first (git rm --cached ${ACCEPTED}, and commit that), then accept again.\n`);
+    return 1;
+  }
   if (!process.stdin.isTTY) {
     process.stderr.write("soz-guard accept needs a terminal: a person types it, an agent cannot.\n");
     return 2;
   }
   // What is accepted is what the last verdict stopped on: the hook judges a session's change, which only
   // the hook's own record knows; recomputing here against HEAD could name other changes.
-  const root = repoRoot(process.cwd());
-  if (!root) throw new Error("not in a git repository");
   const lastPath = join(root, OWN_DIR, "last.json");
   const last = existsSync(lastPath) ? JSON.parse(readFileSync(lastPath, "utf8")) as { criteria: { file: string; kind: string; detail: string; evidence: string }[]; at: string } : null;
   const criteria = last?.criteria ?? [];
@@ -344,12 +365,21 @@ function upsertHook(list: HookList, sub: string, ours: (command: string) => bool
   const command = selfCommand(sub);
   for (const m of list) for (const h of m.hooks ?? []) {
     if (!ours(h.command ?? "")) continue;
-    if (h.command === command) return "there";
+    // a command written by hand that finds soz-guard itself (npx soz-guard hook, soz-guard hook) works on any
+    // machine: it is left as it is. Only init's own commands, with one machine's paths, are brought up to date.
+    if (h.command === command || !machineCommand(h.command)) return "there";
     h.command = command;
     return "updated";
   }
   list.push({ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command }] });
   return "added";
+}
+/** The hook commands in the project's shared .claude/settings.json. */
+function sharedHooks(root: string): string[] {
+  try {
+    const shared = JSON.parse(readFileSync(join(root, ".claude", "settings.json"), "utf8")) as { hooks?: Record<string, HookList> };
+    return Object.values(shared.hooks ?? {}).flat().flatMap(m => (m.hooks ?? []).map(h => h.command ?? ""));
+  } catch { return []; }                                         // no shared settings, or not JSON: none
 }
 const ourCommand = (sub: string) => (c: string) =>
   (c.includes(self) || /soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && c.trimEnd().endsWith(` ${sub}`);
@@ -407,7 +437,12 @@ function init(dir: string, args: string[] = []): number {
   settings.hooks ??= {};
   let changed = false;
   // SessionStart records where the session began; Stop judges what changed since then
+  // with --local, a hook the shared settings.json already runs on this machine is not added again: Claude Code
+  // would run both, and the two would count the same stops
+  const shared = local ? sharedHooks(root) : [];
+  const runsHere = (sub: string) => shared.some(c => ourCommand(sub)(c) && (!machineCommand(c) || isThisSozGuard(machineCommand(c)!.script)));
   for (const [event, sub] of [["SessionStart", "session-start"], ["Stop", "hook"]] as const) {
+    if (runsHere(sub)) { done.push(`${settingsName}: the ${event} hook is left out, .claude/settings.json already runs it on this machine`); continue; }
     const r = upsertHook(settings.hooks[event] ??= [], sub, ourCommand(sub));
     changed ||= r !== "there";
     done.push(upsertNote(r, `${event} hook`, settingsName));
@@ -416,6 +451,7 @@ function init(dir: string, args: string[] = []): number {
   // snapshots, and a change made some way the hooks do not see is then nobody's)
   if (args.includes("--sessions")) {
     for (const event of ["PreToolUse", "PostToolUse"] as const) {
+      if (runsHere("track")) { done.push(`${settingsName}: the ${event} tracking hook is left out, .claude/settings.json already runs it on this machine`); continue; }
       const r = upsertHook(settings.hooks[event] ??= [], "track", ourCommand("track"), event === "PreToolUse" ? SHELL_TOOLS.join("|") : TRACK_MATCHER);
       changed ||= r !== "there";
       done.push(upsertNote(r, `${event} tracking hook`, settingsName) + (r === "added" ? " (each session answers for the files it touched)" : ""));
@@ -426,19 +462,20 @@ function init(dir: string, args: string[] = []): number {
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   }
   if (local) {
-    if (!gitIgnoredPath(root, settingsName)) {
-      const ignorePath = join(root, ".gitignore");
-      const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+    const ignorePath = join(root, ".gitignore");
+    const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+    if (!gitIgnoredPath(root, settingsName) && !ignore.split(/\r?\n/).some(l => l.trim() === settingsName)) {
       writeFileSync(ignorePath, (ignore ? ignore.replace(/\s*$/, "\n") : "") + `${settingsName}\n`);
       done.push(`.gitignore: ${settingsName} added (it holds this machine's paths)`);
     }
-    try {
-      const shared = JSON.parse(readFileSync(join(root, ".claude", "settings.json"), "utf8")) as { hooks?: Record<string, HookList> };
-      const commands = Object.values(shared.hooks ?? {}).flat().flatMap(m => (m.hooks ?? []).map(h => h.command ?? ""));
-      if (["session-start", "hook", "track"].some(sub => commands.some(ourCommand(sub))))
-        done.push(`.claude/settings.json also runs soz-guard, with the paths of the machine that committed it; on other machines\n`
-          + `      that one fails. The repository's owner removes it from there, once everyone has run init --local.`);
-    } catch { /* no shared settings: nothing to point out */ }
+    // .gitignore does not take a file out of git that is already in it
+    if (gitTracked(root, settingsName))
+      done.push(`${settingsName} is in git already, so .gitignore does not keep it out: take it out once with\n`
+        + `      git rm --cached ${settingsName}   (the file stays on this machine) and commit that`);
+    const stale = ["session-start", "hook", "track"].some(sub => shared.some(c => ourCommand(sub)(c) && machineCommand(c) && !isThisSozGuard(machineCommand(c)!.script)));
+    if (stale)
+      done.push(`.claude/settings.json also runs soz-guard, with the paths of the machine that committed it; on other machines\n`
+        + `      that one fails. The repository's owner removes it from there, once everyone has run init --local.`);
   }
   }
   if (codex) done.push(installCodexHooks(root));

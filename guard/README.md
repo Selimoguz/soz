@@ -37,14 +37,18 @@ before it counts as done. It does not depend on soz.
 ## Set up (Claude Code, also in VS Code)
 
 Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.3.2.tgz`, attached to this repository's
+dependencies, `soz-guard-0.3.3.tgz`, attached to this repository's
 [releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
-On the machine that will use it, in the project:
+Install it once per machine, then set it up in the project:
 
 ```sh
-npm install --save-dev path/to/soz-guard-0.3.2.tgz
-npx soz-guard init
+npm install -g path/to/soz-guard-0.3.3.tgz
+cd path/to/your/project
+soz-guard init
 ```
+
+(Installed globally, not as a project dependency: the package file's path would otherwise go into the
+project's `package.json`, and it is one machine's path.)
 
 (From a checkout of this repository, without installing: `node --experimental-strip-types
 --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts init`, Node 22.6 or newer.)
@@ -63,15 +67,18 @@ moving Node or the package, run `init` again: it updates soz-guard's hooks to wh
 **In a team**, those full paths are one machine's. Each person runs, on their own machine:
 
 ```sh
-npx soz-guard init --local
+soz-guard init --local
 ```
 
 which puts the hooks in `.claude/settings.local.json` and adds that file to `.gitignore`, so no
 machine's paths are committed for the others. (If `.claude/settings.json` already runs soz-guard from
 the machine that committed it, `init --local` says so; the owner removes it there once everyone has
-run `init --local`.) Where soz-guard lives is not part of what counts as finished: its hook pointed at
-another Node or another copy of soz-guard is not a change a person has to accept, as long as that
-copy is on this machine.
+run `init --local`. A hook `settings.json` already runs on this machine is not added again: both
+would run.) If `settings.local.json` is already in git, `.gitignore` does not take it out; `init --local`
+says so and gives the one command that does. A hook written by hand that finds soz-guard itself, such as
+`npx soz-guard hook`, works on every machine, and `init` leaves it as it is. Where soz-guard lives is
+not part of what counts as finished: its hook pointed at another Node or another copy of soz-guard is not a change a person has to accept, as long as it is
+this soz-guard, on this machine. Pointed at some other `cli.js`, it is.
 
 ## Required checks
 
@@ -147,15 +154,22 @@ a test, so it counts as deleted. A line whose only change is its ending (LF and 
 machines check files out) has not changed. With `"criteriaChanges": "report"` such changes are only
 reported.
 
+**A change is judged by the rules from before it.** `.soz-guard.json` is read as it is at the base (the
+session's start, `HEAD`, or the pull request's base), not as the change leaves it: a branch that deletes
+a test and, in the same commit, sets `"criteriaChanges": "report"`, switches a rule off, removes a check
+or sets `"maxBlocks": 0`, is judged by the rules it tried to replace. Its new config is itself a criteria
+change. Once a person accepts it, the new rules apply; after the merge, they are the base.
+
 A test sometimes really is obsolete. Then a person accepts the change, in a terminal:
 
 ```sh
-npx soz-guard accept "the old pricing test covered a rule we removed"
+soz-guard accept "the old pricing test covered a rule we removed"
 ```
 
 It asks to type `yes`, and refuses piped input: an agent runs commands without a terminal. The
 acceptance is bound to exactly these changes; any further change to the tests or rules needs
-accepting again. Be clear about what this is: on one machine an agent can do whatever its user can,
+accepting again. An acceptance lives in `.soz-guard/`, on the person's machine; one that is in git came
+with a change and accepts nothing, so `accept` refuses until it is taken out of git. Be clear about what this is: on one machine an agent can do whatever its user can,
 so locally this slows an agent down rather than stops it. **CI is where the rule is enforced**, on
 the pull request, where the agent cannot accept anything.
 
@@ -166,9 +180,9 @@ it), so it accepts nothing and is reported as a change of its own, in CI and eve
 ## In CI
 
 ```sh
-npx soz-guard ci --base origin/main             # exit 1 unless finished
-npx soz-guard ci --base origin/main --checks    # run the required checks too
-npx soz-guard ci --criteria report              # a team that reviews test changes in the PR itself
+soz-guard ci --base origin/main             # exit 1 unless finished
+soz-guard ci --base origin/main --checks    # run the required checks too
+soz-guard ci --criteria report              # a team that reviews test changes in the PR itself
 ```
 
 On GitHub Actions `--base` defaults to the pull request's base branch. The change is everything the
@@ -177,6 +191,9 @@ the folder are not the branch's and are not judged. In CI the tests usually run 
 `--checks` is for when soz-guard should run them itself. The checks run on the folder, so `--checks` runs
 them only when the folder is exactly the branch's last commit; otherwise the verdict is `unverified` and
 names the files in the way. On a shared server, check the branch out on its own (a `git worktree`).
+What builds and test runs leave behind (`dist/`, `build/`, `coverage/`, `__pycache__/` and the like) is
+not in the way; add your own outputs to `"exclude"`. soz-guard needs the history back to the merge base:
+with `actions/checkout`, set `fetch-depth: 0` (a shallow clone is said plainly, not as a git error).
 
 **Run soz-guard in CI from a source the pull request cannot change**: a published version pinned by
 number, or a commit of soz-guard's own repository pinned by hash. Never from a copy inside the
@@ -234,7 +251,7 @@ the CRM, one that coordinates them). Then the difference from one session's snap
 work too, and a gap one session left would stop all of them. With
 
 ```sh
-npx soz-guard init --sessions
+soz-guard init --sessions
 ```
 
 each session answers for the files it touched. A `PostToolUse` hook records the files a session edits
@@ -266,17 +283,19 @@ person, plainly, that the work is not finished. Outside a git repository it does
 fails itself, it says so and does not block.
 
 When the only thing open is a change to the tests or rules, the agent cannot resolve it: a person
-accepts it. Then the hook stops the agent once, so it says so in its final message, and after that
-lets it stop, telling the person each time that the change still waits for them. A further change to
-the tests or rules stops the agent again.
+accepts it. Then the hook stops the agent and tells it to say so in its final message. If it then
+stops without changing anything else, it is let go, and the person is told each time that the change
+still waits for them. If it goes on working instead, or changes the tests or rules further, it is
+stopped again, within `maxBlocks` like any other stop. Without a session id (an older client), the
+count of stops is kept per repository.
 
 ## Other agents: a git hook, and Codex
 
 ```sh
-npx soz-guard init --git             # a git pre-commit hook, for any agent and for people
-npx soz-guard init --git --checks    # ... that runs the required checks too
-npx soz-guard init --codex           # Codex's SessionStart and Stop hooks, in .codex/hooks.json
-npx soz-guard init --claude --codex --git    # any combination; without a flag, --claude
+soz-guard init --git             # a git pre-commit hook, for any agent and for people
+soz-guard init --git --checks    # ... that runs the required checks too
+soz-guard init --codex           # Codex's SessionStart and Stop hooks, in .codex/hooks.json
+soz-guard init --claude --codex --git    # any combination; without a flag, --claude
 ```
 
 **The pre-commit hook** judges exactly what is being committed: the staged files against `HEAD`,
@@ -303,8 +322,8 @@ tested with Codex's input format; not yet tried in a live Codex session.)
 Before relying on it, see what it would have done:
 
 ```sh
-npx soz-guard replay main~50..main          # each commit with its verdict
-npx soz-guard replay main~50..main --json   # the same, for counting
+soz-guard replay main~50..main          # each commit with its verdict
+soz-guard replay main~50..main --json   # the same, for counting
 ```
 
 Take commits where an agent said "done" and something turned out missing, and commits that were
@@ -357,11 +376,11 @@ A rule with the id of a built-in rule replaces it.
 ## By hand
 
 ```sh
-npx soz-guard check              # the verdict on what changed since HEAD, checks run; exit 1 unless finished
-npx soz-guard check --json
-npx soz-guard scan               # the static rules only
-npx soz-guard log                # the last verdicts, hook decisions and acceptances
-npx soz-guard log --verify       # whether the log's chain is intact
+soz-guard check              # the verdict on what changed since HEAD, checks run; exit 1 unless finished
+soz-guard check --json
+soz-guard scan               # the static rules only
+soz-guard log                # the last verdicts, hook decisions and acceptances
+soz-guard log --verify       # whether the log's chain is intact
 ```
 
 ## What it is not

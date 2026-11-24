@@ -11,6 +11,8 @@
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { type CriteriaChange } from "./criteria.ts";
 
 export const MARK = "<!-- soz-guard -->";
@@ -57,26 +59,44 @@ export function guardState(read: (file: string) => string | null): GuardState {
   return state;
 }
 
-/** soz-guard's own hook command, as init writes it: a Node, by full path, running soz-guard's cli by full path. */
-const OWN_COMMAND = /^\s*"?[^"]*?node(?:\.exe)?"?\s+(?:--[\w=-]+\s+)*"([^"]+[\\/]cli\.(?:ts|js))"\s+(hook|session-start|track)\s*$/i;
+/** soz-guard's own hook command, as init writes it: a Node (whatever its name: node, node.exe, nodejs), by full
+ * path, running soz-guard's cli by full path. */
+const OWN_COMMAND = /^\s*(?:"[^"]+"|\S+)\s+(?:--[\w=-]+\s+)*"([^"]+[\\/]cli\.(?:ts|js))"\s+(hook|session-start|track)\s*$/i;
+
+/** The script and subcommand of a command as init writes it (machine paths), or null for any other command,
+ * such as a portable "npx soz-guard hook". */
+export function machineCommand(command: string): { script: string; sub: string } | null {
+  const m = OWN_COMMAND.exec(command);
+  return m ? { script: m[1], sub: m[2] } : null;
+}
+
+const norm = (p: string) => { const r = resolve(p).replace(/\\/g, "/"); return process.platform === "win32" ? r.toLowerCase() : r; };
+/** This soz-guard's package folder (src/ or dist/ one level down). */
+const ownPackage = norm(dirname(dirname(fileURLToPath(import.meta.url))));
+
+/** Whether SCRIPT is this soz-guard's own cli (from its source or its build): not merely some cli.js. */
+export function isThisSozGuard(script: string): boolean {
+  return existsSync(script) && norm(dirname(dirname(script))) === ownPackage;
+}
 
 /** soz-guard's own commands with a path outside the repository become "soz-guard <sub>": where Node and
  * soz-guard live differs from one machine to the next, and running init on another machine, or after moving
  * them, is not a change to what counts as finished. A command whose script is inside the repository stays as
  * it is: that script is part of the change, and could be anything. With EXISTS, so does one whose script is
- * not on this machine: pointing soz-guard's hook at nothing switches it off as surely as removing it. */
+ * not this very soz-guard: pointing the hook at nothing, or at some other cli.js, switches it off as surely
+ * as removing it. */
 export function canonicalCommand(command: string, root?: string, exists = false): string {
-  const m = OWN_COMMAND.exec(command);
+  const m = machineCommand(command);
   if (!m) return command;
-  const script = m[1].replace(/\\/g, "/");
+  const script = m.script.replace(/\\/g, "/");
   if (!/^([A-Za-z]:)?\//.test(script)) return command;                    // relative: inside the repository
-  if (exists && !existsSync(m[1])) return command;
+  if (exists && !isThisSozGuard(m.script)) return command;
   if (root) {
     const r = root.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
     const inside = process.platform === "win32" ? script.toLowerCase().startsWith(r.toLowerCase()) : script.startsWith(r);
     if (inside) return command;
   }
-  return `soz-guard ${m[2]}`;
+  return `soz-guard ${m.sub}`;
 }
 
 /** A settings state with soz-guard's own commands made canonical (see canonicalCommand). */

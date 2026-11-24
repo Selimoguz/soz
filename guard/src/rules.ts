@@ -102,6 +102,8 @@ export const defaultExclude = [
   "**/*.md", "**/*.txt", "**/*.log", "**/*.csv",
   "**/*.lock", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
   "**/node_modules/**", "**/dist/**", "**/build/**", "**/.git/**", "**/*.min.js", "**/*.map",
+  // what builds and test runs leave behind: not the project's code, and not a change in a CI checkout
+  "**/coverage/**", "**/.nyc_output/**", "**/__pycache__/**", "**/*.pyc", "**/.pytest_cache/**",
 ];
 
 export const IGNORE_MARK = /soz-guard:\s*ignore\b/i;

@@ -18,6 +18,7 @@ declare module "node:path" {
   export function dirname(path: string): string;
   export function isAbsolute(path: string): boolean;
   export function basename(path: string): string;
+  export function resolve(...parts: string[]): string;
 }
 
 declare module "node:os" {
