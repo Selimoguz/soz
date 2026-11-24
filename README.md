@@ -215,7 +215,7 @@ whatever it is told, which is the point:
 ```json
 {
   "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"]}},
-  "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"], "model_allowed": ["note"]}},
+  "operations": {"erp.add_order_line": {"key": ["order_id", "line_id"], "model_allowed": ["note"]}},
   "approval": "auto"
 }
 ```

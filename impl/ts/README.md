@@ -24,8 +24,9 @@ const operations = operationsFromJson(parseJson(`[
   {"name": "erp.find_customer", "effect": "read", "params": {"name": {"type": "text"}},
    "returns": {"type": "record", "fields": {"code": {"type": "text"}, "balance": {"type": "number"},
                                             "limit": {"type": "number"}}}},
-  {"name": "erp.add_order_line", "effect": "write", "key": ["customer", "product", "quantity"],
-   "params": {"customer": {"type": "text"}, "product": {"type": "text"}, "quantity": {"type": "number"}}}
+  {"name": "erp.add_order_line", "effect": "write", "key": ["order_id", "line_id"],
+   "params": {"order_id": {"type": "text"}, "line_id": {"type": "number"},
+              "customer": {"type": "text"}, "product": {"type": "text"}, "quantity": {"type": "number"}}}
 ]`));
 
 const implementations = new Map([
@@ -62,10 +63,11 @@ const findCustomer = defineOperation({
 const addLine = defineOperation({
   name: "erp.add_order_line",
   effect: "write",
-  params: { customer: t.text(), product: t.text(), quantity: t.number(),
+  params: { order_id: t.text(), line_id: t.number(), customer: t.text(), product: t.text(), quantity: t.number(),
             note: t.text().optional().modelAllowed() },
-  key: ["customer", "product", "quantity"],
-  run: async ({ customer, product, quantity, note }) => erp.orders.addLine(customer, product, quantity, note),
+  key: ["order_id", "line_id"],   // the order number names the line; the goods do not (SPEC 6)
+  run: async ({ order_id, line_id, customer, product, quantity, note }) =>
+    erp.orders.addLine(order_id, line_id, customer, product, quantity, note),
 });
 
 const { operations, implementations } = defineOperations(findCustomer, addLine);

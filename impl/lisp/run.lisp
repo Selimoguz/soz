@@ -503,7 +503,9 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
              (when (find key (rest *steps*) :key #'step-key :test #'string=)
                (problem "duplicate-step" "step ~d (~a) is the same as an earlier step: same operation, same key ~a"
                         index (op-name op) key))
-             (when (journal-conflict-p done args-json) (problem "key-conflict" "~a" (conflict-text index op key done args-json)))
+             (when (journal-conflict-p done args-json)   ; neither new nor done
+               (setf (step-already-done st) nil)
+               (problem "key-conflict" "~a" (conflict-text index op key done args-json)))
              (make-pending :step index))
             (:execute
              (let ((p (find index *previewed* :key #'step-index)))

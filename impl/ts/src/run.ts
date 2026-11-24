@@ -471,7 +471,7 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
     if (denials.length) problem("policy-denied", `step ${index}: ${denialText(op, denials)}`);
     if (c.steps.slice(0, -1).some(s => s.key === key))
       problem("duplicate-step", `step ${index} (${op.name}) is the same as an earlier step: same operation, same key ${key}`);
-    if (conflicts(done)) problem("key-conflict", conflictText(done!));
+    if (conflicts(done)) { st.alreadyDone = false; problem("key-conflict", conflictText(done!)); }   // neither new nor done
     return new Pending(index);
   }
 

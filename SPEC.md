@@ -607,7 +607,7 @@ gateway where the agent has no shell.
 ```json
 {
   "servers": {"erp": {"command": "sbcl", "args": ["--script", "fake-erp.lisp"], "env": {}}},
-  "operations": {"erp.add_order_line": {"key": ["customer", "product", "quantity"],
+  "operations": {"erp.add_order_line": {"key": ["order_id", "line_id"],
                                         "model_allowed": ["note"]}},
   "approval": "auto",
   "expose_reads": true,
