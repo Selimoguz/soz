@@ -262,8 +262,11 @@ async function accept(args: string[]): Promise<number> {
   if (!criteria.length) { process.stdout.write("Nothing to accept: the last verdict found no change to what counts as finished.\n"); return 0; }
   process.stdout.write(`The last verdict (${last!.at}) stopped on these changes to what counts as finished:\n${criteria.map(c => `  ${c.file}  [${c.kind}] ${c.detail}`).join("\n")}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise<string>(res => rl.question("Accept them? Type yes: ", a => { rl.close(); res(a); }));
-  if (answer.trim().toLowerCase() !== "yes") { process.stdout.write("Not accepted.\n"); return 1; }
+  const answer = await new Promise<string>(res => rl.question("Accept them? Type the whole word yes: ", a => { rl.close(); res(a); }));
+  if (answer.trim().toLowerCase() !== "yes") {
+    process.stdout.write(`Not accepted: only the whole word "yes" accepts${answer.trim() ? ` (you typed "${answer.trim()}")` : ""}. Run it again to accept.\n`);
+    return 1;
+  }
   writeOwn(root, "accepted.json", { criteria: criteriaFingerprint(criteria as never), reason, at: new Date().toISOString() });
   appendLog(root, { event: "accept", reason, criteria: criteria.map(c => `${c.file} ${c.kind}`), fingerprint: criteriaFingerprint(criteria as never) });
   process.stdout.write("Accepted, for exactly these changes; any further change to the tests or rules needs accepting again.\n");

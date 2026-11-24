@@ -173,6 +173,7 @@ much as the tests do. A change to them is a criteria change (`guard`) that a per
 | soz-guard's section in `CLAUDE.md` or `AGENTS.md` rewritten or removed | `open` |
 | a permission granted (Claude Code writes it to `settings.local.json`), any other part of `CLAUDE.md` | fine |
 | soz-guard's section added where there was none | fine |
+| hooks added to a file that held none (a new `.codex/hooks.json`, say), unless they switch hooks off | fine |
 
 `settings.local.json` is usually ignored by git, so within a session these are compared with what the
 files held when the session started, not with the diff. Every verdict, every decision of the hook and

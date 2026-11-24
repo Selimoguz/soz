@@ -104,6 +104,13 @@ write("CLAUDE.md", "# Project\n\nUse tabs.\n\n" + claudeText.replace("Finished m
 event("hook", "g1");
 check("soz-guard's section in CLAUDE.md rewritten: open", last().criteria.some(c => c.file === "CLAUDE.md" && c.kind === "guard"));
 write("CLAUDE.md", claudeText);
+write(".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "node soz-guard/cli.ts hook" }] }] } }, null, 2));
+event("hook", "g1");
+check("hooks added where there were none (a new .codex/hooks.json): fine", !last().criteria.some(c => c.file === ".codex/hooks.json"), JSON.stringify(last().criteria));
+write(".codex/config.toml", "[features]\nhooks = false\n");
+event("hook", "g1");
+check("... but hooks switched off in a new .codex/config.toml: open", last().criteria.some(c => c.file === ".codex/config.toml" && c.kind === "guard"));
+rmSync(join(repo, ".codex"), { recursive: true, force: true });
 const noSection = run(["check", "--no-checks"]);   // without a session: against HEAD in git
 check("without a session, the same is checked against HEAD", noSection.status === 0);
 

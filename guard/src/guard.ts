@@ -67,8 +67,12 @@ export function guardChanges(before: GuardState, after: GuardState): CriteriaCha
     // soz-guard's section added where there was none only adds rules; changing or removing one is the risk
     if (INSTRUCTIONS.includes(f) && (a === null || a === undefined)) continue;
     const settings = SETTINGS.includes(f) || f === CODEX_TOML;
+    const switchedOff = !!b && (b.includes('"disableAllHooks":true') || /hooks\s*=\s*false/.test(b));
+    // likewise hooks added where there were none: nothing of soz-guard's was there to lose, unless the new
+    // file switches hooks off
+    if (settings && none(a) && !switchedOff) continue;
     const detail = settings
-      ? (b && (b.includes('"disableAllHooks":true') || /hooks\s*=\s*false/.test(b)) ? `all hooks were switched off in ${f} (disableAllHooks)` : `the hooks in ${f} were changed: soz-guard's own may be gone`)
+      ? (switchedOff ? `all hooks were switched off in ${f} (disableAllHooks)` : `the hooks in ${f} were changed: soz-guard's own may be gone`)
       : (b === null ? `soz-guard's section in ${f} was removed` : `soz-guard's section in ${f} was changed`);
     out.push({ file: f, kind: "guard", detail, evidence: sha256(`${f}\n${b ?? "absent"}`) });
   }
