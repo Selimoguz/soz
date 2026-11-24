@@ -541,9 +541,12 @@ Every tool of every configured server becomes the operation `SERVER.TOOL`:
 The configuration may override, per operation, `effect`, `returns`, `key`, `label` and
 `model_allowed` (a list of parameter names).
 
-A tool call that returns `isError` is **failed**; a server that does not answer in time gives
-**unknown**. The value of a result is its `structuredContent`, else its text content parsed as JSON,
-else the text.
+A tool call that returns `isError`, or a JSON-RPC error, reached the server. For a `read` operation it
+is **failed**. For a side-effect operation it is **unknown**: the server may have done the work and
+failed after it (the order saved, then its document could not be produced), so the claim is kept
+and the step becomes `unresolved` for a person to resolve (section 10.8), never run a second time
+on its own. A server that does not answer in time gives **unknown**. The value of a result is its
+`structuredContent`, else its text content parsed as JSON, else the text.
 
 ### 11.2 Tools the gateway offers
 
@@ -628,8 +631,8 @@ request):
 - A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
   when the request certainly did not reach the server: the connection was refused, the host was not
   found, its certificate was not trusted, or it answered 4xx other than that 404. A timeout, a
-  broken connection after sending, a 5xx or a lost session during a write makes the outcome
-  **unknown**: the operation may have happened.
+  broken connection after sending, a 5xx, a lost session or a tool error (section 11.1) during a
+  write makes the outcome **unknown**: the operation may have happened.
 - A server that cannot be reached or initialized at start is left out, with a message on standard
   error; the gateway runs with the others.
 

@@ -38,6 +38,9 @@ function call(name: string, args: Obj) {
   if (name === "cancel_order") return text(JSON.stringify({ cancelled: args.order }));
   if (name === "add_order_line") {
     orders.push({ customer: args.customer, product: args.product, quantity: args.quantity });
+    // An ERP that saves the line and then fails at something after it: the tool error does not
+    // mean the write did not happen.
+    if (args.product === "lemons") return text("order line saved, but its delivery note could not be printed", true);
     return text(JSON.stringify({ line: orders.length }));
   }
   return text("unknown tool", true);

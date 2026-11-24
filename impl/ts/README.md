@@ -213,8 +213,9 @@ Only `https`, unless the server is on this machine or `"allow_http": true` is gi
 from the environment variable, not the file. The gateway keeps the session the server gives, starts a
 new one when the server forgot it, and reads answers sent as JSON or as server-sent events. What
 matters for writes: a call fails (and may run again) only when the request certainly did not reach the
-server (refused, no such host, an untrusted certificate, 4xx); a timeout or 5xx leaves it unknown, so
-the step is `unresolved` until a person checks. The Lisp gateway has no TLS without dependencies, so
+server (refused, no such host, an untrusted certificate, 4xx); a timeout, a 5xx or a tool error from
+a write (the server may have saved the order and then failed) leaves it unknown, so the step is
+`unresolved` until a person checks. The Lisp gateway has no TLS without dependencies, so
 it starts stdio servers only.
 
 ### Another person's approval

@@ -105,6 +105,19 @@ console.log("\nGateway with elicitation");
   check("the same plan again orders nothing twice", text(again).includes("already done") && text(r4).includes("1 already_done, 2 already_done") && await orders(c) === 2);
   check("an unknown preview_id is refused", (await c.call("soz_execute", { preview_id: "0123456789abcdef" })).isError);
 
+  // The ERP saves the line, then reports an error (it could not print the delivery note).
+  const LEMONS = "Yilmaz Market: 3 crates of lemons, please.";
+  const lemons = `(plan "Lemons" (let ((c (erp.find_customer name "Yilmaz Market"))) (erp.add_order_line customer (get c code) product "lemons" quantity 3)))`;
+  const lemonLines = async () => (JSON.parse(text(await c.call("erp_list_orders"))) as Obj[]).filter(o => o.product === "lemons").length;
+  const runLemons = async () => text(await c.call("soz_execute", { preview_id: previewId(await c.call("soz_preview", { plan: lemons, message: LEMONS })) }));
+  const l1 = await runLemons();
+  check("a tool error after the write reached the ERP: the outcome is unknown, not failed", l1.includes("Outcome: unknown") && await lemonLines() === 1);
+  const l2 = await runLemons();
+  check("the same request again is not run again: unresolved, and the ERP has exactly one line", l2.includes("Outcome: unresolved") && await lemonLines() === 1);
+  const nobody = await c.call("soz_preview", { plan: '(plan "x" (let ((c (erp.find_customer name "Nobody Ltd"))) (erp.add_order_line customer (get c code) product "lemons" quantity 3)))',
+                                               message: "Nobody Ltd: 3 crates of lemons" });
+  check("a read that reports an error still fails, as before", nobody.isError && text(nobody).includes("erp.find_customer failed: no such customer"));
+
   const resources = ((await c.request("resources/list")).resources as Obj[]).map(r => r.uri);
   check("resources: guide, operations, policy", ["soz://guide", "soz://operations", "soz://policy"].every(u => resources.includes(u)));
   const ops = JSON.parse((await c.request("resources/read", { uri: "soz://operations" })).contents[0].text) as Obj[];

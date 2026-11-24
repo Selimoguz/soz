@@ -161,7 +161,7 @@ Ali's approval alone pays nothing; Ali and Ayşe from finance together pay once.
 - **Idempotency keys** come from business data (the parameters an operation names as its key), are
   kept in a journal, and make a step that was already done a no-op: a retry, a double click or a
   message the model copied twice does not order twice.
-- **Unknown outcomes** (a timeout) stop the plan, are recorded, and are never retried by themselves.
+- **Unknown outcomes** (a timeout, or a write whose tool reports an error: it may have written first) stop the plan, are recorded, and are never retried by themselves.
 - **Audit record**: preview, approval, every call and the outcome, one JSON line each, chained by
   SHA-256.
 

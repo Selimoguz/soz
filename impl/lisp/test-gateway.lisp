@@ -133,6 +133,24 @@
            (and (search "1 already_done, 2 already_done" (text-of r2))
                 (= 2 (length (json:json-oku (text-of (call c "erp_list_orders" (json:json-nesne)))))))))
   (check "an unknown preview_id is refused" (error-p (call c "soz_execute" (json:json-nesne "preview_id" "0123456789abcdef"))))
+  ;; The ERP saves the line, then reports an error (it could not print the delivery note).
+  (flet ((run-lemons ()
+           (let ((r (call c "soz_preview" (json:json-nesne "plan" "(plan \"Lemons\" (let ((c (erp.find_customer name \"Yilmaz Market\"))) (erp.add_order_line customer (get c code) product \"lemons\" quantity 3)))"
+                                                           "message" "Yilmaz Market: 3 crates of lemons, please."))))
+             (text-of (call c "soz_execute" (json:json-nesne "preview_id" (preview-id r))
+                            :on-elicit (lambda (m) (declare (ignore m)) :accept-yes)))))
+         (lemon-lines ()
+           (count "lemons" (json:json-oku (text-of (call c "erp_list_orders" (json:json-nesne))))
+                  :key (lambda (o) (gethash "product" o)) :test #'equal)))
+    (let ((r1 (run-lemons)))
+      (check "a tool error after the write reached the ERP: the outcome is unknown, not failed"
+             (and (search "Outcome: unknown" r1) (= 1 (lemon-lines)))))
+    (let ((r2 (run-lemons)))
+      (check "the same request again is not run again: unresolved, and the ERP has exactly one line"
+             (and (search "Outcome: unresolved" r2) (= 1 (lemon-lines))))))
+  (let ((r (call c "soz_preview" (json:json-nesne "plan" "(plan \"x\" (let ((c (erp.find_customer name \"Nobody Ltd\"))) (erp.add_order_line customer (get c code) product \"lemons\" quantity 3)))"
+                                                  "message" "Nobody Ltd: 3 crates of lemons"))))
+    (check "a read that reports an error still fails, as before" (and (error-p r) (search "erp.find_customer failed: no such customer" (text-of r)))))
   (close-client c))
 
 (load (merge-pathnames "soz.lisp" *here*))

@@ -41,7 +41,11 @@
          (push (json:json-nesne "customer" (gethash "customer" args) "product" (gethash "product" args)
                                 "quantity" (gethash "quantity" args))
                *orders*)
-         (text (format nil "{\"line\": ~d}" (length *orders*))))
+         ;; It saves the line and then fails at something after it: the tool error does not mean
+         ;; the write did not happen.
+         (if (equal (gethash "product" args) "lemons")
+             (text "order line saved, but its delivery note could not be printed" t)
+             (text (format nil "{\"line\": ~d}" (length *orders*)))))
         (t (text "unknown tool" t))))
 
 (loop for line = (read-line *standard-input* nil)
