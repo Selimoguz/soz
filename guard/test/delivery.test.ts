@@ -247,6 +247,50 @@ const f2 = spawnSync("git", ["push", "origin", "HEAD:main"], { cwd: dev2, encodi
 check("a person let it in, with a reason, in the gate's log", f2.status === 0
       && run(server2, ["gate", "log"]).stdout.includes("main") && f2.stderr.includes("the repository's first commit"), f2.stderr);
 
+console.log("\nRegression: a package is released only once git has moved the branch");
+gate(["install", "--branches", "main,prod", "--no-require-task", "--build", "node build.js"]);
+back();
+const released = (c: string) => existsSync(gateFile("packages", "released", `${c}.json`));
+const mainBefore = serverMain();
+write("site/index.html", "<h1>Home</h1><p>for both</p>\n");
+const good = commit("for main");
+write("build.js", `process.stderr.write("broken build\\n"); process.exit(1);\n`);
+const bad = commit("for prod, does not build");
+const both = push("origin", `${good}:refs/heads/main`, `${bad}:refs/heads/prod`);
+check("one push to two protected branches, prod turned down: the whole push is refused",
+      both.status !== 0 && serverMain() === mainBefore && both.stderr.includes("could not be built"), both.stderr);
+check("... and main's package, which pre-receive let in, is not released: nothing went in",
+      !released(good) && gate(["package", good.slice(0, 12)]).stderr.includes("No push let a package"), JSON.stringify(gate(["package", good.slice(0, 12)])));
+const lone = push("origin", `${good}:refs/heads/main`);
+check("the same commit pushed to main alone goes in, and is released then",
+      lone.status === 0 && serverMain() === good && released(good) && lone.stderr.includes("package released"), lone.stderr);
+const rel = JSON.parse(readFileSync(gateFile("packages", "released", `${good}.json`), "utf8")) as { digest: string; ref: string };
+check("... with the digest of the package pre-receive judged, not a new build", rel.digest === report(good).package!.digest && rel.ref === "refs/heads/main"
+      && (lone.stderr.match(/could not be built|Package out: sha256/g) ?? []).length === 1, JSON.stringify(rel) + lone.stderr);
+g("reset", "-q", "--hard", good);
+
+const preHook = join(server, "hooks", "pre-receive");
+const gateHook = readFileSync(preHook, "utf8");
+const gateLine = gateHook.split("\n").find(l => l.startsWith("exec "))!.slice(5);
+writeFileSync(preHook, `#!/bin/sh\n${gateLine} || exit 1\necho "policy: pushes are closed today" >&2\nexit 1\n`);
+write("site/index.html", "<h1>Home</h1><p>closed today</p>\n");
+const later = commit("after the gate, another check says no");
+const closed = push("origin", "HEAD:main");
+check("the gate lets it in, a check of the owner's after it refuses: not released",
+      closed.status !== 0 && serverMain() === good && closed.stderr.includes("pushes are closed today") && !released(later), closed.stderr);
+writeFileSync(preHook, gateHook);
+
+const postHook = join(server, "hooks", "post-receive");
+const postText = readFileSync(postHook, "utf8");
+rmSync(postHook);
+const noPost = push("origin", "HEAD:main");
+check("without the post-receive hook: let in, nothing released, and the person is told how to set it up",
+      noPost.status === 0 && serverMain() === later && !released(later)
+      && noPost.stderr.includes("post-receive hook is not installed") && noPost.stderr.includes("soz-guard gate install"), noPost.stderr);
+writeFileSync(postHook, postText);
+const reinstall = gate(["install"]);
+check("install sets up both hooks", reinstall.stdout.includes("pre-receive: installed") && reinstall.stdout.includes("post-receive: installed"), reinstall.stdout);
+
 rmSync(top, { recursive: true, force: true });
 console.log(`\n${failed ? `${failed} FAILED` : "All soz-guard delivery tests passed"}`);
 process.exit(failed ? 1 : 0);

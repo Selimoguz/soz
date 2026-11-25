@@ -4,8 +4,10 @@
 // developers (and their agents) cannot write as.
 //
 //   soz-guard gate install [--branches main,production] [--setup "npm ci"] [--timeout SECONDS]
-//                                   in the repository on the server: the pre-receive hook and the gate's config
-//   soz-guard gate pre-receive      the hook itself (git gives it the pushed refs on stdin)
+//                                   in the repository on the server: the pre-receive and post-receive hooks and the
+//                                   gate's config
+//   soz-guard gate pre-receive      the hook that judges (git gives it the pushed refs on stdin)
+//   soz-guard gate post-receive     the hook that releases: only refs git has really moved
 //   soz-guard gate check REV [--base REF]   the same verdict on any commit, by hand (an integrator's review)
 //   soz-guard gate approve REV "<why>"      a person accepts the changes to the tests or rules in REV
 //   soz-guard gate log [--last N] [--verify]   every verdict the gate gave, chained
@@ -232,8 +234,14 @@ export function tasksNamed(messages: string): string[] {
 /** A package's files and manifest, under its digest: a digest names its files, so a stored package is never
  * rewritten, whoever judges the same commit again. */
 const storeDir = (gitDir: string, digest: string) => join(gateDir(gitDir), "packages", "sha256", digest);
-/** Which package a push let into a protected branch, per commit: written once, by the pre-receive hook only. */
+/** Which package a push let into a protected branch, per commit: written once, by the post-receive hook only,
+ * once git has moved the branch. */
 const releasePath = (gitDir: string, commit: string) => join(gateDir(gitDir), "packages", "released", `${commit}.json`);
+/** What pre-receive let in, for post-receive to release if git then moves that branch to that commit. A push
+ * pre-receive lets in can still be refused afterwards (another ref of the same push turned down, another hook,
+ * a ref that cannot be locked), so nothing is released before git says the branch moved. */
+const pendingPath = (gitDir: string, commit: string, ref: string) =>
+  join(gateDir(gitDir), "packages", "pending", `${commit}-${ref.replace(/[^\w.-]/g, "_")}.json`);
 type StoredPackage = PackageInfo & { path: string; at: string; manifest: Manifest; kept: boolean };
 type Release = { commit: string; ref: string; digest: string; at: string; by: string };
 
@@ -247,17 +255,17 @@ function storePackage(gitDir: string, from: string, manifest: Manifest, info: Pa
   writeFileSync(join(dir, "package.json"), JSON.stringify(stored, null, 2) + "\n");
 }
 
-/** A push let REPORT's commit into a protected branch with its package: that package is the commit's release.
- * The first release of a commit stands. The files of the newest KEEP releases are kept, the manifests of all. */
-function releasePackage(gitDir: string, report: Report, keep: number) {
-  if (!report.package || existsSync(releasePath(gitDir, report.commit))) return;
-  const by = process.env.GL_USERNAME || process.env.GITEA_PUSHER_NAME || userInfo().username;
-  const r: Release = { commit: report.commit, ref: report.ref, digest: report.package.digest, at: new Date().toISOString(), by };
-  mkdirSync(dirname(releasePath(gitDir, report.commit)), { recursive: true });
-  writeFileSync(releasePath(gitDir, report.commit), JSON.stringify(r, null, 2) + "\n");
-  appendLog(gitDir, { event: "package-release", commit: r.commit, ref: r.ref, package: r.digest, by });
-  const releases = readdirSync(dirname(releasePath(gitDir, report.commit)))
-    .map(f => readJson<Release>(join(dirname(releasePath(gitDir, report.commit)), f)))
+/** A push moved a protected branch to PENDING's commit, with the package pre-receive judged: that package is the
+ * commit's release. The first release of a commit stands. The files of the newest KEEP releases are kept, the
+ * manifests of all. Returns false when the commit was already released. */
+function releasePackage(gitDir: string, pending: Release, keep: number): boolean {
+  if (existsSync(releasePath(gitDir, pending.commit))) return false;
+  const r: Release = { ...pending, at: new Date().toISOString() };
+  mkdirSync(dirname(releasePath(gitDir, r.commit)), { recursive: true });
+  writeFileSync(releasePath(gitDir, r.commit), JSON.stringify(r, null, 2) + "\n");
+  appendLog(gitDir, { event: "package-release", commit: r.commit, ref: r.ref, package: r.digest, by: r.by });
+  const releases = readdirSync(dirname(releasePath(gitDir, r.commit)))
+    .map(f => readJson<Release>(join(dirname(releasePath(gitDir, r.commit)), f)))
     .filter((x): x is Release => !!x && typeof x.at === "string")
     .sort((a, b) => b.at.localeCompare(a.at));
   const wanted = new Set(releases.slice(0, Math.max(1, keep)).map(x => x.digest));
@@ -267,6 +275,7 @@ function releasePackage(gitDir: string, report: Report, keep: number) {
     rmSync(join(storeDir(gitDir, digest), "files"), { recursive: true, force: true });
     writeFileSync(join(storeDir(gitDir, digest), "package.json"), JSON.stringify({ ...stored, kept: false }, null, 2) + "\n");
   }
+  return true;
 }
 
 /** Keeps the report (the last one per commit) and appends the verdict to the gate's chained log. */
@@ -301,8 +310,7 @@ function reportText(r: Report, gitDir: string, released = false): string {
   for (const t of r.tasks ?? []) lines.push(taskReport(t) + taskHints(t, gitDir, r.commit));
   if (noTaskWay) lines.push(noTaskWay);
   if (r.package) lines.push(`Package ${r.package.path}: sha256 ${r.package.digest.slice(0, 16)} (${r.package.files} file${r.package.files === 1 ? "" : "s"}), the build the checks and task tests were given.`
-      + (released ? `\n  Deploy these same files:  soz-guard gate package ${r.commit.slice(0, 12)} --to <an empty folder>\n`
-        + `  Check a live copy:        soz-guard gate package ${r.commit.slice(0, 12)} --verify <the live folder or file>` : ""));
+      + (released ? "\n  It is released once git has taken the whole push; the gate says so after it." : ""));
   if (r.noTask && r.approved) lines.push(`Let in without a task by a person: ${r.approved}`);
   else if (r.approved) lines.push(`The changes to the tests or rules were approved by a person: ${r.approved}`);
   else if (!passed(r.state) && v.criteria.length && !v.findings.length && !v.checks.some(c => c.status === "failed"))
@@ -323,18 +331,45 @@ function taskHints(t: TaskEvaluation, gitDir: string, commit: string): string {
   return out.length ? `\n  A person, on the server:\n${out.map(o => "    " + o).join("\n")}` : "";
 }
 
+/** The hook file NAME in the server repository's hooks folder. */
+function hookFile(gitDir: string, name: string): string {
+  const hooksDir = git(gitDir, ["rev-parse", "--git-path", "hooks"]);
+  return join(isAbsolute(hooksDir) ? hooksDir : join(gitDir, hooksDir), name);
+}
+/** Whether the hook NAME runs the gate (it may be a hook of the owner's own that calls it). */
+function hookRunsGate(gitDir: string, name: string): boolean {
+  const f = hookFile(gitDir, name);
+  return existsSync(f) && runsGate(readFileSync(f, "utf8"), name);
+}
+/** Whether a hook's text runs soz-guard's gate NAME: the line install writes runs this Node and cli.js by path
+ * ("... cli.js gate post-receive"), one written by hand may call "soz-guard gate post-receive". */
+function runsGate(text: string, name: string): boolean {
+  return text.includes("soz-guard") && text.split("\n").some(l => !l.trim().startsWith("#") && l.includes(` gate ${name}`));
+}
+
+/** The refs of a push, one line "old new ref" each, from standard input. */
+function pushedRefs(): { oldRev: string; newRev: string; ref: string }[] {
+  let input = "";
+  try { input = readFileSync(0, "utf8"); } catch { input = ""; }     // no refs given: nothing to do
+  return input.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+    const [oldRev, newRev, ref] = l.split(/\s+/);
+    return { oldRev, newRev, ref };
+  }).filter(r => !!r.ref);
+}
+
 /** The pre-receive hook: every pushed ref, one line "old new ref" each. A protected branch moves only to a
- * finished commit; other refs are not judged here. */
+ * finished commit; other refs are not judged here. A package is not released here: git may still refuse the
+ * push after this hook, so the post-receive hook releases it once the branch has moved. */
 export function preReceive(): number {
   const gitDir = gitDirOf(process.cwd());
   const config = readConfig(gitDir);
-  let input = "";
-  try { input = readFileSync(0, "utf8"); } catch { input = ""; }     // no refs given: nothing to judge
   let rejected = false;
-  for (const line of input.split("\n").map(l => l.trim()).filter(Boolean)) {
-    const [oldRev, newRev, ref] = line.split(/\s+/);
+  const releases = !config.package || hookRunsGate(gitDir, "post-receive");
+  for (const { oldRev, newRev, ref } of pushedRefs()) {
     const branch = ref.replace(/^refs\/heads\//, "");
     if (!ref.startsWith("refs/heads/") || !config.branches.includes(branch)) continue;
+    // what an earlier push of this commit to this branch left, refused after pre-receive, is never released
+    rmSync(pendingPath(gitDir, newRev, ref), { force: true });
     if (ZERO.test(newRev)) {
       process.stderr.write(`soz-guard gate: ${branch} is protected and cannot be deleted by a push.\n`);
       rejected = true;
@@ -366,12 +401,50 @@ export function preReceive(): number {
     }
     const report = judge(gitDir, base, newRev, ref, config);
     record(gitDir, report, "pre-receive");
-    // only a push let in releases a package; a later check by hand of the same commit never replaces it
-    if (passed(report.state)) releasePackage(gitDir, report, config.keepPackages);
-    process.stderr.write(reportText(report, gitDir, passed(report.state)) + "\n");
+    // only a push let in releases a package, and only once git has moved the branch (post-receive); a later
+    // check by hand of the same commit never replaces it
+    const pending = passed(report.state) && !!report.package && releases;
+    if (pending) {
+      const p: Release = { commit: newRev, ref, digest: report.package!.digest, at: new Date().toISOString(),
+                           by: process.env.GL_USERNAME || process.env.GITEA_PUSHER_NAME || userInfo().username };
+      mkdirSync(dirname(pendingPath(gitDir, newRev, ref)), { recursive: true });
+      writeFileSync(pendingPath(gitDir, newRev, ref), JSON.stringify(p, null, 2) + "\n");
+    }
+    process.stderr.write(reportText(report, gitDir, pending) + "\n");
+    if (passed(report.state) && report.package && !releases)
+      process.stderr.write(`soz-guard gate: the post-receive hook is not installed, so no package is released to deploy. `
+        + `On the server: cd ${gitDir.replace(/\\/g, "/")} && soz-guard gate install\n`);
     if (!passed(report.state)) rejected = true;
   }
   return rejected ? 1 : 0;
+}
+
+/** The post-receive hook: git has taken the push and moved these refs. A protected branch moved to a commit
+ * pre-receive let in with a package releases that package. It never turns anything down (git has already
+ * moved the refs); a failure is said and logged. */
+export function postReceive(): number {
+  const gitDir = gitDirOf(process.cwd());
+  const config = readConfig(gitDir);
+  for (const { newRev, ref } of pushedRefs()) {
+    const branch = ref.replace(/^refs\/heads\//, "");
+    if (!ref.startsWith("refs/heads/") || !config.branches.includes(branch) || ZERO.test(newRev)) continue;
+    const at = pendingPath(gitDir, newRev, ref);
+    const pending = readJson<Release>(at);
+    if (!pending) continue;
+    try {
+      const fresh = releasePackage(gitDir, pending, config.keepPackages);
+      rmSync(at, { force: true });
+      process.stderr.write(`soz-guard gate: ${branch} ${newRev.slice(0, 10)}: `
+        + `${fresh ? "package released" : "already released by an earlier push; that release stands"} (sha256 ${pending.digest.slice(0, 16)}).\n`
+        + `  Deploy these same files:  soz-guard gate package ${newRev.slice(0, 12)} --to <an empty folder>\n`
+        + `  Check a live copy:        soz-guard gate package ${newRev.slice(0, 12)} --verify <the live folder or file>\n`);
+    } catch (e) {
+      const why = (e as Error).message;
+      process.stderr.write(`soz-guard gate: ${branch} ${newRev.slice(0, 10)} went in, but its package could not be recorded as released: ${why}\n`);
+      appendLog(gitDir, { event: "package-release-failed", commit: newRev, ref, package: pending.digest, error: why.slice(0, 500) });
+    }
+  }
+  return 0;
 }
 
 /** By hand: the verdict on REV (a branch an integrator reviews, say) against --base (the default branch). */
@@ -484,20 +557,25 @@ function install(args: string[]): number {
   if (config.build && !config.package) throw new Error("--build needs --package: where the build puts the package, relative to the repository");
   mkdirSync(gateDir(gitDir), { recursive: true });
   writeFileSync(configPath(gitDir), JSON.stringify(config, null, 2) + "\n");
-  const hooksDir = git(gitDir, ["rev-parse", "--git-path", "hooks"]);
-  const dir = isAbsolute(hooksDir) ? hooksDir : join(gitDir, hooksDir);
-  const hook = join(dir, "pre-receive");
-  const command = [process.execPath, ...nodeArgs, cli].map((p, k) => k === 0 || k === nodeArgs.length + 1 ? `"${p.replace(/\\/g, "/")}"` : p).join(" ") + " gate pre-receive";
+  const base = [process.execPath, ...nodeArgs, cli].map((p, k) => k === 0 || k === nodeArgs.length + 1 ? `"${p.replace(/\\/g, "/")}"` : p).join(" ");
   const notes = [`gate config: ${configPath(gitDir)} (protected: ${config.branches.join(", ")}${config.setup ? `; setup: ${config.setup}` : "; no setup command"})`,
                  ...(config.requireTask ? ["only the delivery of an approved task, complete on the pushed commit, goes in (--no-require-task to turn it off)"] : []),
                  ...(config.package ? [`package: ${config.package}${config.build ? `, built with: ${config.build}` : ""}; the packages of the last ${config.keepPackages} pushes let in are kept whole`] : [])];
-  if (existsSync(hook) && !readFileSync(hook, "utf8").includes("soz-guard gate")) {
-    notes.push(`pre-receive: there is one already, left as it is; to add the gate, put this line in ${hook}:\n      ${command} || exit 1`);
-  } else {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(hook, `#!/bin/sh\n# soz-guard gate: a push to a protected branch is let in only when the work is finished\nexec ${command}\n`);
-    try { chmodSync(hook, 0o755); } catch { notes.push("pre-receive: could not make it executable (chmod +x it)"); }
-    notes.push(`pre-receive: installed (${hook})`);
+  const hooks = [
+    ["pre-receive", "a push to a protected branch is let in only when the work is finished", " || exit 1"],
+    ["post-receive", "a package is released only once git has moved the protected branch", ""],
+  ] as const;
+  for (const [name, what, orExit] of hooks) {
+    const hook = hookFile(gitDir, name), command = `${base} gate ${name}`;
+    if (existsSync(hook) && !runsGate(readFileSync(hook, "utf8"), name)) {
+      notes.push(`${name}: there is one already, left as it is; to add the gate, put this line in ${hook}:\n      ${command}${orExit}`
+        + `\n    (it reads the pushed refs on standard input: if your hook reads them too, save them first and give the gate a copy)`);
+    } else {
+      mkdirSync(dirname(hook), { recursive: true });
+      writeFileSync(hook, `#!/bin/sh\n# soz-guard gate: ${what}\nexec ${command}\n`);
+      try { chmodSync(hook, 0o755); } catch { notes.push(`${name}: could not make it executable (chmod +x it)`); }
+      notes.push(`${name}: installed (${hook})`);
+    }
   }
   process.stdout.write(`soz-guard gate set up in ${gitDir}\n${notes.map(n => "  " + n).join("\n")}\n`
     + `  The gate holds only if the people who push cannot write here: run it as a user of its own.\n`);
@@ -706,6 +784,7 @@ function packageCommand(args: string[]): number {
 export async function gate(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
   if (sub === "pre-receive") return preReceive();
+  if (sub === "post-receive") return postReceive();
   if (sub === "check") return checkCommand(rest);
   if (sub === "approve") return approve(rest);
   if (sub === "log") return logCommand(rest);

@@ -221,7 +221,7 @@ exact version.)
 ## On the server: the gate in front of what goes live
 
 Where the repository lives on a server of your own (and a push to it is what goes live, or goes to the
-tests before it), the gate sits in that repository as a git `pre-receive` hook. A push to a protected
+tests before it), the gate sits in that repository as git's `pre-receive` and `post-receive` hooks. A push to a protected
 branch is let in only when soz-guard says the work is finished: the pushed commit is checked out in a
 folder of its own, the setup command installs what the checks need, and the checks run on exactly that
 commit. Otherwise git turns the push down and the pusher sees why. Other branches are let in as they are,
@@ -316,8 +316,12 @@ verdict, the task's evaluation and the gate's log, and a person's confirmation o
 package too: if the same commit builds into a different package, the item waits for the person again. A
 package that does not build is not let in.
 
-Only a push that a protected branch lets in releases a package, once per commit; `gate check` by hand
-judges a build but never replaces what was released. Packages are stored under their digest and never
+Only a push that a protected branch lets in releases a package, once per commit, and only after git has
+taken the whole push: `pre-receive` judges the package, `post-receive` releases that same package (the same
+digest, nothing built again) once the branch has really moved. A push git refuses after the gate let a branch
+in (another protected branch of the same push turned down, another hook saying no) releases nothing. Without
+the `post-receive` hook nothing is released, and the pusher is told to run `gate install` again. `gate check`
+by hand judges a build but never replaces what was released. Packages are stored under their digest and never
 rewritten. The newest 5 releases are kept whole (`--keep-packages N`), the manifests of all of them for good:
 
 ```sh

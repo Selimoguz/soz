@@ -27,7 +27,7 @@ alışıldıktan sonra kurulması önerilir.
 | Makine | `soz-guard` komutu (`npm install -g`) | Hayır |
 | Proje | `.soz-guard.json` (hangi testlerin geçmesi gerektiği), `CLAUDE.md` içine kısa bir kurallar bölümü, `.gitignore`'a iki satır | **Evet**, bir kez commit edilir |
 | Proje | `.claude/settings.local.json` (bu makinenin kancası), `.soz-guard/` (kararların kaydı) | Hayır |
-| Sunucu deposu (kapı) | `hooks/pre-receive`, depo klasöründe `.soz-guard/` (ayar, raporlar, kayıt) | Hayır |
+| Sunucu deposu (kapı) | `hooks/pre-receive` (karar verir), `hooks/post-receive` (paketi push kesinleşince yayına bağlar), depo klasöründe `.soz-guard/` (ayar, raporlar, kayıt) | Hayır |
 
 Arka planda çalışan bir servis yoktur, internete bağlanmaz, kodunuzu ya da git geçmişinizi değiştirmez.
 Yalnızca ajan durmak istediğinde (ve kapı kuruluysa push geldiğinde) çalışır.
@@ -161,7 +161,7 @@ Proje klasöründe (denendi: proje kurulumdan önceki hâline döner):
    içindeki `log.jsonl`'i saklayın.
 6. Değişikliği commit edin. Her makinede: `npm uninstall -g soz-guard`.
 
-Sunucuda: `hooks/pre-receive` dosyasını silin, depo klasöründeki `.soz-guard/` klasörünü silin (önce
+Sunucuda: `hooks/pre-receive` ve `hooks/post-receive` dosyalarını silin, depo klasöründeki `.soz-guard/` klasörünü silin (önce
 `log.jsonl`'i saklayın), `npm uninstall -g soz-guard`.
 
 ## Deneme süresince
