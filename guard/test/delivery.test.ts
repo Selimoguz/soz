@@ -179,6 +179,74 @@ const free = commit("hello");
 const p8 = push("origin", "HEAD:main");
 check("a push with no task goes in as before", p8.status === 0 && serverMain() === free, p8.stderr);
 
+console.log("\nRegression: a check by hand does not replace the package a push released");
+const releasedDigest = report(free).package!.digest;
+// a build that differs each time: the same commit, another package
+gate(["install", "--build", `node build.js && node -e "require('fs').writeFileSync('out/stamp.txt', String(Math.random()))"`]);
+const hand = gate(["check", free.slice(0, 12)]);
+check("the check by hand passes, on another build, and says it released nothing",
+      hand.status === 0 && report(free).package!.digest !== releasedDigest && hand.stdout.includes("nothing is released"), hand.stdout + hand.stderr);
+const after = gate(["package", free.slice(0, 12)]);
+check("gate package still gives the package the push released", after.status === 0 && after.stdout.includes(releasedDigest), after.stdout + after.stderr);
+const deployed = join(top, "deployed");
+gate(["package", free.slice(0, 12), "--to", deployed]);
+check("... and --to copies those files, not the later build's", !existsSync(join(deployed, "stamp.txt"))
+      && run(deployed, ["digest", "."]).stdout.includes(releasedDigest));
+check("a commit no push let in has no package to deploy, only a verdict", (() => {
+  write("site/index.html", "<h1>Home</h1><p>draft</p>\n");
+  const draft = commit("draft");
+  push("-q", "origin", "HEAD:refs/heads/draft");
+  const c = gate(["check", draft.slice(0, 12)]);
+  const p = gate(["package", draft.slice(0, 12)]);
+  g("reset", "-q", "--hard", "HEAD~1");
+  return c.status === 0 && p.status !== 0 && p.stderr.includes("No push let a package");
+})());
+
+console.log("\nRegression: a person's confirmation is for the package they looked at");
+gate(["install", "--require-task", "--build", "node build.js"]);
+write("acceptance/T2.json", JSON.stringify({ task: "T2", title: "The report reads right", items: [
+  { id: "P1", text: "The accountant reads the monthly report and finds it right", proof: "person" }] }, null, 2));
+const t2 = commit("T2: a person looks at the report");
+push("-q", "origin", "HEAD:refs/heads/t2");
+personApproves("T2");
+const q1 = push("origin", "HEAD:main");
+const evalT2 = () => JSON.parse(readFileSync(gateFile("tasks", "T2", `${t2}.json`), "utf8")) as { package?: string; items: { state: string; detail: string }[] };
+check("P1 waits for the person: turned down", q1.status !== 0 && evalT2().items[0].state === "awaiting-person", q1.stderr);
+const personConfirms = (pkg: string) => {
+  const store = gateFile("tasks", "T2.json");
+  const r = JSON.parse(readFileSync(store, "utf8"));
+  r.confirmed = { P1: { delivery: t2, package: pkg, by: "accountant", at: "now" } };
+  writeFileSync(store, JSON.stringify(r, null, 2));
+};
+// the build changes between the person's look and the push: the same commit, another package
+gate(["install", "--build", `node build.js && node -e "require('fs').writeFileSync('out/stamp.txt', String(Math.random()))"`]);
+personConfirms(evalT2().package!);
+const q2 = push("origin", "HEAD:main");
+check("confirmed on the build they saw; the push built another: P1 waits again, turned down",
+      q2.status !== 0 && evalT2().items[0].state === "awaiting-person" && evalT2().items[0].detail.includes("another build"), q2.stderr + JSON.stringify(evalT2().items[0]));
+gate(["install", "--build", "node build.js"]);
+const q3 = push("origin", "HEAD:main");
+check("the build gives the package they looked at again: the confirmation holds, complete, let in", q3.status === 0 && serverMain() === t2, q3.stderr);
+
+console.log("\nRegression: the first push, on a branch that takes only task deliveries");
+const server2 = join(top, "empty.git"), dev2 = join(top, "dev2");
+execFileSync("git", ["init", "-q", "--bare", "--initial-branch=main", server2], { encoding: "utf8" });
+run(server2, ["gate", "install", "--branches", "main", "--require-task"]);
+gitIn(top, "clone", "-q", server2.replace(/\\/g, "/"), "dev2");
+writeFileSync(join(dev2, "a.txt"), "first\n");
+gitIn(dev2, "add", "-A"); gitIn(dev2, "commit", "-q", "-m", "first");
+const first = gitIn(dev2, "rev-parse", "HEAD");
+const f1 = spawnSync("git", ["push", "origin", "HEAD:main"], { cwd: dev2, encoding: "utf8" });
+check("the first push with no task is turned down, not let in as unchecked", f1.status !== 0
+      && f1.stderr.includes("nothing to compare it with") && f1.stderr.includes(`gate approve ${first.slice(0, 12)}`), f1.stderr);
+check("approving it needs a terminal", run(server2, ["gate", "approve", first, "the repository's first commit"]).status === 2);
+mkdirSync(join(server2, ".soz-guard", "gate", "approved"), { recursive: true });
+writeFileSync(join(server2, ".soz-guard", "gate", "approved", `${first}.json`),
+              JSON.stringify({ commit: first, criteria: criteriaFingerprint([]), reason: "the repository's first commit", by: "boss", at: "now", noTask: true }));
+const f2 = spawnSync("git", ["push", "origin", "HEAD:main"], { cwd: dev2, encoding: "utf8" });
+check("a person let it in, with a reason, in the gate's log", f2.status === 0
+      && run(server2, ["gate", "log"]).stdout.includes("main") && f2.stderr.includes("the repository's first commit"), f2.stderr);
+
 rmSync(top, { recursive: true, force: true });
 console.log(`\n${failed ? `${failed} FAILED` : "All soz-guard delivery tests passed"}`);
 process.exit(failed ? 1 : 0);

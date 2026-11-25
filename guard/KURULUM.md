@@ -117,9 +117,12 @@ soz-guard gate install --branches main --setup "npm ci"
 - `--require-task`: `main` yalnızca onaylı bir görevin teslimini alır. Görev, `acceptance/<görev>.json`
   dosyasıyla ya da commit mesajındaki `Task: T1` satırıyla belirtilir ve o commit üzerinde `complete`
   olmalıdır. Görevsiz acil bir düzeltme, ancak bir kişi o commit'i gerekçesiyle onaylarsa girer:
-  `soz-guard gate approve <hash> "neden görevsiz"`.
-- `--build "<komut>" --package <yol>`: Kapı paketi kendisi bir kez derler, testleri o paket üzerinde
-  çalıştırır ve paketin özetini kaydeder. Canlıya o paketin aynısı gider ve sonradan kontrol edilir:
+  `soz-guard gate approve <hash> "neden görevsiz"`. Boş bir depoya yapılan ilk push için de bu onay gerekir.
+- `--build "<komut>" --package <yol>`: Kapı paketi kendisi bir kez derler, testlere paketin yerini
+  (`$SOZ_GUARD_PACKAGE`) verir ve paketin özetini kaydeder. Paketi başlatıp kullanmak testin işidir; önemli
+  maddelerin testi paketi bu yoldan başlatmalıdır. Kişinin "gördüm, doğru" onayı da o pakete bağlıdır. Yalnızca
+  `main`'e kabul edilen push bir paketi yayına çıkarır; elle yapılan `gate check` onu değiştiremez. Canlıya o
+  paketin aynısı gider ve sonradan kontrol edilir:
 
   ```sh
   soz-guard gate package <hash> --to D:/deploy/yeni-surum      # onaylanan paketin kopyası

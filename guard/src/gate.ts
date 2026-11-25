@@ -142,9 +142,8 @@ function evaluateTasks(gitDir: string, tasks: Task[], delivery: string, dir: str
         if ((b.setup && !b.setup.ok) || (b.build && !b.build.ok)) { rmSync(baseDir, { recursive: true, force: true }); baseDir = null; }
         else bringTests(dir, baseDir, t);
       }
-      const e = evaluateTask(t, record, delivery, dir, baseDir, packageEnv(config), config.timeoutSeconds);
       // the evidence is for this package: another build of the same commit is other evidence
-      if (pkg) e.package = pkg;
+      const e = evaluateTask(t, record, delivery, dir, baseDir, packageEnv(config), config.timeoutSeconds, pkg);
       keepEvaluation(gitDir, e);
       return e;
     } finally {
@@ -207,7 +206,7 @@ export function judge(gitDir: string, base: string, head: string, ref: string, c
         state = "verified";   // nothing else to run, and every task carried was proven on this delivery
       }
     }
-    if (packagePath && manifest && pkg && passed(state)) keepPackage(gitDir, head, packagePath, manifest, pkg, config.keepPackages);
+    if (packagePath && manifest && pkg && passed(state)) storePackage(gitDir, packagePath, manifest, pkg);
     return { commit: head, base, ref, state, verdict, setup, approved, at,
              ...(c.build ? { build: c.build } : {}), ...(pkg ? { package: pkg } : {}),
              ...(taskRequired ? { taskRequired } : {}), ...(noTask ? { noTask } : {}),
@@ -230,24 +229,43 @@ export function tasksNamed(messages: string): string[] {
 
 // --- Packages: what the gate built and judged, kept to deploy from and to compare a live folder with ---------
 
-const packageDir = (gitDir: string, commit: string) => join(gateDir(gitDir), "packages", commit);
-type KeptPackage = PackageInfo & { commit: string; path: string; at: string; manifest: Manifest; kept: boolean };
+/** A package's files and manifest, under its digest: a digest names its files, so a stored package is never
+ * rewritten, whoever judges the same commit again. */
+const storeDir = (gitDir: string, digest: string) => join(gateDir(gitDir), "packages", "sha256", digest);
+/** Which package a push let into a protected branch, per commit: written once, by the pre-receive hook only. */
+const releasePath = (gitDir: string, commit: string) => join(gateDir(gitDir), "packages", "released", `${commit}.json`);
+type StoredPackage = PackageInfo & { path: string; at: string; manifest: Manifest; kept: boolean };
+type Release = { commit: string; ref: string; digest: string; at: string; by: string };
 
-/** Keeps the package a protected branch let in: its manifest for good, the files themselves for the newest KEEP. */
-function keepPackage(gitDir: string, commit: string, from: string, manifest: Manifest, info: PackageInfo & { path: string }, keep: number) {
-  const dir = packageDir(gitDir, commit);
+function storePackage(gitDir: string, from: string, manifest: Manifest, info: PackageInfo & { path: string }) {
+  const dir = storeDir(gitDir, info.digest);
+  // the same digest is the same bytes: kept files stay as they are; pruned ones may come back
+  if (readJson<StoredPackage>(join(dir, "package.json"))?.kept) return;
   rmSync(join(dir, "files"), { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
   copyPackage(from, info.kind === "file" ? join(dir, "files", info.path.split(/[\\/]/).pop()!) : join(dir, "files"));
-  const kept: KeptPackage = { ...info, commit, at: new Date().toISOString(), manifest, kept: true };
-  writeFileSync(join(dir, "package.json"), JSON.stringify(kept, null, 2) + "\n");
-  const all = readdirSync(join(gateDir(gitDir), "packages"))
-    .map(c => readJson<KeptPackage>(join(packageDir(gitDir, c), "package.json")))
-    .filter((p): p is KeptPackage => !!p && p.kept)
+  const stored: StoredPackage = { ...info, at: new Date().toISOString(), manifest, kept: true };
+  writeFileSync(join(dir, "package.json"), JSON.stringify(stored, null, 2) + "\n");
+}
+
+/** A push let REPORT's commit into a protected branch with its package: that package is the commit's release.
+ * The first release of a commit stands. The files of the newest KEEP releases are kept, the manifests of all. */
+function releasePackage(gitDir: string, report: Report, keep: number) {
+  if (!report.package || existsSync(releasePath(gitDir, report.commit))) return;
+  const by = process.env.GL_USERNAME || process.env.GITEA_PUSHER_NAME || userInfo().username;
+  const r: Release = { commit: report.commit, ref: report.ref, digest: report.package.digest, at: new Date().toISOString(), by };
+  mkdirSync(dirname(releasePath(gitDir, report.commit)), { recursive: true });
+  writeFileSync(releasePath(gitDir, report.commit), JSON.stringify(r, null, 2) + "\n");
+  appendLog(gitDir, { event: "package-release", commit: r.commit, ref: r.ref, package: r.digest, by });
+  const releases = readdirSync(dirname(releasePath(gitDir, report.commit)))
+    .map(f => readJson<Release>(join(dirname(releasePath(gitDir, report.commit)), f)))
+    .filter((x): x is Release => !!x && typeof x.at === "string")
     .sort((a, b) => b.at.localeCompare(a.at));
-  for (const old of all.slice(Math.max(1, keep))) {
-    rmSync(join(packageDir(gitDir, old.commit), "files"), { recursive: true, force: true });
-    writeFileSync(join(packageDir(gitDir, old.commit), "package.json"), JSON.stringify({ ...old, kept: false }, null, 2) + "\n");
+  const wanted = new Set(releases.slice(0, Math.max(1, keep)).map(x => x.digest));
+  for (const digest of readdirSync(join(gateDir(gitDir), "packages", "sha256"))) {
+    const stored = readJson<StoredPackage>(join(storeDir(gitDir, digest), "package.json"));
+    if (!stored?.kept || wanted.has(digest)) continue;
+    rmSync(join(storeDir(gitDir, digest), "files"), { recursive: true, force: true });
+    writeFileSync(join(storeDir(gitDir, digest), "package.json"), JSON.stringify({ ...stored, kept: false }, null, 2) + "\n");
   }
 }
 
@@ -269,20 +287,21 @@ function record(gitDir: string, report: Report, source: string) {
 }
 
 /** The report in words, for the person who pushed (git shows it to them as "remote: ..."). */
-function reportText(r: Report, gitDir: string): string {
+function reportText(r: Report, gitDir: string, released = false): string {
   const head = `soz-guard gate: ${r.ref} ${r.commit.slice(0, 10)}: ${passed(r.state) ? `${r.state}, let in` : `${r.state}, not let in`}`;
   if (r.setup && !r.setup.ok) return `${head}\nThe setup command failed, so the checks could not run:\n${r.setup.tail.split("\n").map(l => "    " + l).join("\n")}`;
   if (r.build && !r.build.ok) return `${head}\nThe package could not be built:\n${r.build.tail.split("\n").map(l => "    " + l).join("\n")}`;
-  if (!r.verdict) return `${head}\n${r.error ?? ""}`;
+  const noTaskWay = r.taskRequired ? `${r.taskRequired}\nAn urgent fix with no task: a person lets this one commit in, on the server, in a terminal:\n`
+      + `    cd ${gitDir.replace(/\\/g, "/")} && soz-guard gate approve ${r.commit.slice(0, 12)} "<why it goes in without a task>"` : "";
+  if (!r.verdict) return [head, r.error ?? "", noTaskWay].filter(Boolean).join("\n");
   const v = r.verdict as Verdict & { notRun?: string[] };
   const lines = [head, verdictReport(v, false)];
   if (v.notRun?.length) lines.push(`Files the setup left behind kept the checks from running: ${v.notRun.slice(0, 5).join(", ")}. Add them to "exclude" in .soz-guard.json.`);
   for (const p of r.taskProblems ?? []) lines.push(`A task file cannot be read: ${p}`);
   for (const t of r.tasks ?? []) lines.push(taskReport(t) + taskHints(t, gitDir, r.commit));
-  if (r.taskRequired) lines.push(`${r.taskRequired}\nAn urgent fix with no task: a person lets this one commit in, on the server, in a terminal:\n`
-      + `    cd ${gitDir.replace(/\\/g, "/")} && soz-guard gate approve ${r.commit.slice(0, 12)} "<why it goes in without a task>"`);
-  if (r.package) lines.push(`Package ${r.package.path}: sha256 ${r.package.digest.slice(0, 16)} (${r.package.files} file${r.package.files === 1 ? "" : "s"}), the one the checks ran against.`
-      + (passed(r.state) ? `\n  Deploy these same files:  soz-guard gate package ${r.commit.slice(0, 12)} --to <an empty folder>\n`
+  if (noTaskWay) lines.push(noTaskWay);
+  if (r.package) lines.push(`Package ${r.package.path}: sha256 ${r.package.digest.slice(0, 16)} (${r.package.files} file${r.package.files === 1 ? "" : "s"}), the build the checks and task tests were given.`
+      + (released ? `\n  Deploy these same files:  soz-guard gate package ${r.commit.slice(0, 12)} --to <an empty folder>\n`
         + `  Check a live copy:        soz-guard gate package ${r.commit.slice(0, 12)} --verify <the live folder or file>` : ""));
   if (r.noTask && r.approved) lines.push(`Let in without a task by a person: ${r.approved}`);
   else if (r.approved) lines.push(`The changes to the tests or rules were approved by a person: ${r.approved}`);
@@ -324,6 +343,22 @@ export function preReceive(): number {
     // what goes live is judged against what is live now; a new protected branch against the default branch
     let base = ZERO.test(oldRev) ? "" : oldRev;
     if (!base) { try { base = git(gitDir, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]); } catch { base = ""; } }
+    if ((!base || base === newRev) && config.requireTask) {
+      // no task can be judged with nothing to compare it with: a person lets this commit in, or nobody does
+      const approval = readJson<Approval>(approvalPath(gitDir, newRev));
+      if (approval?.noTask) {
+        process.stderr.write(`soz-guard gate: ${branch} ${newRev.slice(0, 10)}: nothing to compare it with; let in without a task by a person: ${approval.reason}\n`);
+        appendLog(gitDir, { event: "gate", source: "pre-receive", ref, base: null, commit: newRev, state: "unchecked", approved: approval.reason, noTask: true, note: "nothing to compare with" });
+        continue;
+      }
+      const r: Report = { commit: newRev, base: "", ref, state: "open", verdict: null, approved: null, at: new Date().toISOString(),
+        taskRequired: `${branch} takes only the delivery of an approved task, and this push has nothing to compare it with `
+          + `(${base ? "it is what the branch's default already holds" : "the repository has nothing yet"}), so no task can be judged on it.` };
+      record(gitDir, r, "pre-receive");
+      process.stderr.write(reportText(r, gitDir) + "\n");
+      rejected = true;
+      continue;
+    }
     if (!base || base === newRev) {
       process.stderr.write(`soz-guard gate: ${branch} ${newRev.slice(0, 10)}: nothing to compare it with (the first push); let in.\n`);
       appendLog(gitDir, { event: "gate", source: "pre-receive", ref, base: null, commit: newRev, state: "unchecked", approved: null, note: "first push, nothing to compare" });
@@ -331,7 +366,9 @@ export function preReceive(): number {
     }
     const report = judge(gitDir, base, newRev, ref, config);
     record(gitDir, report, "pre-receive");
-    process.stderr.write(reportText(report, gitDir) + "\n");
+    // only a push let in releases a package; a later check by hand of the same commit never replaces it
+    if (passed(report.state)) releasePackage(gitDir, report, config.keepPackages);
+    process.stderr.write(reportText(report, gitDir, passed(report.state)) + "\n");
     if (!passed(report.state)) rejected = true;
   }
   return rejected ? 1 : 0;
@@ -347,7 +384,8 @@ function checkCommand(args: string[]): number {
   const base = git(gitDir, ["rev-parse", "--verify", `${i >= 0 ? args[i + 1] : "HEAD"}^{commit}`]);
   const report = judge(gitDir, base, head, rev, readConfig(gitDir));
   record(gitDir, report, "check");
-  process.stdout.write(reportText(report, gitDir) + "\n");
+  process.stdout.write(reportText(report, gitDir) + "\n"
+    + (report.package && passed(report.state) ? "Judged by hand: nothing is released. Only a push a protected branch lets in releases a package to deploy.\n" : ""));
   return passed(report.state) ? 0 : 1;
 }
 
@@ -370,11 +408,11 @@ async function approve(args: string[]): Promise<number> {
   // is found by the report's name, by its hash or the start of it, or else as a branch the server has
   const commit = reportFor(gitDir, rev) ?? git(gitDir, ["rev-parse", "--verify", `${rev}^{commit}`]);
   const report = readJson<Report>(reportPath(gitDir, commit));
-  if (!report?.verdict) {
+  if (!report?.verdict && !report?.taskRequired) {
     process.stderr.write(`No verdict on ${commit.slice(0, 12)} yet: push it, or run  soz-guard gate check ${rev}  first, and read what it says.\n`);
     return 1;
   }
-  const criteria = report.verdict.criteria;
+  const criteria = report.verdict?.criteria ?? [];
   const noTask = !!report.taskRequired;
   if (!criteria.length && !noTask) { process.stdout.write("Nothing to approve: the last verdict on it found no change to the tests or rules, and it was not turned down for want of a task.\n"); return 0; }
   if (!process.stdin.isTTY) {
@@ -417,6 +455,7 @@ function logCommand(args: string[]): number {
           + `${e.package ? `, package ${e.package.slice(0, 12)}` : ""}`
           + (e.tasks ?? []).map(t => `; task ${t.task} ${t.verdict} (${items(t.items)})`).join("")
         : e.event === "approve" ? `${(e.commit ?? "").slice(0, 10)} approved by ${e.by}${e.noTask ? ", without a task" : ""}: ${e.reason}`
+        : e.event === "package-release" ? `${(e.commit ?? "").slice(0, 10)} released into ${(e.ref ?? "").replace(/^refs\/heads\//, "")}: package ${(e.package ?? "").slice(0, 12)} (${e.by})`
         : e.event.startsWith("package-") ? `${(e.commit ?? "").slice(0, 10)} ${e.event === "package-out" ? "copied to" : "compared with"} ${e.folder}${e.event === "package-verify" ? (e.same ? ": the same files" : ": DIFFERENT") : ""} (${e.by})`
         : e.event === "task" ? `${e.task} on ${(e.delivery ?? "").slice(0, 10)}: ${e.verdict} (${items(e.items)})`
         : e.event.startsWith("task-") ? `${e.task}${e.item ? ` ${e.item}` : ""} ${e.event.slice(5)}d by ${e.by}${e.reason ? `: ${e.reason}` : ""}`
@@ -451,7 +490,7 @@ function install(args: string[]): number {
   const command = [process.execPath, ...nodeArgs, cli].map((p, k) => k === 0 || k === nodeArgs.length + 1 ? `"${p.replace(/\\/g, "/")}"` : p).join(" ") + " gate pre-receive";
   const notes = [`gate config: ${configPath(gitDir)} (protected: ${config.branches.join(", ")}${config.setup ? `; setup: ${config.setup}` : "; no setup command"})`,
                  ...(config.requireTask ? ["only the delivery of an approved task, complete on the pushed commit, goes in (--no-require-task to turn it off)"] : []),
-                 ...(config.package ? [`package: ${config.package}${config.build ? `, built with: ${config.build}` : ""}; the last ${config.keepPackages} let in are kept whole`] : [])];
+                 ...(config.package ? [`package: ${config.package}${config.build ? `, built with: ${config.build}` : ""}; the packages of the last ${config.keepPackages} pushes let in are kept whole`] : [])];
   if (existsSync(hook) && !readFileSync(hook, "utf8").includes("soz-guard gate")) {
     notes.push(`pre-receive: there is one already, left as it is; to add the gate, put this line in ${hook}:\n      ${command} || exit 1`);
   } else {
@@ -577,9 +616,11 @@ async function taskCommand(args: string[]): Promise<number> {
     if (!terminalOnly("confirm")) return 2;
     if (!(await yes(already ? "Does the test really check this?" : "Does the delivery do this?"))) { process.stdout.write("Not confirmed.\n"); return 1; }
     const record = readRecord(gitDir, taskId);
-    record.confirmed = { ...(record.confirmed ?? {}), [itemId]: already ? { binding: item.binding!, by, at: now() } : { delivery: e.delivery, by, at: now() } };
+    // what the person looked at: this delivery, and the package built of it when there is one
+    record.confirmed = { ...(record.confirmed ?? {}), [itemId]: already ? { binding: item.binding!, by, at: now() }
+                                                                        : { delivery: e.delivery, ...(e.package ? { package: e.package } : {}), by, at: now() } };
     writeRecord(gitDir, taskId, record);
-    appendLog(gitDir, { event: "task-confirm", task: taskId, item: itemId, delivery: e.delivery, by });
+    appendLog(gitDir, { event: "task-confirm", task: taskId, item: itemId, delivery: e.delivery, ...(e.package ? { package: e.package } : {}), by });
     process.stdout.write(`Confirmed${already ? ", for this test as it is" : `, on ${e.delivery.slice(0, 10)}`}. Push or check again for the task's verdict.\n`);
     return 0;
   }
@@ -605,18 +646,31 @@ async function taskCommand(args: string[]): Promise<number> {
   return 2;
 }
 
-/** The package the gate judged for REV: its digest; a copy to deploy (--to, an empty or new folder); or a live
+/** The commit whose release's name starts with REV, or REV itself as a commit the server has. */
+function releaseFor(gitDir: string, rev: string): string | null {
+  const dir = join(gateDir(gitDir), "packages", "released");
+  if (/^[0-9a-f]{7,40}$/i.test(rev) && existsSync(dir)) {
+    const hits = readdirSync(dir).filter(f => f.startsWith(rev.toLowerCase()) && f.endsWith(".json"));
+    if (hits.length === 1) return hits[0].slice(0, -5);
+  }
+  try { return git(gitDir, ["rev-parse", "--verify", `${rev}^{commit}`]); } catch { return null; }
+}
+
+/** The package a push released for REV: its digest; a copy to deploy (--to, an empty or new folder); or a live
  * copy compared with it file by file (--verify), with what the live server writes itself left out (--ignore). */
 function packageCommand(args: string[]): number {
   const gitDir = gitDirOf(process.cwd());
   const flag = (n: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
   const rev = args.find((a, k) => !a.startsWith("--") && !["--to", "--verify", "--ignore"].includes(args[k - 1]));
   if (!rev) throw new Error("usage: soz-guard gate package REV [--to FOLDER | --verify PATH [--ignore logs,uploads]]");
-  let commit = reportFor(gitDir, rev);
-  if (!commit) { try { commit = git(gitDir, ["rev-parse", "--verify", `${rev}^{commit}`]); } catch { commit = null; } }
-  const kept = commit ? readJson<KeptPackage>(join(packageDir(gitDir, commit), "package.json")) : null;
-  if (!commit || !kept) {
-    process.stderr.write(`The gate has let in no package for ${rev}: only a commit the gate judged and let in, with a package configured, has one.\n`);
+  const commit = releaseFor(gitDir, rev);
+  const rel = commit ? readJson<Release>(releasePath(gitDir, commit)) : null;
+  const kept = rel ? readJson<StoredPackage>(join(storeDir(gitDir, rel.digest), "package.json")) : null;
+  if (!commit || !rel || !kept) {
+    const judged = reportFor(gitDir, rev);
+    const r = judged ? readJson<Report>(reportPath(gitDir, judged)) : null;
+    process.stderr.write(`No push let a package of ${rev} into a protected branch: only that releases one to deploy.`
+      + `${r?.package ? ` (Its last verdict, ${r.state}, was on a build with sha256 ${r.package.digest.slice(0, 16)}.)` : ""}\n`);
     return 1;
   }
   const by = userInfo().username;
@@ -624,7 +678,7 @@ function packageCommand(args: string[]): number {
   if (to) {
     if (!kept.kept) { process.stderr.write(`The files of ${commit.slice(0, 12)}'s package are no longer kept (only the newest are); its digest is: ${kept.digest}\n`); return 1; }
     if (!isEmptyOrAbsent(to)) { process.stderr.write(`${to} is not empty: copy into an empty or new folder, so that nothing else ends up next to the package.\n`); return 1; }
-    const from = join(packageDir(gitDir, commit), "files");
+    const from = join(storeDir(gitDir, kept.digest), "files");
     copyPackage(from, to);
     const target = kept.kind === "file" ? join(to, readdirSync(from)[0]) : to;
     const ok = same(compare(kept.manifest, manifestOf(target)));
@@ -643,8 +697,9 @@ function packageCommand(args: string[]): number {
                             : `${verify} is NOT the package the gate judged for ${commit.slice(0, 12)}:\n${differenceText(d)}\n`);
     return ok ? 0 : 1;
   }
-  process.stdout.write(`Package of ${commit.slice(0, 12)}: ${kept.path}, sha256 ${kept.digest}\n  ${kept.files} file${kept.files === 1 ? "" : "s"}, ${kept.bytes} bytes, judged ${kept.at}; `
-    + `${kept.kept ? `kept in ${join(packageDir(gitDir, commit), "files")}` : "its files are no longer kept, only its manifest"}\n`);
+  process.stdout.write(`Package of ${commit.slice(0, 12)}: ${kept.path}, sha256 ${kept.digest}\n  ${kept.files} file${kept.files === 1 ? "" : "s"}, ${kept.bytes} bytes, built ${kept.at}, `
+    + `released into ${rel.ref.replace(/^refs\/heads\//, "")} ${rel.at} (${rel.by}); `
+    + `${kept.kept ? `kept in ${join(storeDir(gitDir, kept.digest), "files")}` : "its files are no longer kept, only its manifest"}\n`);
   return 0;
 }
 

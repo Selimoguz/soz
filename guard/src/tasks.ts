@@ -33,8 +33,8 @@ export type TaskRecord = {
   /** The person approved these items (and these bound tests), in words, starting from BASE. */
   approval?: { itemsHash: string; base: string; by: string; at: string };
   /** A person confirmed an item: a test that passed from the start is real (bound to the test's hash), or a
-   * person-proved item holds on a delivery (bound to that commit). */
-  confirmed?: Record<string, { binding?: string; delivery?: string; by: string; at: string }>;
+   * person-proved item holds on a delivery (bound to that commit, and to the package built of it, if any). */
+  confirmed?: Record<string, { binding?: string; delivery?: string; package?: string; by: string; at: string }>;
   /** A person took an item out of the task, or put it off: bound to the item as the person read it (itemContent),
    * so the decision does not carry over to an item that was reworded later. */
   descoped?: Record<string, { item?: string; reason: string; by: string; at: string }>;
@@ -167,7 +167,7 @@ export function bringTests(fromDir: string, toDir: string, task: Task) {
 /** A task's verdict on a delivery (SPEC §5). DELIVERY_DIR is the delivered commit checked out and set up;
  * BASE_DIR, if given, the base the same way, with the delivery's bound tests brought in. */
 export function evaluateTask(task: Task, record: TaskRecord, delivery: string, deliveryDir: string, baseDir: string | null,
-                             env: Record<string, string | undefined>, timeoutSeconds: number): TaskEvaluation {
+                             env: Record<string, string | undefined>, timeoutSeconds: number, pkg?: string): TaskEvaluation {
   const at = new Date().toISOString();
   const hash = itemsHash(deliveryDir, task);
   const approved = !!record.approval && record.approval.itemsHash === hash;
@@ -185,8 +185,10 @@ export function evaluateTask(task: Task, record: TaskRecord, delivery: string, d
   function judge(i: Item, required: boolean, binding: string | null, base: Omit<ItemResult, "state" | "detail">): ItemResult {
     if (i.proof === "person") {
       const c = record.confirmed?.[i.id];
-      return c?.delivery === delivery ? { ...base, state: "confirmed", detail: `confirmed on this delivery by ${c.by}` }
-        : { ...base, state: "awaiting-person", detail: "a person confirms it on this delivery" };
+      if (c?.delivery === delivery && c.package === pkg) return { ...base, state: "confirmed", detail: `confirmed on this delivery by ${c.by}` };
+      return { ...base, state: "awaiting-person", detail: c?.delivery === delivery
+        ? `${c.by} confirmed another build of this delivery (package ${(c.package ?? "none").slice(0, 12)}, now ${(pkg ?? "none").slice(0, 12)}): a person confirms it on this package`
+        : "a person confirms it on this delivery" };
     }
     if (!binding) return { ...base, state: "unproven", detail: `its test (${i.test!.file}) is not in the delivery` };
     if (!approved) return { ...base, state: "unproven", detail: "not run: the items or their tests are not the ones a person approved" };
@@ -212,7 +214,8 @@ export function evaluateTask(task: Task, record: TaskRecord, delivery: string, d
     : !approved ? "its items or their tests changed since a person approved them"
     : verdict === "complete" ? completeWhy(items)
     : open.map(i => `${i.id} ${i.state}`).join(", ");
-  return { task: task.task, title: task.title, verdict, approved, itemsHash: hash, base: record.approval?.base ?? null, delivery, items, why, at };
+  return { task: task.task, title: task.title, verdict, approved, itemsHash: hash, base: record.approval?.base ?? null, delivery, items, why, at,
+           ...(pkg ? { package: pkg } : {}) };
 }
 
 /** What a complete task rests on, counted: "3 proven, 1 taken out by a person", never "all proven" when it is not. */

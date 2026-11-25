@@ -213,10 +213,12 @@ while releases go out as they do today. Counted per task:
    tasks and acceptance need the gate; locally, soz-guard only reports.
 3. **The delivery**: how the project builds its package. Built in 0.5.1, in the gate's own configuration
    rather than `.soz-guard.json`, so an agent's branch cannot change how its delivery is built: `gate install
-   --build "<command>" --package <path>`. The gate builds once; the checks and task tests run against it
-   (`$SOZ_GUARD_PACKAGE`; starting it is the tests' part); its digest is recorded with the verdict; the
-   packages let in are kept, copied out with `gate package REV --to`, and a live copy compared with
-   `--verify`. Not built: the gate starting the package itself, and evidence from the live URL.
+   --build "<command>" --package <path>`. The gate builds once and gives the checks and task tests the
+   package's path (`$SOZ_GUARD_PACKAGE`); whether a test starts or reads it is the test's part. Its digest is
+   recorded with the verdict, and a person's confirmation is bound to it as well as to the commit. Only a push
+   let into a protected branch releases a package (once per commit, stored by digest, never rewritten); it is
+   copied out with `gate package REV --to`, and a live copy compared with `--verify`. Not built: the gate
+   starting the package itself, and evidence from the live URL.
 4. **Who writes the tests**: the agent (proposed), with the person able to hold one out (a holdout test
    the agent never sees) for items that matter most.
 5. **The name and place of the task record**: `acceptance/<task-id>.json` in the repository (proposed).
@@ -224,4 +226,5 @@ while releases go out as they do today. Counted per task:
    changed in it, or named in a commit message (`Task: T1`). By default a push that carries none is judged as
    any change. Built in 0.5.1, as the person's choice: `gate install --require-task` makes a protected branch
    take only pushes that carry a task, each `complete` on exactly the pushed commit (`unchecked` is not
-   enough); one commit with no task goes in only when a person approves it, with a reason.
+   enough); one commit with no task goes in only when a person approves it, with a reason. That includes the
+   first push to an empty repository, which has no base to judge a task against.

@@ -294,6 +294,7 @@ a commit message with a line `Task: T1`) and every task it carries is `complete`
 commit. A push with no task is turned down, and so is `unchecked`: with nothing configured to run, the
 task's own tests are the evidence. An urgent fix with no task goes in only when a person lets that one
 commit in, with a reason, on the server: `soz-guard gate approve <commit> "<why it goes in without a task>"`.
+So does the first push to an empty repository, which has nothing to judge a task against.
 `--no-require-task` turns it off.
 
 ### The package: the same files the checks ran against
@@ -307,11 +308,17 @@ soz-guard gate install --branches main --build "mvn -q package -DskipTests" --pa
 soz-guard gate install --branches main --build "npm run build" --package dist          # a folder works too
 ```
 
-The checks and the task tests run against the package the gate built: its path is in `$SOZ_GUARD_PACKAGE`
-(on the base, the base's own build), so a test can start or read exactly what will ship. The package's
-sha256 digest goes into the verdict, the task's evaluation and the gate's log; the evidence is for that
-package. A package that does not build is not let in. The packages the gate let in are kept (the newest 5
-whole, `--keep-packages N`; the digests of all of them for good):
+The checks and the task tests are given the package the gate built: its path is in `$SOZ_GUARD_PACKAGE`
+(on the base, the base's own build). The gate does not start it. Whether a test starts or reads that
+package, rather than the sources, is up to the test, so for the items that matter write the test to start
+the package from that path and do the user's steps on it. The package's sha256 digest goes into the
+verdict, the task's evaluation and the gate's log, and a person's confirmation of an item is for that
+package too: if the same commit builds into a different package, the item waits for the person again. A
+package that does not build is not let in.
+
+Only a push that a protected branch lets in releases a package, once per commit; `gate check` by hand
+judges a build but never replaces what was released. Packages are stored under their digest and never
+rewritten. The newest 5 releases are kept whole (`--keep-packages N`), the manifests of all of them for good:
 
 ```sh
 soz-guard gate package 3f9c2a1b7e44                        # its digest, its files, where they are kept
