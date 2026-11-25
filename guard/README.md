@@ -424,15 +424,15 @@ that no check runs (`npm test` and `npm run test:*` in `package.json`, `mvn test
 and the project's own; what counts as a change to the tests (and which of the project's own files are
 watched but not run); whether the Claude Code, Codex and git hooks are there, switched off, or point at a
 soz-guard that is not on this machine; when a hook last ran; and the server's gate. The gate can be read
-only when the remote is a folder on this machine; otherwise it says **not verified** and where to look
+only when the remote is a folder on this machine; otherwise it says **not verified from here** and where to look
 (`soz-guard gate log` on the server). Run in the server's repository, it shows that repository's gate.
 
 Every session starts with the same diagnosis in one line, which the SessionStart hook gives to the person
 (Claude Code's `systemMessage`) and to the agent (`additionalContext`), and writes to the log:
 
 ```
-soz-guard · No project test is set to run when the agent finishes · npm test: in the project, not run by soz-guard · Code rules: 8 · Changes to tests watched: test files · Server gate: not verified
-soz-guard · Runs when the agent finishes: tests · Server gate: not verified
+soz-guard · No project test is set to run when the agent finishes · npm test: in the project, not run by soz-guard · Code rules: 8 · Changes to tests watched: test files · soz-guard gate on the server: not verified from here
+soz-guard · Runs when the agent finishes: tests · soz-guard gate on the server: not verified from here
 ```
 
 With no check, the line names the rules that still hold, since those are all there is. A finish hook that

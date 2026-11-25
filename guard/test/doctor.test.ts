@@ -4,7 +4,7 @@
 //     the person sees the difference at once, in doctor and in the session's line;
 //   - with no check, the rules that still hold (on the code, on the tests) are said, the project's own named;
 //   - the hooks: missing, switched off, pointing at a soz-guard that is not on this machine;
-//   - the server's gate: read when the remote is a folder on this machine, "not verified" otherwise;
+//   - the server's gate: read when the remote is a folder on this machine, "not verified from here" otherwise;
 //   - read-only: doctor changes nothing; the session hook gives the line to the person (systemMessage) and the
 //     agent (additionalContext), and logs it.
 
@@ -63,8 +63,8 @@ check("a check: its name and command, when it runs, and no warning", db.stdout.i
       && !db.stdout.includes("çalıştırmaz") && !db.stdout.includes("tanımlı değil"), db.stdout);
 const ll = json(loose).sessionLine, lb = json(bound).sessionLine;
 check("the session's line, not a check", ll === "soz-guard · Tamamlanırken çalıştırılacak proje testi tanımlı değil · npm test: projede var, soz-guard çalıştırmıyor"
-      + " · Kod kuralları: 8 · Test değişikliği izleniyor: test dosyaları · Sunucu kapısı: doğrulanmadı", ll);
-check("the session's line, a check", lb === "soz-guard · Tamamlanırken çalışacak: tests · Sunucu kapısı: doğrulanmadı", lb);
+      + " · Kod kuralları: 8 · Test değişikliği izleniyor: test dosyaları · Sunucudaki soz-guard gate: buradan doğrulanamadı", ll);
+check("the session's line, a check", lb === "soz-guard · Tamamlanırken çalışacak: tests · Sunucudaki soz-guard gate: buradan doğrulanamadı", lb);
 check("with no check, doctor names the rules that still hold: on the code and on the tests",
       dl.stdout.includes("Yerleşik (8): todo, not-implemented") && dl.stdout.includes("Test dosyaları, CI ayarları ve .soz-guard.json: silmek ya da assertion sayısını azaltmak kişinin onayını ister."), dl.stdout);
 check("a test script named test:e2e is found too, and is not taken for npm test", (() => {
@@ -85,7 +85,7 @@ const erp = project("erp", {
 const le = json(erp).sessionLine;
 check("the line says the script is watched and that no test runs: two things, not one",
       le.includes("Tamamlanırken çalıştırılacak proje testi tanımlı değil") && le.includes("Test değişikliği izleniyor: test dosyaları, e2e/kapi.ps1")
-      && le.includes("Kod kuralları: 10 (2 projeye özel)") && le.endsWith("Sunucu kapısı: doğrulanmadı"), le);
+      && le.includes("Kod kuralları: 10 (2 projeye özel)") && le.endsWith("Sunucudaki soz-guard gate: buradan doğrulanamadı"), le);
 const de = doctor(erp).stdout;
 check("doctor: the script's changes are watched, but it is not run", de.includes("Projeye özel, her değişikliği: e2e/kapi.ps1")
       && de.includes("Bunların değişmesi izlenir, ama çalıştırılmazlar"), de);
@@ -147,17 +147,19 @@ const server = join(top, "server.git");
 execFileSync("git", ["init", "-q", "--bare", "--initial-branch=main", server], { encoding: "utf8" });
 gitIn(bound, "remote", "add", "origin", server.replace(/\\/g, "/"));
 check("a remote on this machine with no gate: none, pushes go in unjudged",
-      json(bound).sessionLine.endsWith("Sunucu kapısı: yok") && doctor(bound).stdout.includes("soz-guard kapısı kurulu değil"), json(bound).sessionLine);
+      json(bound).sessionLine.endsWith("Sunucudaki soz-guard gate: kurulu değil") && doctor(bound).stdout.includes("soz-guard gate kurulu değil"), json(bound).sessionLine);
 run(server, ["gate", "install", "--branches", "main", "--require-task", "--build", "node build.js", "--package", "out"]);
-check("the gate on it: what it protects, read from it", json(bound).sessionLine.endsWith("Sunucu kapısı: main korunuyor, yalnızca görev teslimi, paket: out"), json(bound).sessionLine);
+check("the gate on it: what it protects, read from it", json(bound).sessionLine.endsWith("Sunucudaki soz-guard gate: main korunuyor, yalnızca görev teslimi, paket: out"), json(bound).sessionLine);
 check("doctor in the server's repository: its gate", doctor(server).stdout.includes("main korunuyor; yalnızca görev teslimi; paket: out"), doctor(server).stdout);
 gitIn(bound, "remote", "set-url", "origin", "git@sunucu.firma.local:erp.git");
 check("a remote on another machine: not verified, and where to look instead",
-      json(bound).sessionLine.endsWith("Sunucu kapısı: doğrulanmadı") && doctor(bound).stdout.includes("git@sunucu.firma.local:erp.git bu makineden okunamıyor")
+      json(bound).sessionLine.endsWith("Sunucudaki soz-guard gate: buradan doğrulanamadı") && doctor(bound).stdout.includes("git@sunucu.firma.local:erp.git bu makineden okunamıyor")
       && doctor(bound).stdout.includes("soz-guard gate log --last 20"), doctor(bound).stdout);
 check("no remote at all: said so", doctor(loose).stdout.includes("bu projenin bir uzak deposu (remote) yok"));
 
 check("outside a git repository: said, exit 1", (() => { const d = join(top, "plain"); mkdirSync(d); const r = doctor(d); return r.status === 1 && r.stderr.includes("git deposu değil"); })());
+check("the agent is told what the gate in the line is, and that it is not the project's own script",
+      (sessionStart(erp).out.hookSpecificOutput?.additionalContext ?? "").includes("projenin kendi betikleriyle ilgisi yoktur"));
 check("the template tells the agent what to do when the line is missing", readFileSync(join(dirname(cli), "..", "templates", "CLAUDE.md"), "utf8").includes("soz-guard doctor"));
 
 rmSync(top, { recursive: true, force: true });

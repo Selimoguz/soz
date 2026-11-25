@@ -216,20 +216,20 @@ const ownWatched = (d: Diagnosis) => [...d.testChanges.ownRunners, ...d.testChan
 /** What the gate guards, in a few words. */
 function gateWords(g: Gate, tr: boolean, short: boolean): string {
   if (!g.seen) {
-    if (short) return tr ? "Sunucu kapısı: doğrulanmadı" : "Server gate: not verified";
+    if (short) return tr ? "Sunucudaki soz-guard gate: buradan doğrulanamadı" : "soz-guard gate on the server: not verified from here";
     return g.why === "no-remote"
-      ? (tr ? "doğrulanmadı: bu projenin bir uzak deposu (remote) yok, push'u karşılayan bir kapı da yok."
-            : "not verified: this project has no remote, so there is no gate a push meets.")
-      : (tr ? `doğrulanmadı: ${g.remote} bu makineden okunamıyor. Kapı kuruluysa ne koruduğunu sunucuda görürsünüz:\n    soz-guard gate log --last 20`
-            : `not verified: ${g.remote} cannot be read from this machine. If the gate is set up, the server shows what it guards:\n    soz-guard gate log --last 20`);
+      ? (tr ? "doğrulanamadı: bu projenin bir uzak deposu (remote) yok, push'u denetleyen bir soz-guard gate de yok."
+            : "not verified: this project has no remote, so no soz-guard gate judges a push.")
+      : (tr ? `buradan doğrulanamadı: ${g.remote} bu makineden okunamıyor. Orada soz-guard gate kuruluysa ne koruduğunu sunucuda görürsünüz:\n    soz-guard gate log --last 20`
+            : `not verified from here: ${g.remote} cannot be read from this machine. If soz-guard gate is set up there, the server shows what it guards:\n    soz-guard gate log --last 20`);
   }
-  if (!g.installed) return short ? (tr ? "Sunucu kapısı: yok" : "Server gate: none")
-    : (tr ? `yok: ${g.where} deposunda soz-guard kapısı kurulu değil; push'lar denetlenmeden girer.`
+  if (!g.installed) return short ? (tr ? "Sunucudaki soz-guard gate: kurulu değil" : "soz-guard gate on the server: none")
+    : (tr ? `yok: ${g.where} deposunda soz-guard gate kurulu değil; push'lar denetlenmeden girer.`
           : `none: the repository ${g.where} has no soz-guard gate; pushes go in unjudged.`);
   const parts = [tr ? `${g.branches.join(", ")} korunuyor` : `${g.branches.join(", ")} protected`];
   if (g.requireTask) parts.push(tr ? "yalnızca görev teslimi" : "task deliveries only");
   if (g.package) parts.push(tr ? `paket: ${g.package}` : `package: ${g.package}`);
-  return short ? `${tr ? "Sunucu kapısı" : "Server gate"}: ${parts.join(", ")}` : `${parts.join("; ")} (${g.where})`;
+  return short ? `${tr ? "Sunucudaki soz-guard gate" : "soz-guard gate on the server"}: ${parts.join(", ")}` : `${parts.join("; ")} (${g.where})`;
 }
 
 /** The one line a session starts with: what runs when the agent tries to finish, what is watched, and the gate.
@@ -260,8 +260,12 @@ export function sessionLine(d: Diagnosis, lang = language()): string {
 export function sessionContext(d: Diagnosis, lang = language()): string {
   const tr = lang === "tr";
   return `${sessionLine(d, lang)}\n` + (tr
-    ? "Bu satırı kullanıcı da gördü. İşini bitirmek istediğinde soz-guard yukarıdakileri denetler; tanımlı test yoksa testleri sen çalıştır ve sonucunu söyle. Kullanıcı soz-guard'ın neyi koruduğunu sorarsa: soz-guard doctor."
-    : "The user saw this line too. When you try to finish, soz-guard judges the above; with no test set, run the tests yourself and say how they went. If the user asks what soz-guard guards: soz-guard doctor.");
+    ? "Bu satırı kullanıcı da gördü. İşini bitirmek istediğinde soz-guard yukarıdakileri denetler; tanımlı test yoksa testleri sen çalıştır ve sonucunu söyle. "
+      + "\"Sunucudaki soz-guard gate\", soz-guard'ın sunucuda push'u denetleyen kısmıdır; \"buradan doğrulanamadı\" onun bu makineden okunamadığını söyler, projenin kendi betikleriyle ilgisi yoktur. "
+      + "Kullanıcı soz-guard'ın neyi koruduğunu sorarsa: soz-guard doctor."
+    : "The user saw this line too. When you try to finish, soz-guard judges the above; with no test set, run the tests yourself and say how they went. "
+      + "\"soz-guard gate on the server\" is the part of soz-guard that judges pushes on the server; \"not verified from here\" says it cannot be read from this machine, and has nothing to do with the project's own scripts. "
+      + "If the user asks what soz-guard guards: soz-guard doctor.");
 }
 
 const HOOK_WORDS = {
@@ -325,7 +329,7 @@ export function doctorText(d: Diagnosis, lang = language()): string {
     : `  ${tr ? "Bu projede henüz hiç çalışmamış (kayıt yok)." : "Never ran in this project yet (nothing in its log)."}`
       + (d.hooks.some(k => k.stop === "on") ? (tr ? " Kurulumdan sonra Claude oturumunu yeniden açın." : " Open the Claude session again after setting it up.") : ""));
 
-  h(tr ? "Sunucu kapısı" : "Server gate");
+  h(tr ? "Sunucudaki soz-guard gate (push'u denetler)" : "soz-guard gate on the server (judges pushes)");
   out.push(`  ${gateWords(d.gate, tr, false)}`);
 
   h(tr ? "Oturum başında görünen satır" : "The line a session starts with");
@@ -335,5 +339,5 @@ export function doctorText(d: Diagnosis, lang = language()): string {
 
 /** soz-guard doctor in the server's repository: its gate. */
 export function serverText(g: SeenGate, lang = language()): string {
-  return `soz-guard doctor: ${g.where}\n  ${lang === "tr" ? "Sunucu kapısı" : "Server gate"}: ${gateWords(g, lang === "tr", false)}\n`;
+  return `soz-guard doctor: ${g.where}\n  soz-guard gate: ${gateWords(g, lang === "tr", false)}\n`;
 }
