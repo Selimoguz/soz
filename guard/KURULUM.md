@@ -1,7 +1,7 @@
 # soz-guard: kurulum, deneme ve kaldırma
 
 Bu belge ekipte bir deneme içindir: nasıl kurulur, kurduktan sonra ne görülür, beğenilmezse nasıl
-durdurulur ve nasıl tamamen kaldırılır. Buradaki her komut soz-guard 0.5.0 paketiyle denendi.
+durdurulur ve nasıl tamamen kaldırılır. Buradaki her komut soz-guard 0.5 sürümüyle denendi.
 
 ## Ne yapar
 
@@ -34,13 +34,13 @@ Yalnızca ajan durmak istediğinde (ve kapı kuruluysa push geldiğinde) çalı�
 
 ## A. Ajan kancasını kurmak
 
-Gereken: Node 18 veya üstü, git, Claude Code ve `soz-guard-0.5.0.tgz` dosyası.
+Gereken: Node 18 veya üstü, git, Claude Code.
 
 **1. Her makinede bir kez** (patron için sunucuda, kendi kullanıcısıyla; ikinci geliştirici için kendi
 makinesinde):
 
 ```sh
-npm install -g /yol/soz-guard-0.5.0.tgz
+npm install -g soz-guard
 ```
 
 Linux'ta `-g` kurulum yönetici yetkisi isteyebilir (`sudo npm install -g ...`). Kurulduğunu
@@ -100,7 +100,7 @@ ve geliştiricilerin (ve ajanlarının) bu deponun klasörüne yazamaması gerek
 
 ```sh
 # git kullanıcısı olarak, bir kez
-npm install -g /yol/soz-guard-0.5.0.tgz
+npm install -g soz-guard
 cd /srv/git/proje.git
 soz-guard gate install --branches main --setup "npm ci"
 ```

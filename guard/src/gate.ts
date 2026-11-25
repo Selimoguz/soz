@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { OWN_DIR } from "./scan.ts";
 import { type Verdict, verdictReport, criteriaFingerprint, appendLog, verifyLog } from "./verdict.ts";
-import { type Task, type TaskRecord, type TaskEvaluation, ACCEPTANCE_DIR, readTasks, itemsHash, bindingOf, bringTests, evaluateTask, taskReport } from "./tasks.ts";
+import { type Task, type TaskRecord, type TaskEvaluation, ACCEPTANCE_DIR, readTasks, itemsHash, itemContent, bindingOf, bringTests, evaluateTask, taskReport } from "./tasks.ts";
 
 const self = fileURLToPath(import.meta.url);
 const cli = join(dirname(self), `cli${self.endsWith(".ts") ? ".ts" : ".js"}`);
@@ -371,6 +371,15 @@ function evaluationFor(gitDir: string, task: string, rev: string): TaskEvaluatio
   return hits.length === 1 ? readJson<TaskEvaluation>(join(dir, hits[0])) : null;
 }
 
+/** The gate's newest verdict on a task, whatever the delivery. */
+function latestEvaluation(gitDir: string, task: string): TaskEvaluation | null {
+  const dir = dirname(evalPath(gitDir, task, "x"));
+  if (!existsSync(dir)) return null;
+  const all = readdirSync(dir).filter(f => f.endsWith(".json")).map(f => readJson<TaskEvaluation>(join(dir, f)))
+    .filter((e): e is TaskEvaluation => !!e && typeof e.at === "string");
+  return all.sort((a, b) => b.at.localeCompare(a.at))[0] ?? null;
+}
+
 const terminalOnly = (what: string): boolean => {
   if (process.stdin.isTTY) return true;
   process.stderr.write(`soz-guard gate task ${what} needs a terminal: a person types it, an agent cannot.\n`);
@@ -464,10 +473,14 @@ async function taskCommand(args: string[]): Promise<number> {
     const [taskId, itemId, ...why] = pos;
     const reason = why.join(" ").trim();
     if (!taskId || !itemId || !reason) throw new Error('usage: soz-guard gate task descope TASK ITEM "<why it is out of this task>"');
+    // the decision is about the item as the person reads it here; reworded later, it is asked again
+    const item = latestEvaluation(gitDir, taskId)?.items.find(i => i.id === itemId);
+    if (!item) { process.stderr.write(`The gate has not judged ${taskId} with an item ${itemId} yet: push it, or run  soz-guard gate check REV, first.\n`); return 1; }
+    process.stdout.write(`${itemId}: ${item.text}\n`);
     if (!terminalOnly("descope")) return 2;
     if (!(await yes(`Take ${itemId} out of ${taskId} (${reason})? The task can then be complete without it.`))) { process.stdout.write("Left in.\n"); return 1; }
     const record = readRecord(gitDir, taskId);
-    record.descoped = { ...(record.descoped ?? {}), [itemId]: { reason, by, at: now() } };
+    record.descoped = { ...(record.descoped ?? {}), [itemId]: { item: itemContent(item), reason, by, at: now() } };
     writeRecord(gitDir, taskId, record);
     appendLog(gitDir, { event: "task-descope", task: taskId, item: itemId, reason, by });
     process.stdout.write(`${itemId} is out of ${taskId}: ${reason}\n`);

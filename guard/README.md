@@ -36,19 +36,16 @@ before it counts as done. It does not depend on soz.
 
 ## Set up (Claude Code, also in VS Code)
 
-Requires Node 18 or newer and git. soz-guard is not on npm yet; it comes as one file with no
-dependencies, `soz-guard-0.5.0.tgz`, attached to this repository's
-[releases](https://github.com/Selimoguz/soz/releases) (or built here, in `guard/`, with `npm pack`).
-Install it once per machine, then set it up in the project:
+Requires Node 18 or newer and git. Install it once per machine, then set it up in the project:
 
 ```sh
-npm install -g path/to/soz-guard-0.5.0.tgz
+npm install -g soz-guard
 cd path/to/your/project
 soz-guard init
 ```
 
-(Installed globally, not as a project dependency: the package file's path would otherwise go into the
-project's `package.json`, and it is one machine's path.)
+(Installed globally, not as a project dependency, so that the hook works the same on every machine,
+whatever the project's own `node_modules` hold.)
 
 (From a checkout of this repository, without installing: `node --experimental-strip-types
 --disable-warning=ExperimentalWarning path/to/soz/guard/src/cli.ts init`, Node 22.6 or newer.)
@@ -218,8 +215,8 @@ with `actions/checkout`, set `fetch-depth: 0` (a shallow clone is said plainly, 
 
 **Run soz-guard in CI from a source the pull request cannot change**: a published version pinned by
 number, or a commit of soz-guard's own repository pinned by hash. Never from a copy inside the
-repository being checked, which the agent's branch could have edited. (soz-guard is not on npm yet;
-until it is, pin a commit of this repository.)
+repository being checked, which the agent's branch could have edited. (`npx soz-guard@0.5.1 ci ...`, by
+exact version.)
 
 ## On the server: the gate in front of what goes live
 

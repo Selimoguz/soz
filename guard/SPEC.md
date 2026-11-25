@@ -113,7 +113,7 @@ The four cases the gate must hold, whatever model is used:
 | `unproven` | no bound test, the test errored or was skipped, or its binding changed since approval |
 | `awaiting-person` | a person-proved item nobody has confirmed on this delivery yet |
 | `confirmed` | a person confirmed it on this delivery |
-| `descoped` | the person removed it from the task, or put it off explicitly (recorded by the gate, with a reason) |
+| `descoped` | the person removed it from the task, or put it off explicitly (recorded by the gate, with a reason, for the item as worded then: reworded, it is judged again) |
 
 The task's verdict:
 

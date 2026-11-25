@@ -35,8 +35,9 @@ export type TaskRecord = {
   /** A person confirmed an item: a test that passed from the start is real (bound to the test's hash), or a
    * person-proved item holds on a delivery (bound to that commit). */
   confirmed?: Record<string, { binding?: string; delivery?: string; by: string; at: string }>;
-  /** A person took an item out of the task, or put it off. */
-  descoped?: Record<string, { reason: string; by: string; at: string }>;
+  /** A person took an item out of the task, or put it off: bound to the item as the person read it (itemContent),
+   * so the decision does not carry over to an item that was reworded later. */
+  descoped?: Record<string, { item?: string; reason: string; by: string; at: string }>;
 };
 
 export type Outcome = "pass" | "fail" | "error";
@@ -93,6 +94,11 @@ export function bindingOf(dir: string, item: Item): string | null {
   if (!existsSync(p)) return null;
   const content = readFileSync(p, "utf8").replace(/\r\n/g, "\n");
   return sha256(JSON.stringify([item.id, item.test.file, item.test.name || TAG(item.id), item.test.run, sha256(content)]));
+}
+
+/** An item as a person reads it: what a descope decision is about. Its test is left out; a descoped item is not run. */
+export function itemContent(i: { id: string; text: string; required?: boolean; proof: string }): string {
+  return sha256(JSON.stringify([i.id, i.text, i.required !== false, i.proof]));
 }
 
 /** What the person approves: the items in words and, for checked ones, their bindings. A change to any of it
@@ -166,7 +172,13 @@ export function evaluateTask(task: Task, record: TaskRecord, delivery: string, d
     const binding = bindingOf(deliveryDir, i);
     const base = { id: i.id, text: i.text, required, proof: i.proof, binding, onBase: null, onDelivery: null } as const;
     const descoped = record.descoped?.[i.id];
-    if (descoped) return { ...base, state: "descoped", detail: `taken out by ${descoped.by}: ${descoped.reason}` };
+    if (descoped && descoped.item === itemContent(i)) return { ...base, state: "descoped", detail: `taken out by ${descoped.by}: ${descoped.reason}` };
+    const r = judge(i, required, binding, base);
+    // a decision about the item as it read before does not take out what it says now
+    return descoped && !["proven", "confirmed"].includes(r.state)
+      ? { ...r, detail: `${r.detail}; ${descoped.by} took out an earlier wording of this item, so that decision does not apply` } : r;
+  });
+  function judge(i: Item, required: boolean, binding: string | null, base: Omit<ItemResult, "state" | "detail">): ItemResult {
     if (i.proof === "person") {
       const c = record.confirmed?.[i.id];
       return c?.delivery === delivery ? { ...base, state: "confirmed", detail: `confirmed on this delivery by ${c.by}` }
@@ -189,14 +201,24 @@ export function evaluateTask(task: Task, record: TaskRecord, delivery: string, d
     // never run on the base could be one that cannot fail
     if (onBase?.outcome !== "fail") return { ...r, state: "unproven", detail: "the base could not be checked out or set up, so nothing shows the test can fail" };
     return { ...r, state: "proven", detail: "failed before the task, passes on the delivery" };
-  });
+  }
   const open = items.filter(i => i.required && !["proven", "confirmed", "descoped"].includes(i.state));
   const verdict: TaskVerdict = !approved ? "unverified" : items.some(i => i.required && i.state === "missing") ? "incomplete" : open.length ? "unverified" : "complete";
   const why = !record.approval ? "no person has approved its items yet"
     : !approved ? "its items or their tests changed since a person approved them"
-    : verdict === "complete" ? "every required item proven on this delivery"
+    : verdict === "complete" ? completeWhy(items)
     : open.map(i => `${i.id} ${i.state}`).join(", ");
   return { task: task.task, title: task.title, verdict, approved, itemsHash: hash, base: record.approval?.base ?? null, delivery, items, why, at };
+}
+
+/** What a complete task rests on, counted: "3 proven, 1 taken out by a person", never "all proven" when it is not. */
+function completeWhy(items: ItemResult[]): string {
+  const req = items.filter(i => i.required);
+  const n = (s: ItemState) => req.filter(i => i.state === s).length;
+  const parts = [`${n("proven")} proven on this delivery`];
+  if (n("confirmed")) parts.push(`${n("confirmed")} confirmed by a person`);
+  if (n("descoped")) parts.push(`${n("descoped")} taken out by a person`);
+  return `of ${req.length} required items: ${parts.join(", ")}`;
 }
 
 /** The evaluation in words, for the person. */

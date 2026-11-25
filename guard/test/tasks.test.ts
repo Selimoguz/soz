@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
-import { itemsHash, readTasks, junitOutcome } from "../src/tasks.ts";
+import { itemsHash, itemContent, readTasks, junitOutcome } from "../src/tasks.ts";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 let failed = 0;
@@ -162,10 +162,30 @@ push("-q", "origin", "HEAD:refs/heads/t3");
 approve("T3");
 check("C1 missing: turned down", push("origin", "HEAD:main").status !== 0 && serverMain() === t2);
 check("descope refuses without a terminal", gate(["task", "descope", "T3", "C1", "the mail server comes next month"]).status === 2);
-personWrites("T3", r => { r.descoped = { C1: { reason: "the mail server comes next month", by: "boss", at: "now" } }; });
+check("descope shows the item it takes out, as the person reads it", gate(["task", "descope", "T3", "C1", "later"]).stdout.includes("The invoice is e-mailed after the order"));
+const c1 = { id: "C1", text: "The invoice is e-mailed after the order", proof: "check" as const };
+personWrites("T3", r => { r.descoped = { C1: { item: itemContent(c1), reason: "the mail server comes next month", by: "boss", at: "now" } }; });
 const p5 = push("origin", "HEAD:main");
+const e5 = evaluation("T3", t3);
 check("taken out by the person, with a reason: the task can be complete without it", p5.status === 0 && serverMain() === t3
-      && evaluation("T3", t3).items[0].state === "descoped", p5.stderr);
+      && e5.items[0].state === "descoped", p5.stderr);
+check("... and the verdict says so, not that every item was proven", JSON.stringify(e5).includes("0 proven on this delivery, 1 taken out by a person")
+      && !JSON.stringify(e5).includes("every required item proven"), JSON.stringify(e5));
+
+console.log("\nA taken-out item reworded later");
+write("acceptance/T3.json", JSON.stringify({ task: "T3", title: "Invoices by e-mail", items: [
+  { id: "C1", text: "The invoice is e-mailed and texted after the order", proof: "check", test: { file: "e2e/c1.test.js", name: "[C1]", run: "node e2e/c1.test.js" } }] }, null, 2));
+const t3b = commit("T3: C1 now also texts");
+approve("T3");
+const p6 = push("origin", "HEAD:main");
+const c1b = evaluation("T3", t3b).items[0];
+check("the earlier decision was about other words: the item is judged again, turned down", p6.status !== 0 && serverMain() === t3
+      && c1b.state === "missing" && c1b.detail.includes("earlier wording"), p6.stderr + JSON.stringify(c1b));
+check("a decision recorded before items were bound (no item content) takes nothing out", (() => {
+  personWrites("T3", r => { r.descoped = { C1: { reason: "old record", by: "boss", at: "now" } }; });
+  const p = push("origin", "HEAD:main");
+  return p.status !== 0 && evaluation("T3", t3b).items[0].state === "missing";
+})());
 back();
 
 console.log("\nThe gate's log");
