@@ -16,4 +16,6 @@
   stop and ask the user; they accept such a change themselves.
 
 soz-guard checks your changes when you try to finish: it runs the required checks itself and shows
-you what is still open.
+you what is still open. Each session starts with a line from it, beginning `soz-guard ·`, that says what
+it runs and watches here; the user sees it too. If a session started without that line, its hooks are
+not running: tell the user so, and that `soz-guard doctor` shows why.

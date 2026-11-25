@@ -406,6 +406,40 @@ What it cannot separate, plainly:
 Sessions already open when it is installed do not have the hooks yet: Claude Code reads hooks when a
 session starts. Close them and open them again from the conversation history; nothing is lost.
 
+## What it guards here: doctor, and the line a session starts with
+
+A project having a test command does not mean soz-guard runs it. Only the checks in `.soz-guard.json` run
+when the agent tries to finish; a `npm test` in `package.json` that no check runs is a test nobody runs here.
+A setup that guards less than the person thinks looks the same as one that guards everything, until the
+work turns out unfinished. So soz-guard says what it guards, from the project's own settings:
+
+```sh
+soz-guard doctor          # the detail; read-only, it changes nothing
+soz-guard doctor --json   # the same, as data
+```
+
+It says which checks run when the agent finishes, and when (`when`); which test commands the project has
+that no check runs (`npm test` and `npm run test:*` in `package.json`, `mvn test`, `gradle test`, `pytest`,
+`go test`, `dotnet test`), with the line that would run them; the code rules on the changed lines, built in
+and the project's own; what counts as a change to the tests (and which of the project's own files are
+watched but not run); whether the Claude Code, Codex and git hooks are there, switched off, or point at a
+soz-guard that is not on this machine; when a hook last ran; and the server's gate. The gate can be read
+only when the remote is a folder on this machine; otherwise it says **not verified** and where to look
+(`soz-guard gate log` on the server). Run in the server's repository, it shows that repository's gate.
+
+Every session starts with the same diagnosis in one line, which the SessionStart hook gives to the person
+(Claude Code's `systemMessage`) and to the agent (`additionalContext`), and writes to the log:
+
+```
+soz-guard · No project test is set to run when the agent finishes · npm test: in the project, not run by soz-guard · Code rules: 8 · Changes to tests watched: test files · Server gate: not verified
+soz-guard · Runs when the agent finishes: tests · Server gate: not verified
+```
+
+With no check, the line names the rules that still hold, since those are all there is. A finish hook that
+is missing comes first. Both are in Turkish on a Turkish machine (`SOZ_GUARD_LANG=tr` or `en` to choose). The
+instructions in `CLAUDE.md` tell the agent that a session without this line is one where the hooks do not
+run, and to tell the user so.
+
 ## The hook
 
 When the agent tries to stop and the verdict is `open` or `unverified`, the hook exits with code 2

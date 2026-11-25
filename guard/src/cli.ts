@@ -2,7 +2,9 @@
 // cli.ts — soz-guard: work is finished when the checks say so, not when the agent does.
 //
 //   soz-guard hook                     a Claude Code Stop hook (reads the hook's JSON on stdin)
-//   soz-guard session-start            a Claude Code SessionStart hook: records where this session began
+//   soz-guard session-start            a Claude Code SessionStart hook: records where this session began, and
+//                                      tells the person and the agent in one line what soz-guard guards here
+//   soz-guard doctor [--json]          what this setup guards right now, in detail (read-only)
 //   soz-guard check [--json]           the verdict on what changed since HEAD, checks run; exit 1 unless finished
 //   soz-guard ci --base REF [--checks] [--criteria block|report] [--json]
 //                                      the same verdict in CI, on a pull request against its base
@@ -24,12 +26,13 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
-import { scan, report, repoRoot, loadConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
+import { scan, report, repoRoot, loadConfig, parseConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
 import { evaluate, verdictReport, deferredReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
 import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
 import { gate } from "./gate.ts";
 import { manifestOf, digestOf } from "./package.ts";
+import { diagnose, diagnoseServer, doctorText, serverText, sessionLine, sessionContext, language } from "./doctor.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -87,12 +90,47 @@ function track(): number {
 const hookInput = (): HookInput => { try { return JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { return {}; } };
 
 /** Claude Code SessionStart hook: records the working tree as it is, so that the verdict at the end is about
- * what this session changed, not about work that was uncommitted before it (see session.ts). */
+ * what this session changed, not about work that was uncommitted before it (see session.ts). It also says, in
+ * one line, what soz-guard guards here (doctor.ts): to the person (systemMessage, shown in the session) and to
+ * the agent (additionalContext). A setup that guards less than the person thinks is seen at the start, not
+ * after the work. */
 function sessionStart(): number {
   const input = hookInput();
   const root = repoRoot(input.cwd ?? process.cwd());
-  if (!root || !input.session_id) return 0;
-  startSession(root, input.session_id, loadConfig(root).exclude, input.source ?? "startup");
+  if (!root) return 0;
+  // a .soz-guard.json that cannot be read is said in the line below; the session is still recorded, with the
+  // default exclusions, so that the verdict at its end is about what it changed
+  let exclude: string[];
+  try { exclude = loadConfig(root).exclude; } catch { exclude = parseConfig(null).exclude; }
+  if (input.session_id) startSession(root, input.session_id, exclude, input.source ?? "startup");
+  let line: string, context: string;
+  try {
+    const d = diagnose(root);
+    line = sessionLine(d);
+    context = sessionContext(d);
+  } catch (e) {
+    // the diagnosis never keeps a session from starting: it says it could not be made
+    line = context = `soz-guard: ${language() === "tr" ? "neyi koruduğu okunamadı" : "what it guards could not be read"}: ${(e as Error).message}`;
+  }
+  appendLog(root, { event: "session-start", session: input.session_id ?? null, source: input.source ?? "startup", line });
+  process.stdout.write(JSON.stringify({ systemMessage: line, hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }) + "\n");
+  return 0;
+}
+
+/** soz-guard doctor: what this setup guards right now. Read-only. In a server repository (a bare one), its gate. */
+function doctor(args: string[]): number {
+  const server = diagnoseServer(process.cwd());
+  if (server) {
+    process.stdout.write(args.includes("--json") ? JSON.stringify(server, null, 2) + "\n" : serverText(server));
+    return 0;
+  }
+  if (!repoRoot(process.cwd())) {
+    process.stderr.write(language() === "tr" ? "Burası bir git deposu değil: soz-guard doctor projenin klasöründe çalışır.\n"
+                                             : "This is not a git repository: run soz-guard doctor in the project's folder.\n");
+    return 1;
+  }
+  const d = diagnose(process.cwd());
+  process.stdout.write(args.includes("--json") ? JSON.stringify({ ...d, sessionLine: sessionLine(d) }, null, 2) + "\n" : doctorText(d));
   return 0;
 }
 
@@ -535,6 +573,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "log") return logCommand(rest);
   if (cmd === "gate") return gate(rest);
   if (cmd === "digest") return digest(rest);
+  if (cmd === "doctor") return doctor(rest);
   if (cmd === "scan" || cmd === undefined) {
     const json = rest.includes("--json");
     const { root, findings } = scan(process.cwd(), flag(rest, "--base") ?? "HEAD");
@@ -542,7 +581,7 @@ async function main(argv: string[]): Promise<number> {
     else process.stdout.write(findings.length ? `Unfinished work in what changed:\n${report(findings)}\n` : "Nothing unfinished in what changed.\n");
     return findings.length ? 1 : 0;
   }
-  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]\n');
+  process.stderr.write('usage: soz-guard hook | doctor [--json] | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]\n');
   return 2;
 }
 

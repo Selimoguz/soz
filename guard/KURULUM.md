@@ -75,6 +75,18 @@ Ayarlar zaten commit edildiği için bu komut yalnızca o makinenin kancasını 
 **4. Açık Claude oturumlarını kapatıp yeniden açın.** Claude Code kancaları oturum başında okur; açık
 oturumlar soz-guard'ı görmez. Konuşma geçmişi kaybolmaz.
 
+**5. Neyi koruduğuna bakın.** Proje klasöründe:
+
+```sh
+soz-guard doctor
+```
+
+Yalnızca okur, hiçbir şeyi değiştirmez. İş bitince hangi testlerin çalışacağını, projede olup da
+soz-guard'ın çalıştırmadığı test komutlarını (ör. `package.json`'daki `npm test`, `.soz-guard.json`'da
+zorunlu kontrol değilse), etkin kuralları, kancaların durumunu ve sunucu kapısını söyler. Kapı bu
+makineden okunamıyorsa "doğrulanmadı" der. Her yeni Claude oturumu da bunun özetiyle, `soz-guard ·` ile
+başlayan bir satırla açılır. Satır görünmüyorsa kancalar çalışmıyordur; nedenini `soz-guard doctor` söyler.
+
 ## Kurduktan sonra neler göreceksiniz
 
 | Durum | Ne olur | Ne yapılır |
