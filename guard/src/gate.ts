@@ -9,6 +9,14 @@
 //   soz-guard gate check REV [--base REF]   the same verdict on any commit, by hand (an integrator's review)
 //   soz-guard gate approve REV "<why>"      a person accepts the changes to the tests or rules in REV
 //   soz-guard gate log [--last N] [--verify]   every verdict the gate gave, chained
+//   soz-guard gate package REV [--to FOLDER | --verify PATH [--ignore a,b]]
+//                                   the package the gate built and judged for REV: its digest, a copy of it to
+//                                   deploy, or a live folder compared with it file by file
+//
+// With --require-task, a protected branch takes only the delivery of a task a person approved, complete on
+// exactly the pushed commit; a person can let one commit in without a task (gate approve), with a reason.
+// With --build and --package, the gate builds the package once, runs the checks and the task tests against it
+// (SOZ_GUARD_PACKAGE), records its digest with the verdict and keeps it, so what goes live can be the same files.
 //
 // Each verdict is worked out in a fresh folder of its own: the pushed commit checked out, the setup command
 // run (installing dependencies), then soz-guard ci on it, so the checks run on exactly what was pushed.
@@ -21,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { OWN_DIR } from "./scan.ts";
 import { type Verdict, verdictReport, criteriaFingerprint, appendLog, verifyLog } from "./verdict.ts";
+import { type Manifest, type PackageInfo, manifestOf, packageInfo, compare, same, copyPackage, differenceText, isEmptyOrAbsent } from "./package.ts";
 import { type Task, type TaskRecord, type TaskEvaluation, ACCEPTANCE_DIR, readTasks, itemsHash, itemContent, bindingOf, bringTests, evaluateTask, taskReport } from "./tasks.ts";
 
 const self = fileURLToPath(import.meta.url);
@@ -28,10 +37,22 @@ const cli = join(dirname(self), `cli${self.endsWith(".ts") ? ".ts" : ".js"}`);
 const nodeArgs = self.endsWith(".ts") ? ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"] : [];
 const ZERO = /^0+$/;
 
-type GateConfig = { branches: string[]; setup: string; timeoutSeconds: number };
-type Approval = { commit: string; criteria: string; reason: string; by: string; at: string };
-type Report = { commit: string; base: string; ref: string; state: string; verdict: Verdict | null; setup?: { ok: boolean; tail: string };
-                error?: string; approved: string | null; at: string; tasks?: TaskEvaluation[]; taskProblems?: string[] };
+type GateConfig = { branches: string[]; setup: string; timeoutSeconds: number;
+                    /** only the delivery of an approved task, complete on the pushed commit, goes in */
+                    requireTask: boolean;
+                    /** the command that builds the package, and where the package is (relative to the repository) */
+                    build: string; package: string;
+                    /** how many judged packages the gate keeps whole, newest first (their manifests are kept for good) */
+                    keepPackages: number };
+/** A person's approval of one commit: the changes to the tests or rules it names (CRITERIA), and, with NO_TASK,
+ * letting it into a branch that takes only task deliveries. */
+type Approval = { commit: string; criteria: string; reason: string; by: string; at: string; noTask?: boolean };
+type Step = { ok: boolean; tail: string };
+type Report = { commit: string; base: string; ref: string; state: string; verdict: Verdict | null; setup?: Step; build?: Step;
+                error?: string; approved: string | null; at: string; tasks?: TaskEvaluation[]; taskProblems?: string[];
+                /** why a branch that takes only task deliveries turned this one down */
+                taskRequired?: string; noTask?: boolean;
+                package?: PackageInfo & { path: string } };
 
 /** Git's own variables (a hook gets GIT_DIR, the quarantine's object folders...) left out: the gate's own git
  * runs on its own folder. */
@@ -52,9 +73,9 @@ const configPath = (gitDir: string) => join(gateDir(gitDir), "config.json");
 
 function readConfig(gitDir: string): GateConfig {
   const p = configPath(gitDir);
-  if (!existsSync(p)) return { branches: ["main"], setup: "", timeoutSeconds: 900 };
-  const j = JSON.parse(readFileSync(p, "utf8")) as Partial<GateConfig>;
-  return { branches: j.branches ?? ["main"], setup: j.setup ?? "", timeoutSeconds: j.timeoutSeconds ?? 900 };
+  const j = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) as Partial<GateConfig> : {};
+  return { branches: j.branches ?? ["main"], setup: j.setup ?? "", timeoutSeconds: j.timeoutSeconds ?? 900,
+           requireTask: j.requireTask ?? false, build: j.build ?? "", package: j.package ?? "", keepPackages: j.keepPackages ?? 5 };
 }
 
 const approvalPath = (gitDir: string, commit: string) => join(gateDir(gitDir), "approved", `${commit}.json`);
@@ -67,7 +88,7 @@ function readJson<T>(p: string): T | null {
 /** A folder of its own with REV checked out, reading the server's objects (and, in a pre-receive hook, the
  * pushed ones, which git keeps in quarantine until the hook lets them in); REFS are made in it too. With
  * SETUP, the setup command is run there. The caller removes it. */
-function checkout(gitDir: string, rev: string, refs: Record<string, string>, config: GateConfig, setup: boolean): { dir: string; setup?: { ok: boolean; tail: string } } {
+function checkout(gitDir: string, rev: string, refs: Record<string, string>, config: GateConfig, setup: boolean): { dir: string; setup?: Step; build?: Step } {
   const env = cleanEnv();
   const dir = mkdtempSync(join(tmpdir(), "soz-gate-"));
   git(dir, ["init", "-q"], env);
@@ -76,11 +97,29 @@ function checkout(gitDir: string, rev: string, refs: Record<string, string>, con
   for (const [ref, to] of Object.entries(refs)) git(dir, ["update-ref", ref, to], env);
   git(dir, ["update-ref", "refs/heads/gate", rev], env);
   git(dir, ["-c", "advice.detachedHead=false", "checkout", "-q", "gate"], env);
-  if (!setup || !config.setup.trim()) return { dir };
-  const r = spawnSync(config.setup, { cwd: dir, shell: true, encoding: "utf8", env, timeout: config.timeoutSeconds * 1000, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
-  const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\r/g, "").split("\n").slice(-20).join("\n").trim();
-  return { dir, setup: { ok: r.status === 0 && !r.error, tail: r.error ? r.error.message : tail } };
+  if (!setup) return { dir };
+  const s = config.setup.trim() ? run(config.setup, dir, env, config.timeoutSeconds) : undefined;
+  if (s && !s.ok) return { dir, setup: s };
+  // the package is built once, here, and everything after runs against it; what the build makes is the gate's
+  // own output, not part of the change, so git in this folder (only) leaves it out
+  if (!config.build.trim() && !config.package) return { dir, setup: s };
+  if (config.build.trim()) writeFileSync(join(dir, ".git", "info", "exclude"), `/${config.package.replace(/^\.?\/+/, "")}\n`);
+  const b = config.build.trim() ? run(config.build, dir, env, config.timeoutSeconds) : { ok: true, tail: "" };
+  if (b.ok && config.package && !existsSync(join(dir, config.package)))
+    return { dir, setup: s, build: { ok: false, tail: `${b.tail}\n${config.build ? "the build did not make" : "there is no"} ${config.package}`.trim() } };
+  return { dir, setup: s, build: b };
 }
+
+function run(command: string, cwd: string, env: Env, timeoutSeconds: number): Step {
+  const r = spawnSync(command, { cwd, shell: true, encoding: "utf8", env, timeout: timeoutSeconds * 1000, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+  const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\r/g, "").split("\n").slice(-20).join("\n").trim();
+  return { ok: r.status === 0 && !r.error, tail: r.error ? r.error.message : tail };
+}
+
+/** The environment of the checks and the task tests: where the package is, when the gate built one. Relative,
+ * the task tests resolve it in the folder they run in, so the base's tests get the base's package. */
+const packageEnv = (config: GateConfig, dir?: string): Env =>
+  config.package ? { ...cleanEnv(), SOZ_GUARD_PACKAGE: dir ? join(dir, config.package) : config.package } : cleanEnv();
 
 const taskPath = (gitDir: string, task: string) => join(gateDir(gitDir), "tasks", `${task.replace(/[^\w.-]/g, "_")}.json`);
 const readRecord = (gitDir: string, task: string): TaskRecord => readJson<TaskRecord>(taskPath(gitDir, task)) ?? {};
@@ -91,7 +130,7 @@ function writeRecord(gitDir: string, task: string, r: TaskRecord) {
 
 /** TASKS evaluated on the delivery checked out in DIR (SPEC 4.3, 4.4): each against the base its approval
  * names, checked out and set up on its own, with the delivery's bound tests brought in. */
-function evaluateTasks(gitDir: string, tasks: Task[], delivery: string, dir: string, config: GateConfig): TaskEvaluation[] {
+function evaluateTasks(gitDir: string, tasks: Task[], delivery: string, dir: string, config: GateConfig, pkg?: string): TaskEvaluation[] {
   return tasks.map(t => {
     const record = readRecord(gitDir, t.task);
     const base = record.approval && record.approval.itemsHash === itemsHash(dir, t) ? record.approval.base : null;
@@ -100,10 +139,12 @@ function evaluateTasks(gitDir: string, tasks: Task[], delivery: string, dir: str
       if (base) {
         const b = checkout(gitDir, base, {}, config, true);
         baseDir = b.dir;
-        if (b.setup && !b.setup.ok) { rmSync(baseDir, { recursive: true, force: true }); baseDir = null; }
+        if ((b.setup && !b.setup.ok) || (b.build && !b.build.ok)) { rmSync(baseDir, { recursive: true, force: true }); baseDir = null; }
         else bringTests(dir, baseDir, t);
       }
-      const e = evaluateTask(t, record, delivery, dir, baseDir, cleanEnv(), config.timeoutSeconds);
+      const e = evaluateTask(t, record, delivery, dir, baseDir, packageEnv(config), config.timeoutSeconds);
+      // the evidence is for this package: another build of the same commit is other evidence
+      if (pkg) e.package = pkg;
       keepEvaluation(gitDir, e);
       return e;
     } finally {
@@ -123,10 +164,15 @@ export function judge(gitDir: string, base: string, head: string, ref: string, c
     work = c.dir;
     const setup = c.setup;
     if (setup && !setup.ok) return { commit: head, base, ref, state: "unverified", verdict: null, setup, approved: null, at };
+    // a delivery that does not build is not finished
+    if (c.build && !c.build.ok) return { commit: head, base, ref, state: "open", verdict: null, setup, build: c.build, approved: null, at };
     const env = cleanEnv();
+    const packagePath = config.package ? join(work, config.package) : null;
+    const manifest = packagePath ? manifestOf(packagePath) : null;
+    const pkg = packagePath && manifest ? { ...packageInfo(packagePath, manifest), path: config.package } : undefined;
     const r = spawnSync(process.execPath, [...nodeArgs, cli, "ci", "--base", "refs/remotes/gate/base", "--checks", "--json",
                                             ...(approval ? ["--criteria", "report"] : [])],
-                        { cwd: work, encoding: "utf8", env, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+                        { cwd: work, encoding: "utf8", env: packageEnv(config, work), maxBuffer: 64 * 1024 * 1024, windowsHide: true });
     let verdict: Verdict & { notRun?: string[] };
     try { verdict = JSON.parse(r.stdout); }
     catch { return { commit: head, base, ref, state: "unverified", verdict: null, setup, error: (r.stderr || r.stdout || "soz-guard ci gave no answer").trim(), approved: null, at }; }
@@ -137,15 +183,34 @@ export function judge(gitDir: string, base: string, head: string, ref: string, c
       if (approval.criteria === criteriaFingerprint(verdict.criteria)) approved = approval.reason;
       else if (verdict.criteria.length) state = "open";
     }
-    // the tasks this change carries (their file added or changed): pushing them is asking for completion
+    // the tasks this change carries: their file added or changed, or named in a commit message ("Task: T1");
+    // pushing them is asking for completion
     const touched = git(work, ["diff", "--name-only", "refs/remotes/gate/base", "HEAD", "--", ACCEPTANCE_DIR], env).split("\n").filter(Boolean);
+    const named = tasksNamed(git(work, ["log", "--format=%B%x00", "refs/remotes/gate/base..HEAD"], env));
     const { tasks, problems } = readTasks(work);
-    const carried = tasks.filter(t => touched.includes(`${ACCEPTANCE_DIR}/${t.task}.json`));
-    const taskProblems = problems.filter(p => touched.some(f => p.startsWith(f)));
-    const evaluations = evaluateTasks(gitDir, carried, head, work, config);
+    const carried = tasks.filter(t => touched.includes(`${ACCEPTANCE_DIR}/${t.task}.json`) || named.includes(t.task));
+    const taskProblems = [...problems.filter(p => touched.some(f => p.startsWith(f))),
+      ...named.filter(id => !tasks.some(t => t.task === id) && !problems.some(p => p.includes(`${id}.json`)))
+              .map(id => `"Task: ${id}" is in a commit message, but ${ACCEPTANCE_DIR}/${id}.json is not in the delivery`)];
+    const evaluations = evaluateTasks(gitDir, carried, head, work, config, pkg?.digest);
     if (taskProblems.length || evaluations.some(e => e.verdict === "incomplete")) state = "open";
     else if (evaluations.some(e => e.verdict === "unverified") && state !== "open") state = "unverified";
+    // a branch that takes only task deliveries: no task, no entry, unless a person let this commit in without one
+    let taskRequired: string | undefined;
+    const noTask = !!(approval?.noTask && approved);
+    if (config.requireTask && !noTask) {
+      if (!carried.length && !taskProblems.length) {
+        state = "open";
+        taskRequired = `${ref.replace(/^refs\/heads\//, "")} takes only the delivery of an approved task, and this push carries none: `
+          + `add its ${ACCEPTANCE_DIR}/<task>.json, or name it in a commit message with a line "Task: <task>".`;
+      } else if (state === "unchecked" && evaluations.length && evaluations.every(e => e.verdict === "complete")) {
+        state = "verified";   // nothing else to run, and every task carried was proven on this delivery
+      }
+    }
+    if (packagePath && manifest && pkg && passed(state)) keepPackage(gitDir, head, packagePath, manifest, pkg, config.keepPackages);
     return { commit: head, base, ref, state, verdict, setup, approved, at,
+             ...(c.build ? { build: c.build } : {}), ...(pkg ? { package: pkg } : {}),
+             ...(taskRequired ? { taskRequired } : {}), ...(noTask ? { noTask } : {}),
              ...(evaluations.length ? { tasks: evaluations } : {}), ...(taskProblems.length ? { taskProblems } : {}) };
   } catch (e) {
     return { commit: head, base, ref, state: "unverified", verdict: null, error: (e as Error).message, approved: null, at };
@@ -155,6 +220,36 @@ export function judge(gitDir: string, base: string, head: string, ref: string, c
 }
 
 const passed = (state: string) => state === "verified" || state === "unchecked";
+
+/** The tasks named in commit messages (MESSAGES: git log's bodies), with a line "Task: <id>", in order, once. */
+export function tasksNamed(messages: string): string[] {
+  const out: string[] = [];
+  for (const m of messages.matchAll(/^Task:[ \t]*([\w.-]+)[ \t]*$/gim)) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
+// --- Packages: what the gate built and judged, kept to deploy from and to compare a live folder with ---------
+
+const packageDir = (gitDir: string, commit: string) => join(gateDir(gitDir), "packages", commit);
+type KeptPackage = PackageInfo & { commit: string; path: string; at: string; manifest: Manifest; kept: boolean };
+
+/** Keeps the package a protected branch let in: its manifest for good, the files themselves for the newest KEEP. */
+function keepPackage(gitDir: string, commit: string, from: string, manifest: Manifest, info: PackageInfo & { path: string }, keep: number) {
+  const dir = packageDir(gitDir, commit);
+  rmSync(join(dir, "files"), { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  copyPackage(from, info.kind === "file" ? join(dir, "files", info.path.split(/[\\/]/).pop()!) : join(dir, "files"));
+  const kept: KeptPackage = { ...info, commit, at: new Date().toISOString(), manifest, kept: true };
+  writeFileSync(join(dir, "package.json"), JSON.stringify(kept, null, 2) + "\n");
+  const all = readdirSync(join(gateDir(gitDir), "packages"))
+    .map(c => readJson<KeptPackage>(join(packageDir(gitDir, c), "package.json")))
+    .filter((p): p is KeptPackage => !!p && p.kept)
+    .sort((a, b) => b.at.localeCompare(a.at));
+  for (const old of all.slice(Math.max(1, keep))) {
+    rmSync(join(packageDir(gitDir, old.commit), "files"), { recursive: true, force: true });
+    writeFileSync(join(packageDir(gitDir, old.commit), "package.json"), JSON.stringify({ ...old, kept: false }, null, 2) + "\n");
+  }
+}
 
 /** Keeps the report (the last one per commit) and appends the verdict to the gate's chained log. */
 function record(gitDir: string, report: Report, source: string) {
@@ -167,6 +262,8 @@ function record(gitDir: string, report: Report, source: string) {
     findings: v ? v.findings.map(f => `${f.file}:${f.line} ${f.rule}`) : [], criteria: v ? v.criteria.map(c => `${c.file} ${c.kind}`) : [],
     checks: v ? v.checks.map(c => ({ name: c.name, status: c.status, seconds: c.seconds })) : [], approved: report.approved,
     ...(report.error ? { error: report.error.slice(0, 500) } : {}), ...(report.setup && !report.setup.ok ? { setup: "failed" } : {}),
+    ...(report.build && !report.build.ok ? { build: "failed" } : {}), ...(report.package ? { package: report.package.digest } : {}),
+    ...(report.taskRequired ? { taskRequired: true } : {}), ...(report.noTask ? { noTask: true } : {}),
     ...(report.tasks ? { tasks: report.tasks.map(t => ({ task: t.task, verdict: t.verdict, items: Object.fromEntries(t.items.map(i => [i.id, i.state])) })) } : {}),
   });
 }
@@ -175,13 +272,20 @@ function record(gitDir: string, report: Report, source: string) {
 function reportText(r: Report, gitDir: string): string {
   const head = `soz-guard gate: ${r.ref} ${r.commit.slice(0, 10)}: ${passed(r.state) ? `${r.state}, let in` : `${r.state}, not let in`}`;
   if (r.setup && !r.setup.ok) return `${head}\nThe setup command failed, so the checks could not run:\n${r.setup.tail.split("\n").map(l => "    " + l).join("\n")}`;
+  if (r.build && !r.build.ok) return `${head}\nThe package could not be built:\n${r.build.tail.split("\n").map(l => "    " + l).join("\n")}`;
   if (!r.verdict) return `${head}\n${r.error ?? ""}`;
   const v = r.verdict as Verdict & { notRun?: string[] };
   const lines = [head, verdictReport(v, false)];
   if (v.notRun?.length) lines.push(`Files the setup left behind kept the checks from running: ${v.notRun.slice(0, 5).join(", ")}. Add them to "exclude" in .soz-guard.json.`);
   for (const p of r.taskProblems ?? []) lines.push(`A task file cannot be read: ${p}`);
   for (const t of r.tasks ?? []) lines.push(taskReport(t) + taskHints(t, gitDir, r.commit));
-  if (r.approved) lines.push(`The changes to the tests or rules were approved by a person: ${r.approved}`);
+  if (r.taskRequired) lines.push(`${r.taskRequired}\nAn urgent fix with no task: a person lets this one commit in, on the server, in a terminal:\n`
+      + `    cd ${gitDir.replace(/\\/g, "/")} && soz-guard gate approve ${r.commit.slice(0, 12)} "<why it goes in without a task>"`);
+  if (r.package) lines.push(`Package ${r.package.path}: sha256 ${r.package.digest.slice(0, 16)} (${r.package.files} file${r.package.files === 1 ? "" : "s"}), the one the checks ran against.`
+      + (passed(r.state) ? `\n  Deploy these same files:  soz-guard gate package ${r.commit.slice(0, 12)} --to <an empty folder>\n`
+        + `  Check a live copy:        soz-guard gate package ${r.commit.slice(0, 12)} --verify <the live folder or file>` : ""));
+  if (r.noTask && r.approved) lines.push(`Let in without a task by a person: ${r.approved}`);
+  else if (r.approved) lines.push(`The changes to the tests or rules were approved by a person: ${r.approved}`);
   else if (!passed(r.state) && v.criteria.length && !v.findings.length && !v.checks.some(c => c.status === "failed"))
     lines.push(`If these changes to the tests or rules are right, a person approves them on the server, in a terminal:\n`
       + `    cd ${gitDir.replace(/\\/g, "/")} && soz-guard gate approve ${r.commit.slice(0, 12)} "<why>"\nand pushes again.`);
@@ -271,20 +375,22 @@ async function approve(args: string[]): Promise<number> {
     return 1;
   }
   const criteria = report.verdict.criteria;
-  if (!criteria.length) { process.stdout.write("Nothing to approve: the last verdict on it found no change to the tests or rules.\n"); return 0; }
+  const noTask = !!report.taskRequired;
+  if (!criteria.length && !noTask) { process.stdout.write("Nothing to approve: the last verdict on it found no change to the tests or rules, and it was not turned down for want of a task.\n"); return 0; }
   if (!process.stdin.isTTY) {
     process.stderr.write("soz-guard gate approve needs a terminal: a person types it, an agent cannot.\n");
     return 2;
   }
-  process.stdout.write(`${commit.slice(0, 12)} changes what counts as finished:\n${criteria.map(c => `  ${c.file}  [${c.kind}] ${c.detail}`).join("\n")}\n`);
+  if (criteria.length) process.stdout.write(`${commit.slice(0, 12)} changes what counts as finished:\n${criteria.map(c => `  ${c.file}  [${c.kind}] ${c.detail}`).join("\n")}\n`);
+  if (noTask) process.stdout.write(`${commit.slice(0, 12)} carries no task: ${report.taskRequired}\nApproving lets this one commit in without a task; its checks still have to pass.\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise<string>(res => rl.question("Approve them? Type the whole word yes: ", a => { rl.close(); res(a); }));
   if (answer.trim().toLowerCase() !== "yes") { process.stdout.write("Not approved.\n"); return 1; }
-  const approval: Approval = { commit, criteria: criteriaFingerprint(criteria), reason, by: userInfo().username, at: new Date().toISOString() };
+  const approval: Approval = { commit, criteria: criteriaFingerprint(criteria), reason, by: userInfo().username, at: new Date().toISOString(), ...(noTask ? { noTask } : {}) };
   mkdirSync(dirname(approvalPath(gitDir, commit)), { recursive: true });
   writeFileSync(approvalPath(gitDir, commit), JSON.stringify(approval, null, 2) + "\n");
-  appendLog(gitDir, { event: "approve", commit, reason, by: approval.by, criteria: criteria.map(c => `${c.file} ${c.kind}`) });
-  process.stdout.write(`Approved, for exactly these changes in ${commit.slice(0, 12)}. Push it again; the checks still have to pass.\n`);
+  appendLog(gitDir, { event: "approve", commit, reason, by: approval.by, criteria: criteria.map(c => `${c.file} ${c.kind}`), ...(noTask ? { noTask } : {}) });
+  process.stdout.write(`Approved, for exactly ${noTask && !criteria.length ? "this commit" : "these changes in " + commit.slice(0, 12)}${noTask ? ", without a task" : ""}. Push it again; the checks still have to pass.\n`);
   return 0;
 }
 
@@ -302,14 +408,16 @@ function logCommand(args: string[]): number {
     try {
       const e = JSON.parse(l) as { seq: number; at: string; event: string; ref?: string; commit?: string; state?: string; by?: string; reason?: string;
                                    findings?: unknown[]; criteria?: unknown[]; checks?: { name: string; status: string }[]; approved?: string | null; error?: string;
-                                   task?: string; item?: string; delivery?: string; verdict?: string;
+                                   task?: string; item?: string; delivery?: string; verdict?: string; noTask?: boolean; folder?: string; same?: boolean; package?: string;
                                    tasks?: { task: string; verdict: string; items: Record<string, string> }[]; items?: Record<string, string> };
       const items = (m?: Record<string, string>) => m ? Object.entries(m).map(([k, v]) => `${k} ${v}`).join(", ") : "";
       const what = e.event === "gate"
         ? `${(e.ref ?? "").replace(/^refs\/heads\//, "")} ${(e.commit ?? "").slice(0, 10)} ${e.state}${e.by ? ` (${e.by})` : ""}: ${e.findings?.length ?? 0} unfinished, ${e.criteria?.length ?? 0} criteria`
           + `${e.checks?.length ? ", " + e.checks.map(c => `${c.name} ${c.status}`).join(", ") : ""}${e.approved ? ", approved" : ""}${e.error ? `, error: ${e.error.split("\n")[0]}` : ""}`
+          + `${e.package ? `, package ${e.package.slice(0, 12)}` : ""}`
           + (e.tasks ?? []).map(t => `; task ${t.task} ${t.verdict} (${items(t.items)})`).join("")
-        : e.event === "approve" ? `${(e.commit ?? "").slice(0, 10)} approved by ${e.by}: ${e.reason}`
+        : e.event === "approve" ? `${(e.commit ?? "").slice(0, 10)} approved by ${e.by}${e.noTask ? ", without a task" : ""}: ${e.reason}`
+        : e.event.startsWith("package-") ? `${(e.commit ?? "").slice(0, 10)} ${e.event === "package-out" ? "copied to" : "compared with"} ${e.folder}${e.event === "package-verify" ? (e.same ? ": the same files" : ": DIFFERENT") : ""} (${e.by})`
         : e.event === "task" ? `${e.task} on ${(e.delivery ?? "").slice(0, 10)}: ${e.verdict} (${items(e.items)})`
         : e.event.startsWith("task-") ? `${e.task}${e.item ? ` ${e.item}` : ""} ${e.event.slice(5)}d by ${e.by}${e.reason ? `: ${e.reason}` : ""}`
         : e.event;
@@ -329,14 +437,21 @@ function install(args: string[]): number {
     branches: (flag("--branches") ?? current.branches.join(",")).split(",").map(b => b.trim()).filter(Boolean),
     setup: flag("--setup") ?? current.setup,
     timeoutSeconds: Number(flag("--timeout") ?? current.timeoutSeconds),
+    requireTask: args.includes("--require-task") ? true : args.includes("--no-require-task") ? false : current.requireTask,
+    build: flag("--build") ?? current.build,
+    package: (flag("--package") ?? current.package).replace(/\\/g, "/"),
+    keepPackages: Number(flag("--keep-packages") ?? current.keepPackages),
   };
+  if (config.build && !config.package) throw new Error("--build needs --package: where the build puts the package, relative to the repository");
   mkdirSync(gateDir(gitDir), { recursive: true });
   writeFileSync(configPath(gitDir), JSON.stringify(config, null, 2) + "\n");
   const hooksDir = git(gitDir, ["rev-parse", "--git-path", "hooks"]);
   const dir = isAbsolute(hooksDir) ? hooksDir : join(gitDir, hooksDir);
   const hook = join(dir, "pre-receive");
   const command = [process.execPath, ...nodeArgs, cli].map((p, k) => k === 0 || k === nodeArgs.length + 1 ? `"${p.replace(/\\/g, "/")}"` : p).join(" ") + " gate pre-receive";
-  const notes = [`gate config: ${configPath(gitDir)} (protected: ${config.branches.join(", ")}${config.setup ? `; setup: ${config.setup}` : "; no setup command"})`];
+  const notes = [`gate config: ${configPath(gitDir)} (protected: ${config.branches.join(", ")}${config.setup ? `; setup: ${config.setup}` : "; no setup command"})`,
+                 ...(config.requireTask ? ["only the delivery of an approved task, complete on the pushed commit, goes in (--no-require-task to turn it off)"] : []),
+                 ...(config.package ? [`package: ${config.package}${config.build ? `, built with: ${config.build}` : ""}; the last ${config.keepPackages} let in are kept whole`] : [])];
   if (existsSync(hook) && !readFileSync(hook, "utf8").includes("soz-guard gate")) {
     notes.push(`pre-receive: there is one already, left as it is; to add the gate, put this line in ${hook}:\n      ${command} || exit 1`);
   } else {
@@ -490,6 +605,49 @@ async function taskCommand(args: string[]): Promise<number> {
   return 2;
 }
 
+/** The package the gate judged for REV: its digest; a copy to deploy (--to, an empty or new folder); or a live
+ * copy compared with it file by file (--verify), with what the live server writes itself left out (--ignore). */
+function packageCommand(args: string[]): number {
+  const gitDir = gitDirOf(process.cwd());
+  const flag = (n: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
+  const rev = args.find((a, k) => !a.startsWith("--") && !["--to", "--verify", "--ignore"].includes(args[k - 1]));
+  if (!rev) throw new Error("usage: soz-guard gate package REV [--to FOLDER | --verify PATH [--ignore logs,uploads]]");
+  let commit = reportFor(gitDir, rev);
+  if (!commit) { try { commit = git(gitDir, ["rev-parse", "--verify", `${rev}^{commit}`]); } catch { commit = null; } }
+  const kept = commit ? readJson<KeptPackage>(join(packageDir(gitDir, commit), "package.json")) : null;
+  if (!commit || !kept) {
+    process.stderr.write(`The gate has let in no package for ${rev}: only a commit the gate judged and let in, with a package configured, has one.\n`);
+    return 1;
+  }
+  const by = userInfo().username;
+  const to = flag("--to"), verify = flag("--verify");
+  if (to) {
+    if (!kept.kept) { process.stderr.write(`The files of ${commit.slice(0, 12)}'s package are no longer kept (only the newest are); its digest is: ${kept.digest}\n`); return 1; }
+    if (!isEmptyOrAbsent(to)) { process.stderr.write(`${to} is not empty: copy into an empty or new folder, so that nothing else ends up next to the package.\n`); return 1; }
+    const from = join(packageDir(gitDir, commit), "files");
+    copyPackage(from, to);
+    const target = kept.kind === "file" ? join(to, readdirSync(from)[0]) : to;
+    const ok = same(compare(kept.manifest, manifestOf(target)));
+    appendLog(gitDir, { event: "package-out", commit, folder: target, same: ok, by });
+    process.stdout.write(ok ? `Copied the package of ${commit.slice(0, 12)} to ${target} (sha256 ${kept.digest.slice(0, 16)}, ${kept.files} file${kept.files === 1 ? "" : "s"}).\n`
+                            : `Copied, but the copy is not the same as the package: the disk or the copy failed.\n`);
+    return ok ? 0 : 1;
+  }
+  if (verify) {
+    if (!existsSync(verify)) { process.stderr.write(`${verify} does not exist.\n`); return 1; }
+    const ignore = (flag("--ignore") ?? "").split(",").map(x => x.trim()).filter(Boolean);
+    const d = compare(kept.manifest, manifestOf(verify, ignore));
+    const ok = same(d);
+    appendLog(gitDir, { event: "package-verify", commit, folder: verify, same: ok, by, ...(ignore.length ? { ignore } : {}) });
+    process.stdout.write(ok ? `${verify} is the package of ${commit.slice(0, 12)}, file for file (sha256 ${kept.digest.slice(0, 16)}).\n`
+                            : `${verify} is NOT the package the gate judged for ${commit.slice(0, 12)}:\n${differenceText(d)}\n`);
+    return ok ? 0 : 1;
+  }
+  process.stdout.write(`Package of ${commit.slice(0, 12)}: ${kept.path}, sha256 ${kept.digest}\n  ${kept.files} file${kept.files === 1 ? "" : "s"}, ${kept.bytes} bytes, judged ${kept.at}; `
+    + `${kept.kept ? `kept in ${join(packageDir(gitDir, commit), "files")}` : "its files are no longer kept, only its manifest"}\n`);
+  return 0;
+}
+
 export async function gate(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
   if (sub === "pre-receive") return preReceive();
@@ -498,6 +656,7 @@ export async function gate(args: string[]): Promise<number> {
   if (sub === "log") return logCommand(rest);
   if (sub === "install") return install(rest);
   if (sub === "task") return taskCommand(rest);
-  process.stderr.write('usage: soz-guard gate install [--branches main,production] [--setup "npm ci"] | check REV [--base REF] | approve REV "<why>" | log [--last N] [--verify] | task status|approve|confirm|descope ...\n');
+  if (sub === "package") return packageCommand(rest);
+  process.stderr.write('usage: soz-guard gate install [--branches main,production] [--setup "npm ci"] [--require-task] [--build "<command>" --package PATH] | check REV [--base REF] | approve REV "<why>" | log [--last N] [--verify] | task status|approve|confirm|descope ... | package REV [--to FOLDER | --verify PATH]\n');
   return 2;
 }

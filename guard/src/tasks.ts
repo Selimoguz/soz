@@ -17,7 +17,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync, readdirSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 
 export const ACCEPTANCE_DIR = "acceptance";
@@ -52,6 +52,8 @@ export type TaskVerdict = "complete" | "incomplete" | "unverified";
 export type TaskEvaluation = {
   task: string; title: string; verdict: TaskVerdict; approved: boolean; itemsHash: string;
   base: string | null; delivery: string; items: ItemResult[]; why: string; at: string;
+  /** the digest of the package the tests ran against, when the gate built one: the evidence is for it */
+  package?: string;
 };
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
@@ -132,6 +134,8 @@ export function junitOutcome(xml: string, tag: string): { outcome: Outcome; mess
 /** Runs ITEM's test in DIR and reads its result from the JUnit report. An exit code alone says nothing about
  * which way a test went: no report, or no case with the item's tag, is an error (nothing is known). */
 export function runItem(dir: string, item: Item, env: Record<string, string | undefined>, timeoutSeconds: number): { outcome: Outcome; message: string } {
+  // the package the gate built, given relative: this folder's own (the base's tests get the base's package)
+  if (env.SOZ_GUARD_PACKAGE && !isAbsolute(env.SOZ_GUARD_PACKAGE)) env = { ...env, SOZ_GUARD_PACKAGE: join(dir, env.SOZ_GUARD_PACKAGE) };
   const out = mkdtempSync(join(tmpdir(), "soz-junit-"));
   const report = join(out, "junit.xml");
   try {

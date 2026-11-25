@@ -1,8 +1,9 @@
 # soz-guard: tasks and acceptance — draft 0.1
 
 Status: **approved; built in soz-guard 0.5.0 for deliveries that are commits** (`soz-guard gate task`, and
-the gate judging every task a push carries). Not built yet: deliveries that are packages (step 10's
-package part, §9.3), screenshots as evidence (step 11), and feedback from the tasks in the local hook.
+the gate judging every task a push carries), and in 0.5.1 for packages the gate builds, with a branch that
+takes only task deliveries (§9.3, §9.6). Not built yet: the gate starting the package itself and evidence
+from the live URL, screenshots as evidence (step 11), and feedback from the tasks in the local hook.
 The proposed answers to §9.1, 9.2, 9.4 and 9.5 are what was built.
 
 ## 1. The promise
@@ -210,12 +211,17 @@ while releases go out as they do today. Counted per task:
    failure from an error), or a small format of soz-guard's own.
 2. **Where approvals live** without a server gate (a project with only the local hook): proposed, nowhere:
    tasks and acceptance need the gate; locally, soz-guard only reports.
-3. **The delivery**: how the project builds and starts its package (`"delivery": {"build": ..., "start":
-   ..., "url": ...}` in `.soz-guard.json`), and what the gate needs installed for it (a browser).
+3. **The delivery**: how the project builds its package. Built in 0.5.1, in the gate's own configuration
+   rather than `.soz-guard.json`, so an agent's branch cannot change how its delivery is built: `gate install
+   --build "<command>" --package <path>`. The gate builds once; the checks and task tests run against it
+   (`$SOZ_GUARD_PACKAGE`; starting it is the tests' part); its digest is recorded with the verdict; the
+   packages let in are kept, copied out with `gate package REV --to`, and a live copy compared with
+   `--verify`. Not built: the gate starting the package itself, and evidence from the live URL.
 4. **Who writes the tests**: the agent (proposed), with the person able to hold one out (a holdout test
    the agent never sees) for items that matter most.
 5. **The name and place of the task record**: `acceptance/<task-id>.json` in the repository (proposed).
-6. **A push that does not carry the task.** The gate judges the tasks a push carries (their file added or
-   changed in it). Code for a task pushed without its task file is judged as any change, and the task stays
-   open in `gate task status`. Whether a protected branch should accept only pushes that carry an approved
-   task is the person's choice; not built.
+6. **A push that does not carry the task.** The gate judges the tasks a push carries: their file added or
+   changed in it, or named in a commit message (`Task: T1`). By default a push that carries none is judged as
+   any change. Built in 0.5.1, as the person's choice: `gate install --require-task` makes a protected branch
+   take only pushes that carry a task, each `complete` on exactly the pushed commit (`unchecked` is not
+   enough); one commit with no task goes in only when a person approves it, with a reason.

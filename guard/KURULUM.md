@@ -112,6 +112,23 @@ soz-guard gate install --branches main --setup "npm ci"
 | Test değişikliği gerçekten doğru | Reddedilir, onay komutu gösterilir | Bir kişi sunucuda: `sudo -u git soz-guard gate approve <hash> "neden"`, sonra tekrar push |
 | Bir dalı birleştirmeden önce bakmak | — | `sudo -u git soz-guard gate check dal-adi --base main` |
 
+**İsteğe bağlı iki ayar:**
+
+- `--require-task`: `main` yalnızca onaylı bir görevin teslimini alır. Görev, `acceptance/<görev>.json`
+  dosyasıyla ya da commit mesajındaki `Task: T1` satırıyla belirtilir ve o commit üzerinde `complete`
+  olmalıdır. Görevsiz acil bir düzeltme, ancak bir kişi o commit'i gerekçesiyle onaylarsa girer:
+  `soz-guard gate approve <hash> "neden görevsiz"`.
+- `--build "<komut>" --package <yol>`: Kapı paketi kendisi bir kez derler, testleri o paket üzerinde
+  çalıştırır ve paketin özetini kaydeder. Canlıya o paketin aynısı gider ve sonradan kontrol edilir:
+
+  ```sh
+  soz-guard gate package <hash> --to D:/deploy/yeni-surum      # onaylanan paketin kopyası
+  soz-guard gate package <hash> --verify D:/siteler/erp --ignore logs   # canlıdaki klasör aynı mı
+  ```
+
+  Canlı sunucu başka bir makineyse orada `soz-guard digest <klasör>` çalıştırılır ve çıkan özet kapının
+  kaydıyla karşılaştırılır.
+
 ## Durdurma ve kaldırma
 
 ### Geçici olarak durdurmak

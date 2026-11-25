@@ -29,6 +29,7 @@ import { evaluate, verdictReport, deferredReport, criteriaFingerprint, writeOwn,
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
 import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
 import { gate } from "./gate.ts";
+import { manifestOf, digestOf } from "./package.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -510,6 +511,16 @@ function init(dir: string, args: string[] = []): number {
   return 0;
 }
 
+/** The digest of a file or folder, the way the gate records a package: to compare a live copy on a machine that is
+ * not the gate's with  soz-guard gate package REV  there. */
+function digest(args: string[]): number {
+  const path = args.find(a => !a.startsWith("--") && args[args.indexOf(a) - 1] !== "--ignore");
+  if (!path || !existsSync(path)) throw new Error("usage: soz-guard digest PATH [--ignore logs,uploads]");
+  const m = manifestOf(path, (flag(args, "--ignore") ?? "").split(",").map(x => x.trim()).filter(Boolean));
+  process.stdout.write(`sha256 ${digestOf(m)}  ${path} (${Object.keys(m).length} file${Object.keys(m).length === 1 ? "" : "s"})\n`);
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   if (cmd === "hook") return hook();
@@ -523,6 +534,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "accept") return accept(rest);
   if (cmd === "log") return logCommand(rest);
   if (cmd === "gate") return gate(rest);
+  if (cmd === "digest") return digest(rest);
   if (cmd === "scan" || cmd === undefined) {
     const json = rest.includes("--json");
     const { root, findings } = scan(process.cwd(), flag(rest, "--base") ?? "HEAD");

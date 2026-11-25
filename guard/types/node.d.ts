@@ -2,13 +2,15 @@
 
 declare module "node:fs" {
   export function readFileSync(path: string | number, encoding: "utf8"): string;
+  /** The bytes, for hashing a file whatever it holds. */
+  export function readFileSync(path: string): Uint8Array;
   export function writeFileSync(path: string, data: string, options?: { mode?: number } | string): void;
   export function existsSync(path: string): boolean;
   export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
   export function mkdtempSync(prefix: string): string;
   export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
   export function readdirSync(path: string): string[];
-  export function statSync(path: string): { size: number; mtimeMs: number };
+  export function statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
   export function copyFileSync(from: string, to: string): void;
   export function appendFileSync(path: string, data: string, encoding: "utf8"): void;
   export function chmodSync(path: string, mode: number): void;
@@ -48,7 +50,7 @@ declare module "node:child_process" {
 }
 
 declare module "node:crypto" {
-  interface Hash { update(data: string, encoding?: "utf8"): Hash; digest(encoding: "hex"): string }
+  interface Hash { update(data: string | Uint8Array, encoding?: "utf8"): Hash; digest(encoding: "hex"): string }
   export function createHash(algorithm: "sha256"): Hash;
 }
 

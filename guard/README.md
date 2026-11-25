@@ -276,8 +276,54 @@ Task T1 (Contract reachable from the Terms menu): incomplete, A1 missing
 
 `soz-guard gate task status T1` gives the task's state on what is live, worked out then and there; the
 model saying "done" changes nothing. Approving, confirming and taking out need a terminal, on the server:
-an agent cannot do them. For now the delivery is the pushed commit; a package built and started as it
-ships is next (SPEC §9.3).
+an agent cannot do them. A decision to take an item out holds for the item as it was worded then: reworded
+and approved again, it is judged again. A complete task says what it rests on ("2 proven on this delivery,
+1 taken out by a person"), not that everything was proven.
+
+### Only task deliveries
+
+By default a push that carries no task is judged as any change. The owner can make a protected branch take
+only the delivery of a task:
+
+```sh
+soz-guard gate install --branches main --require-task
+```
+
+Then a push to `main` goes in only when it carries a task (its `acceptance/<task>.json` added or changed, or
+a commit message with a line `Task: T1`) and every task it carries is `complete` on exactly the pushed
+commit. A push with no task is turned down, and so is `unchecked`: with nothing configured to run, the
+task's own tests are the evidence. An urgent fix with no task goes in only when a person lets that one
+commit in, with a reason, on the server: `soz-guard gate approve <commit> "<why it goes in without a task>"`.
+`--no-require-task` turns it off.
+
+### The package: the same files the checks ran against
+
+Passing tests show that the commit works. They do not show that the folder copied to the live server is
+that commit's: an old build, a folder from another branch or a hand-edited file look the same from outside.
+The gate can build the package itself, once, and judge that:
+
+```sh
+soz-guard gate install --branches main --build "mvn -q package -DskipTests" --package target/app.war
+soz-guard gate install --branches main --build "npm run build" --package dist          # a folder works too
+```
+
+The checks and the task tests run against the package the gate built: its path is in `$SOZ_GUARD_PACKAGE`
+(on the base, the base's own build), so a test can start or read exactly what will ship. The package's
+sha256 digest goes into the verdict, the task's evaluation and the gate's log; the evidence is for that
+package. A package that does not build is not let in. The packages the gate let in are kept (the newest 5
+whole, `--keep-packages N`; the digests of all of them for good):
+
+```sh
+soz-guard gate package 3f9c2a1b7e44                        # its digest, its files, where they are kept
+soz-guard gate package 3f9c2a1b7e44 --to D:/deploy/v928    # a copy to deploy, into an empty folder
+soz-guard gate package 3f9c2a1b7e44 --verify D:/sites/erp --ignore logs,uploads
+soz-guard digest D:/sites/erp --ignore logs,uploads         # on a live server that is another machine
+```
+
+`--verify` compares the live folder (or file) with the package file by file and names what is changed,
+missing or not in the package; `--ignore` leaves out what the live server writes itself. Every copy and
+comparison is in the gate's log, with who did it. The gate's last word is still "this package was judged";
+whether it is the one running is what `--verify`, run after each deployment, answers.
 
 ## Integrity: soz-guard's own footing
 
