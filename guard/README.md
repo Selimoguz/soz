@@ -440,6 +440,13 @@ is missing comes first. Both are in Turkish on a Turkish machine (`SOZ_GUARD_LAN
 instructions in `CLAUDE.md` tell the agent that a session without this line is one where the hooks do not
 run, and to tell the user so.
 
+Claude's desktop app keeps a hook's `systemMessage` in the transcript but shows nothing on screen. There
+(`CLAUDE_CODE_ENTRYPOINT=claude-desktop`) the agent is told to write the line at the top of its first reply,
+and the Stop hook looks for it in the agent's replies in the transcript: hooks' own records do not count.
+If it is not there, the agent is stopped once and given the line to write; after that it is not stopped for
+it again. Either way the log says whether the person was shown it (`session-line`). Codex is not yet
+checked: there the line goes out as a `systemMessage`, as in the terminal.
+
 ## The hook
 
 When the agent tries to stop and the verdict is `open` or `unverified`, the hook exits with code 2

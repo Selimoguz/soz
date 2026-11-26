@@ -24,9 +24,11 @@ const check = (what: string, ok: boolean, detail = "") => {
 const top = mkdtempSync(join(tmpdir(), "soz-doctor-test-"));
 const gitIn = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false", ...args],
                                                                 { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-const run = (cwd: string, args: string[], lang = "tr", input?: string) => spawnSync(process.execPath,
+// as no particular app runs it, unless APP says which (CLAUDE_CODE_ENTRYPOINT)
+const { CLAUDE_CODE_ENTRYPOINT: _app, ...hostless } = process.env;
+const run = (cwd: string, args: string[], lang = "tr", input?: string, app?: string) => spawnSync(process.execPath,
   ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", cli, ...args],
-  { cwd, encoding: "utf8", input, env: { ...process.env, SOZ_GUARD_LANG: lang } });
+  { cwd, encoding: "utf8", input, env: { ...hostless, SOZ_GUARD_LANG: lang, ...(app ? { CLAUDE_CODE_ENTRYPOINT: app } : {}) } });
 const doctor = (cwd: string, lang = "tr") => run(cwd, ["doctor"], lang);
 const json = (cwd: string) => JSON.parse(run(cwd, ["doctor", "--json"]).stdout) as { sessionLine: string; unwired: { command: string }[]; checks: unknown[] };
 const sessionStart = (cwd: string, lang = "tr") => {
@@ -161,6 +163,74 @@ check("outside a git repository: said, exit 1", (() => { const d = join(top, "pl
 check("the agent is told what the gate in the line is, and that it is not the project's own script",
       (sessionStart(erp).out.hookSpecificOutput?.additionalContext ?? "").includes("projenin kendi betikleriyle ilgisi yoktur"));
 check("the template tells the agent what to do when the line is missing", readFileSync(join(dirname(cli), "..", "templates", "CLAUDE.md"), "utf8").includes("soz-guard doctor"));
+check("the template tells the agent to write the line in its first reply", readFileSync(join(dirname(cli), "..", "templates", "CLAUDE.md"), "utf8").replace(/\s+/g, " ").includes("at the top of your first reply"));
+
+console.log("\nThe line in front of the person: the agent writes it, the Stop hook sees that it did");
+// The desktop app keeps a SessionStart systemMessage in the transcript and shows nothing; what it shows is the
+// agent's reply. So the line counts as seen only once it is in one of the agent's replies.
+const shownDir = project("shown", { checks: [] });
+const transcript = (name: string, records: object[]) => {
+  const p = join(top, `${name}.jsonl`);
+  writeFileSync(p, records.map(r => JSON.stringify(r)).join("\n") + "\n");
+  return p;
+};
+const says = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+const startAs = (session: string, app = "claude-desktop") => {
+  const r = run(shownDir, ["session-start"], "tr", JSON.stringify({ cwd: shownDir, session_id: session, source: "startup", hook_event_name: "SessionStart" }), app);
+  return JSON.parse(r.stdout) as { systemMessage: string; hookSpecificOutput: { additionalContext: string } };
+};
+const stop = (session: string, extra: object = {}) =>
+  run(shownDir, ["hook"], "tr", JSON.stringify({ cwd: shownDir, session_id: session, hook_event_name: "Stop", ...extra }));
+const lineLog = (session: string) => readFileSync(join(shownDir, ".soz-guard", "log.jsonl"), "utf8").split("\n").filter(Boolean)
+  .map(l => JSON.parse(l) as { event: string; session?: string; shown?: boolean; asked?: boolean }).filter(e => e.event === "session-line" && e.session === session);
+
+const startA = startAs("line-a"), lineA = startA.systemMessage;
+check("in the desktop app the agent is told to write the line at the top of its first reply",
+      startA.hookSpecificOutput.additionalContext.includes("ilk cevabının başına onu tek satır olarak, değiştirmeden yaz"));
+let r = stop("line-a", { transcript_path: transcript("a1", [says("Merhaba, neye bakalım?")]) });
+check("not in the agent's replies: the agent is stopped once and given the line to write",
+      r.status === 2 && r.stderr.includes("açılış satırını kullanıcıya henüz yazmadın") && r.stderr.includes(lineA), `${r.status} ${r.stderr}`);
+check("... and that it was asked is logged", lineLog("line-a").some(e => e.asked));
+r = stop("line-a", { transcript_path: transcript("a2", [says("Merhaba, neye bakalım?"), says(`> ${lineA.replace(" · Kod", "\n> · Kod")}\n\nŞimdi işe bakıyorum.`)]) });
+check("once the agent wrote it (quoted, wrapped), it may stop, and that the person saw it is logged",
+      r.status === 0 && lineLog("line-a").some(e => e.shown === true), `${r.status} ${r.stderr}`);
+r = stop("line-a", { transcript_path: transcript("a3", [says("Bitti.")]) });
+check("... and it is not asked for again in that session", r.status === 0 && lineLog("line-a").length === 2, `${r.status} ${JSON.stringify(lineLog("line-a"))}`);
+
+const lineB = startAs("line-b").systemMessage;
+r = stop("line-b", { transcript_path: transcript("b1", [
+  { type: "attachment", attachment: { type: "hook_system_message", content: lineB, hookEvent: "SessionStart" } },
+  { type: "attachment", attachment: { type: "hook_additional_context", content: [lineB], hookEvent: "SessionStart" } },
+  says("Tamam.")]) });
+check("the hook's own records in the transcript are not the agent's words: still asked", r.status === 2, `${r.status} ${r.stderr}`);
+r = stop("line-b", { transcript_path: transcript("b2", [says("Tamam.")]) });
+check("asked once and still not written: the agent is let stop, and \"not shown\" is logged",
+      r.status === 0 && lineLog("line-b").some(e => e.shown === false), `${r.status} ${r.stderr}`);
+r = stop("line-b", { transcript_path: transcript("b3", [says("Tamam.")]) });
+check("... once: it does not hold the work after that", r.status === 0 && lineLog("line-b").length === 2);
+
+const lineC = startAs("line-c").systemMessage;
+r = stop("line-c", { transcript_path: transcript("c1", [{ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: lineC }] } }]) });
+check("Codex's transcript: the agent's message counts", r.status === 0 && lineLog("line-c").some(e => e.shown), `${r.status} ${r.stderr}`);
+const lineD = startAs("line-d").systemMessage;
+r = stop("line-d", { last_assistant_message: `${lineD}\n\nBaşlıyorum.` });
+check("the last message given to the hook counts, before the transcript has it", r.status === 0 && lineLog("line-d").some(e => e.shown), `${r.status} ${r.stderr}`);
+
+const lineE = startAs("line-e").systemMessage;
+writeFileSync(join(shownDir, "index.js"), "module.exports = 1; // TODO: finish this\n");
+r = stop("line-e", { transcript_path: transcript("e1", [says("Yazdım.")]) });
+check("unfinished work and an unwritten line: one stop says both",
+      r.status === 2 && r.stderr.includes("not finished yet") && r.stderr.includes(lineE), r.stderr);
+writeFileSync(join(shownDir, "index.js"), "module.exports = 1;\n");
+check("no session id, no line: the Stop hook is as before", stop("").status === 0);
+startAs("line-f");
+check("no transcript and no last message given: nothing to look in, the agent is not stopped for it",
+      stop("line-f").status === 0 && lineLog("line-f").length === 0);
+const cliStart = startAs("line-g", "cli");
+check("in the terminal, which shows the line itself, the agent is not told to write it",
+      !cliStart.hookSpecificOutput.additionalContext.includes("ilk cevabının başına"));
+r = stop("line-g", { transcript_path: transcript("g1", [says("Tamam.")]) });
+check("... nor stopped for it", r.status === 0 && lineLog("line-g").length === 0, `${r.status} ${r.stderr}`);
 
 rmSync(top, { recursive: true, force: true });
 console.log(`\n${failed ? `${failed} FAILED` : "All soz-guard doctor tests passed"}`);

@@ -17,5 +17,6 @@
 
 soz-guard checks your changes when you try to finish: it runs the required checks itself and shows
 you what is still open. Each session starts with a line from it, beginning `soz-guard ·`, that says what
-it runs and watches here; the user sees it too. If a session started without that line, its hooks are
-not running: tell the user so, and that `soz-guard doctor` shows why.
+it runs and watches here. Where the user's app does not show it, soz-guard tells you so: then write it,
+unchanged, at the top of your first reply. If a session started without that line, its hooks are not running: tell the user so, and that
+`soz-guard doctor` shows why.

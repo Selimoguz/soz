@@ -86,7 +86,9 @@ soz-guard'ın çalıştırmadığı test komutlarını (ör. `package.json`'daki
 zorunlu kontrol değilse), etkin kuralları, kancaların durumunu ve sunucudaki soz-guard gate'i (push
 denetimi) söyler. Sunucu bu makineden okunamıyorsa "buradan doğrulanamadı" der; bu, projenin kendi
 betikleriyle (ör. `e2e/kapi.ps1`) ilgili değildir. Her yeni Claude oturumu da bunun özetiyle, `soz-guard ·` ile
-başlayan bir satırla açılır. Satır görünmüyorsa kancalar çalışmıyordur; nedenini `soz-guard doctor` söyler.
+başlayan bir satırla açılır. Claude masaüstü uygulaması bu satırı ekranda göstermediği için orada satırı
+ajan ilk cevabının başına yazar; soz-guard yazıp yazmadığını denetler. Satır görünmüyorsa kancalar
+çalışmıyordur; nedenini `soz-guard doctor` söyler.
 
 ## Kurduktan sonra neler göreceksiniz
 

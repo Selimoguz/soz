@@ -135,3 +135,66 @@ export function afterShell(root: string, session: string, key: string, exclude: 
 }
 
 export { CONFIG_FILE };
+
+// --- The line a session starts with, in front of the person ------------------------------------------------
+//
+// The SessionStart hook gives the line to the person as Claude Code's systemMessage, but not every app shows
+// it: the desktop app keeps it in the transcript and shows nothing. What every app shows is the agent's own
+// reply. So the agent is told to start its first reply with the line, and the Stop hook looks in the
+// transcript for it: once it is there, the person has seen it; if it is not, the agent is stopped once and
+// told to write it. Whether it was shown is logged, so that it can be checked, not believed.
+
+const linePath = (root: string, session: string) => file(root, session).replace(/\.json$/, ".line.json");
+type SessionLine = { line: string; shown: boolean; asked: boolean };
+
+/** At a session's start (and again after a resume or compaction): the line the person is to see. A new
+ * line, after the setup changed, is to be shown again. */
+export function recordSessionLine(root: string, session: string, line: string) {
+  const had = readSessionLine(root, session);
+  if (had && had.line === line) return;
+  mkdirSync(join(root, OWN_DIR, SESSIONS), { recursive: true });
+  writeFileSync(linePath(root, session), JSON.stringify({ line, shown: false, asked: false }, null, 2) + "\n");
+}
+
+export function readSessionLine(root: string, session: string | undefined): SessionLine | null {
+  if (!session) return null;
+  try { return existsSync(linePath(root, session)) ? JSON.parse(readFileSync(linePath(root, session), "utf8")) as SessionLine : null; }
+  catch { return null; }
+}
+
+export function markSessionLine(root: string, session: string, change: Partial<SessionLine>) {
+  const had = readSessionLine(root, session);
+  if (had) writeFileSync(linePath(root, session), JSON.stringify({ ...had, ...change }, null, 2) + "\n");
+}
+
+/** The agent's replies in a transcript: Claude Code's (type "assistant", text blocks) and Codex's (assistant
+ * messages, output_text; agent_message events). Hooks' own records are not the agent's words and are left out. */
+export function agentReplies(transcript: string): string[] {
+  const out: string[] = [];
+  const texts = (content: unknown) => {
+    if (typeof content === "string") out.push(content);
+    else if (Array.isArray(content)) for (const c of content)
+      if (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string"
+          && ["text", "output_text"].includes((c as { type?: string }).type ?? "")) out.push((c as { text: string }).text);
+  };
+  for (const raw of transcript.split("\n")) {
+    if (!raw.trim()) continue;
+    let o: Record<string, any>;
+    try { o = JSON.parse(raw); } catch { continue; }
+    if (o?.type === "assistant" && o.message?.role === "assistant") texts(o.message.content);
+    const p = o?.payload;
+    if (p?.type === "message" && p.role === "assistant") texts(p.content);
+    if (p?.type === "agent_message" && typeof p.message === "string") out.push(p.message);
+  }
+  return out;
+}
+
+/** Whether LINE is in one of the agent's replies (or in its LAST message, which a hook may be given before the
+ * transcript has it). Spaces and line breaks do not count, so that a wrapped or quoted line is still the line. */
+export function lineInReplies(line: string, transcriptPath: string | undefined, last: string | undefined): boolean {
+  const flat = (s: string) => s.replace(/[\s>*`"_]+/g, " ").trim();
+  const want = flat(line);
+  const replies = last ? [last] : [];
+  if (transcriptPath) { try { replies.push(...agentReplies(readFileSync(transcriptPath, "utf8"))); } catch { /* no transcript: only LAST counts */ } }
+  return replies.some(r => flat(r).includes(want));
+}

@@ -257,13 +257,16 @@ export function sessionLine(d: Diagnosis, lang = language()): string {
 }
 
 /** For the agent, after the line: what the line means for its work. */
-export function sessionContext(d: Diagnosis, lang = language()): string {
+export function sessionContext(d: Diagnosis, lang = language(), relay = false): string {
   const tr = lang === "tr";
-  return `${sessionLine(d, lang)}\n` + (tr
-    ? "Bu satırı kullanıcı da gördü. İşini bitirmek istediğinde soz-guard yukarıdakileri denetler; tanımlı test yoksa testleri sen çalıştır ve sonucunu söyle. "
+  const write = !relay ? ""
+    : tr ? "Kullanıcının uygulaması bu satırı göstermiyor: ilk cevabının başına onu tek satır olarak, değiştirmeden yaz. "
+         : "The user's app does not show this line: write it at the top of your first reply, as one line, unchanged. ";
+  return `${sessionLine(d, lang)}\n${write}` + (tr
+    ? "İşini bitirmek istediğinde soz-guard yukarıdakileri denetler; tanımlı test yoksa testleri sen çalıştır ve sonucunu söyle. "
       + "\"Sunucudaki soz-guard gate\", soz-guard'ın sunucuda push'u denetleyen kısmıdır; \"buradan doğrulanamadı\" onun bu makineden okunamadığını söyler, projenin kendi betikleriyle ilgisi yoktur. "
       + "Kullanıcı soz-guard'ın neyi koruduğunu sorarsa: soz-guard doctor."
-    : "The user saw this line too. When you try to finish, soz-guard judges the above; with no test set, run the tests yourself and say how they went. "
+    : "When you try to finish, soz-guard judges the above; with no test set, run the tests yourself and say how they went. "
       + "\"soz-guard gate on the server\" is the part of soz-guard that judges pushes on the server; \"not verified from here\" says it cannot be read from this machine, and has nothing to do with the project's own scripts. "
       + "If the user asks what soz-guard guards: soz-guard doctor.");
 }
