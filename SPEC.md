@@ -737,7 +737,9 @@ request):
   It stays unknown if the new session cannot be started (the server refuses it, or cannot be
   reached): the call itself reached the server, and nothing after that proves it did not run. The
   gateway then starts a session before its next request; if that fails, that next request was not
-  sent.
+  sent. A server that answers `initialize` without an `Mcp-Session-Id` (MCP allows it) keeps no
+  session: it is initialized once and then used as it is, and its lack of a session id is not taken
+  for a lost session.
   Requests the server makes of the gateway are declined.
 - A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
   when the request certainly did not reach the server: the connection was refused, the host was not

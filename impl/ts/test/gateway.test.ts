@@ -366,6 +366,26 @@ console.log("\nA server over streamable HTTP");
   const plain = await new Client(writeConfig("h3.json", "auto", { servers: { erp: { url: "http://erp.example.com/mcp" } } })).init(false);
   check("plain http to another machine is refused (https, or allow_http)", !((await plain.request("tools/list")).tools as Obj[]).some(t => String(t.name).startsWith("erp_")));
   plain.close();
+
+  // A server that gives no session id is not a session that was lost: one initialize, then it is used as it is.
+  const sfake = spawn(process.execPath, [...NODE, join(here, "fake-erp-http.ts")], { stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, FAKE_TOKEN: token, FAKE_STATELESS: "1" } });
+  const sport = await new Promise<string>(res => createInterface({ input: sfake.stdout }).on("line", l => res(l.trim())));
+  const stats = async () => JSON.parse(await (await fetch(`http://127.0.0.1:${sport}/stats`, { method: "GET" })).text()) as { initialize: number; orders: number };
+  const scode = join(dir, "code-stateless.txt");
+  const sc = await new Client(writeConfig("h4.json", "auto", {
+    servers: { erp: { url: `http://127.0.0.1:${sport}/mcp`, headers: { Authorization: "Bearer ${SOZ_TEST_TOKEN}" }, timeout_seconds: 1 } },
+    journal: "journal-stateless.jsonl" }), { SOZ_TEST_CODE_FILE: scode, SOZ_TEST_TOKEN: token }).init(false);
+  const stools = ((await sc.request("tools/list")).tools as Obj[]).map(t => t.name);
+  check("a server without session ids: its tools are listed", stools.includes("erp_find_customer") && stools.includes("erp_list_orders"));
+  check("... a read tool is called", text(await sc.call("erp_find_customer", { name: "Yilmaz" })).includes("C-1042"));
+  const sid = previewId(await sc.call("soz_preview", { plan: line("SO-3001", "tomatoes", 4), message: "Order SO-3001, Yilmaz Market: 4 tomatoes" }));
+  await sc.call("soz_execute", { preview_id: sid });
+  const scodeNow = /Approval code: (\w{3}-\w{3})/.exec(readFileSync(scode, "utf8"))?.[1];
+  const sdone = text(await sc.call("soz_execute", { preview_id: sid, approval_code: scodeNow }));
+  check("... and a plan's write runs, once", sdone.includes("Outcome: done") && (await stats()).orders === 1);
+  check("only one initialize was sent, at the first connection", (await stats()).initialize === 1);
+  sc.close();
+  sfake.kill();
 }
 
 console.log("\nSource labels: a server's results are labelled with its name");

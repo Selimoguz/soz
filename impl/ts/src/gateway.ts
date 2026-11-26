@@ -114,6 +114,9 @@ const NOT_SENT_CODES = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "CERT_HAS_EXPI
 class HttpLink implements Link {
   url: string; headers: Record<string, string>; name: string;
   session: string | null = null; protocol: string | null = null; next = 0;
+  /** The server lost our session (a 404) and a new one could not be started then. Not the same as having
+   * no session id: a server may answer initialize without one (MCP allows it) and keep none. */
+  lost = false;
   initParams: unknown = null; timeout = 60000;
   constructor(name: string, url: string, headers: Record<string, string>) { this.name = name; this.url = url; this.headers = headers; }
 
@@ -140,12 +143,13 @@ class HttpLink implements Link {
     const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
     if (!init || init.error) throw new Timeout(`${this.name}: the session was lost and a new one could not be started`);
     await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
+    this.lost = false;
   }
 
   private async post(m: { [k: string]: unknown }, timeoutMs: number, again = false, resend = true): Promise<Message | null> {
     // A session that was lost and could not be started again then is started before the next request.
     // If that fails, the request was not sent.
-    if (!this.session && !again && this.initParams !== null && m.method !== "initialize") await this.startSession(timeoutMs);
+    if (this.lost && !again && m.method !== "initialize") await this.startSession(timeoutMs);
     let res: FetchResponse;
     try { res = await fetch(this.url, { method: "POST", headers: this.head(), body: canonicalJson(m), signal: AbortSignal.timeout(timeoutMs) }); }
     catch (e) {
@@ -157,7 +161,7 @@ class HttpLink implements Link {
     // MCP says a 404 to a session was not processed, but behind a proxy that is not certain, so a call
     // that changes something is not sent twice; its outcome is unknown and a person resolves it.
     if (res.status === 404 && this.session && !again && m.method !== "initialize") {
-      this.session = null; this.protocol = null;
+      this.session = null; this.protocol = null; this.lost = true;
       // The write reached the server, whatever happens next: its outcome is unknown, and a new session
       // that cannot be started (refused, unreachable) must not turn it into "not sent" (SPEC 11.4).
       const lost = `${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`;
