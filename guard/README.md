@@ -323,8 +323,8 @@ rewritten. The newest 5 releases are kept whole (`--keep-packages N`), the manif
 ```sh
 soz-guard gate package 3f9c2a1b7e44                        # its digest, its files, where they are kept
 soz-guard gate package 3f9c2a1b7e44 --to D:/deploy/v928    # a copy to deploy, into an empty folder
-soz-guard gate package 3f9c2a1b7e44 --verify D:/sites/erp --ignore logs,uploads
-soz-guard digest D:/sites/erp --ignore logs,uploads         # on a live server that is another machine
+soz-guard gate package 3f9c2a1b7e44 --verify D:/sites/app --ignore logs,uploads
+soz-guard digest D:/sites/app --ignore logs,uploads         # on a live server that is another machine
 ```
 
 `--verify` compares the live folder (or file) with the package file by file and names what is changed,
@@ -378,7 +378,7 @@ change. Git cannot tell the two apart.
 
 ## Several sessions in one folder
 
-Some people run many Claude Code sessions in the same project at once (one for the ERP part, one for
+Some people run many Claude Code sessions in the same project at once (one for the backend, one for
 the CRM, one that coordinates them). Then the difference from one session's snapshot holds the others'
 work too, and a gap one session left would stop all of them. With
 

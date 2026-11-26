@@ -85,7 +85,7 @@ Yalnızca okur, hiçbir şeyi değiştirmez. İş bitince hangi testlerin çalı
 soz-guard'ın çalıştırmadığı test komutlarını (ör. `package.json`'daki `npm test`, `.soz-guard.json`'da
 zorunlu kontrol değilse), etkin kuralları, kancaların durumunu ve sunucudaki soz-guard gate'i (push
 denetimi) söyler. Sunucu bu makineden okunamıyorsa "buradan doğrulanamadı" der; bu, projenin kendi
-betikleriyle (ör. `e2e/kapi.ps1`) ilgili değildir. Her yeni Claude oturumu da bunun özetiyle, `soz-guard ·` ile
+betikleriyle ilgili değildir. Her yeni Claude oturumu da bunun özetiyle, `soz-guard ·` ile
 başlayan bir satırla açılır. Claude masaüstü uygulaması bu satırı ekranda göstermediği için orada satırı
 ajan ilk cevabının başına yazar; soz-guard yazıp yazmadığını denetler. Satır görünmüyorsa kancalar
 çalışmıyordur; nedenini `soz-guard doctor` söyler.
@@ -141,7 +141,7 @@ soz-guard gate install --branches main --setup "npm ci"
 
   ```sh
   soz-guard gate package <hash> --to D:/deploy/yeni-surum      # onaylanan paketin kopyası
-  soz-guard gate package <hash> --verify D:/siteler/erp --ignore logs   # canlıdaki klasör aynı mı
+  soz-guard gate package <hash> --verify D:/siteler/uygulama --ignore logs   # canlıdaki klasör aynı mı
   ```
 
   Canlı sunucu başka bir makineyse orada `soz-guard digest <klasör>` çalıştırılır ve çıkan özet kapının

@@ -78,20 +78,20 @@ check("a test script named test:e2e is found too, and is not taken for npm test"
 check("in English where the machine is not Turkish", json(loose) && run(loose, ["doctor"], "en").stdout.includes("No project test is set to run when the agent finishes.")
       && run(loose, ["doctor"], "en").stdout.includes(`package.json has "npm test", but it is not a required check in .soz-guard.json: soz-guard does not run it.`));
 
-console.log("\nThe ERP trial: a script watched, no test run");
-const erp = project("erp", {
-  checks: [], runners: ["e2e/kapi.ps1"],
-  rules: [{ id: "atlandi-adim", pattern: "ATLANDI_ADIM", message: "bir test adımı atlandı", extensions: [".ts", ".java"] },
-          { id: "acik-etiketi", pattern: "@acik", message: "bir senaryo açık madde sayıldı, kapıda çalışmaz", extensions: [".ts"] }],
+console.log("\nA project's own test script watched, no test run");
+const scripted = project("scripted", {
+  checks: [], runners: ["scripts/run-tests.sh"],
+  rules: [{ id: "skipped-step", pattern: "SKIP_STEP", message: "bir test adımı atlandı", extensions: [".ts", ".java"] },
+          { id: "pending-tag", pattern: "@pending", message: "bir senaryo bekliyor olarak işaretlendi", extensions: [".ts"] }],
 });
-const le = json(erp).sessionLine;
+const le = json(scripted).sessionLine;
 check("the line says the script is watched and that no test runs: two things, not one",
-      le.includes("Tamamlanırken çalıştırılacak proje testi tanımlı değil") && le.includes("Test değişikliği izleniyor: test dosyaları, e2e/kapi.ps1")
+      le.includes("Tamamlanırken çalıştırılacak proje testi tanımlı değil") && le.includes("Test değişikliği izleniyor: test dosyaları, scripts/run-tests.sh")
       && le.includes("Kod kuralları: 10 (2 projeye özel)") && le.endsWith("Sunucudaki soz-guard gate: buradan doğrulanamadı"), le);
-const de = doctor(erp).stdout;
-check("doctor: the script's changes are watched, but it is not run", de.includes("Projeye özel, her değişikliği: e2e/kapi.ps1")
+const de = doctor(scripted).stdout;
+check("doctor: the script's changes are watched, but it is not run", de.includes("Projeye özel, her değişikliği: scripts/run-tests.sh")
       && de.includes("Bunların değişmesi izlenir, ama çalıştırılmazlar"), de);
-check("doctor: the project's own rules, with what they look for", de.includes("Projeye özel (2): atlandi-adim (bir test adımı atlandı); acik-etiketi"), de);
+check("doctor: the project's own rules, with what they look for", de.includes("Projeye özel (2): skipped-step (bir test adımı atlandı); pending-tag"), de);
 
 console.log("\nThe session's start: to the person and to the agent");
 const s = sessionStart(bound);
@@ -124,25 +124,25 @@ doctor(bound); run(bound, ["doctor", "--json"]);
 check("doctor changes nothing in the project, its log included", snapshot(bound) === before);
 
 console.log("\nThe hooks");
-const settingsPath = join(erp, ".claude", "settings.local.json");
+const settingsPath = join(scripted, ".claude", "settings.local.json");
 const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-check("init's hooks: both on", doctor(erp).stdout.includes("Claude Code (.claude/settings.local.json): oturum başı açık, bitiş açık"), doctor(erp).stdout);
+check("init's hooks: both on", doctor(scripted).stdout.includes("Claude Code (.claude/settings.local.json): oturum başı açık, bitiş açık"), doctor(scripted).stdout);
 writeFileSync(settingsPath, JSON.stringify({ ...settings, hooks: { SessionStart: settings.hooks.SessionStart } }));
-const noStop = json(erp).sessionLine;
+const noStop = json(scripted).sessionLine;
 check("the finish hook gone: the line starts with it, nothing is judged at the finish",
       noStop.startsWith("soz-guard · Bitiş kancası çalışmıyor: iş bitiminde hiçbir şey denetlenmez"), noStop);
 writeFileSync(settingsPath, JSON.stringify({ ...settings, disableAllHooks: true }));
-check("hooks switched off: said, with where", doctor(erp).stdout.includes("oturum başı kancalar kapatılmış, bitiş kancalar kapatılmış (.claude/settings.local.json)"), doctor(erp).stdout);
+check("hooks switched off: said, with where", doctor(scripted).stdout.includes("oturum başı kancalar kapatılmış, bitiş kancalar kapatılmış (.claude/settings.local.json)"), doctor(scripted).stdout);
 // the hooks as another machine wrote them: its soz-guard, by a path this machine does not have
 const moved = JSON.parse(JSON.stringify(settings)) as { hooks: Record<string, { hooks: { command: string }[] }[]> };
 for (const list of Object.values(moved.hooks)) for (const m of list) for (const h of m.hooks) h.command = h.command.split(cli).join(join(top, "gone", "cli.ts"));
 writeFileSync(settingsPath, JSON.stringify(moved));
 check("pointed at a soz-guard that is not on this machine: said, and how to set it right",
-      doctor(erp).stdout.includes("bu makinede olmayan bir soz-guard'ı gösteriyor") && doctor(erp).stdout.includes("Yeniden: soz-guard init --local"), doctor(erp).stdout);
+      doctor(scripted).stdout.includes("bu makinede olmayan bir soz-guard'ı gösteriyor") && doctor(scripted).stdout.includes("Yeniden: soz-guard init --local"), doctor(scripted).stdout);
 writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-check("no Codex hooks and no pre-commit hook: said as not set up", doctor(erp).stdout.includes("git pre-commit: kurulu değil"));
-run(erp, ["init", "--git", "--checks"]);
-check("the pre-commit hook, with the checks", doctor(erp).stdout.includes("git pre-commit: açık, testleri de çalıştırır"), doctor(erp).stdout);
+check("no Codex hooks and no pre-commit hook: said as not set up", doctor(scripted).stdout.includes("git pre-commit: kurulu değil"));
+run(scripted, ["init", "--git", "--checks"]);
+check("the pre-commit hook, with the checks", doctor(scripted).stdout.includes("git pre-commit: açık, testleri de çalıştırır"), doctor(scripted).stdout);
 
 console.log("\nThe server's gate");
 const server = join(top, "server.git");
@@ -153,15 +153,15 @@ check("a remote on this machine with no gate: none, pushes go in unjudged",
 run(server, ["gate", "install", "--branches", "main", "--require-task", "--build", "node build.js", "--package", "out"]);
 check("the gate on it: what it protects, read from it", json(bound).sessionLine.endsWith("Sunucudaki soz-guard gate: main korunuyor, yalnızca görev teslimi, paket: out"), json(bound).sessionLine);
 check("doctor in the server's repository: its gate", doctor(server).stdout.includes("main korunuyor; yalnızca görev teslimi; paket: out"), doctor(server).stdout);
-gitIn(bound, "remote", "set-url", "origin", "git@sunucu.firma.local:erp.git");
+gitIn(bound, "remote", "set-url", "origin", "git@git.internal:app.git");
 check("a remote on another machine: not verified, and where to look instead",
-      json(bound).sessionLine.endsWith("Sunucudaki soz-guard gate: buradan doğrulanamadı") && doctor(bound).stdout.includes("git@sunucu.firma.local:erp.git bu makineden okunamıyor")
+      json(bound).sessionLine.endsWith("Sunucudaki soz-guard gate: buradan doğrulanamadı") && doctor(bound).stdout.includes("git@git.internal:app.git bu makineden okunamıyor")
       && doctor(bound).stdout.includes("soz-guard gate log --last 20"), doctor(bound).stdout);
 check("no remote at all: said so", doctor(loose).stdout.includes("bu projenin bir uzak deposu (remote) yok"));
 
 check("outside a git repository: said, exit 1", (() => { const d = join(top, "plain"); mkdirSync(d); const r = doctor(d); return r.status === 1 && r.stderr.includes("git deposu değil"); })());
 check("the agent is told what the gate in the line is, and that it is not the project's own script",
-      (sessionStart(erp).out.hookSpecificOutput?.additionalContext ?? "").includes("projenin kendi betikleriyle ilgisi yoktur"));
+      (sessionStart(scripted).out.hookSpecificOutput?.additionalContext ?? "").includes("projenin kendi betikleriyle ilgisi yoktur"));
 check("the template tells the agent what to do when the line is missing", readFileSync(join(dirname(cli), "..", "templates", "CLAUDE.md"), "utf8").includes("soz-guard doctor"));
 check("the template tells the agent to write the line in its first reply", readFileSync(join(dirname(cli), "..", "templates", "CLAUDE.md"), "utf8").replace(/\s+/g, " ").includes("at the top of your first reply"));
 
@@ -175,14 +175,17 @@ const transcript = (name: string, records: object[]) => {
   return p;
 };
 const says = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+// the Stop hook counts its stops per session in the system's temp folder: each run has its own session ids
+const run_ = Date.now().toString(36);
+const sid = (session: string) => session ? `${session}-${run_}` : "";
 const startAs = (session: string, app = "claude-desktop") => {
-  const r = run(shownDir, ["session-start"], "tr", JSON.stringify({ cwd: shownDir, session_id: session, source: "startup", hook_event_name: "SessionStart" }), app);
+  const r = run(shownDir, ["session-start"], "tr", JSON.stringify({ cwd: shownDir, session_id: sid(session), source: "startup", hook_event_name: "SessionStart" }), app);
   return JSON.parse(r.stdout) as { systemMessage: string; hookSpecificOutput: { additionalContext: string } };
 };
 const stop = (session: string, extra: object = {}) =>
-  run(shownDir, ["hook"], "tr", JSON.stringify({ cwd: shownDir, session_id: session, hook_event_name: "Stop", ...extra }));
+  run(shownDir, ["hook"], "tr", JSON.stringify({ cwd: shownDir, session_id: sid(session), hook_event_name: "Stop", ...extra }));
 const lineLog = (session: string) => readFileSync(join(shownDir, ".soz-guard", "log.jsonl"), "utf8").split("\n").filter(Boolean)
-  .map(l => JSON.parse(l) as { event: string; session?: string; shown?: boolean; asked?: boolean }).filter(e => e.event === "session-line" && e.session === session);
+  .map(l => JSON.parse(l) as { event: string; session?: string; shown?: boolean; asked?: boolean }).filter(e => e.event === "session-line" && e.session === sid(session));
 
 const startA = startAs("line-a"), lineA = startA.systemMessage;
 check("in the desktop app the agent is told to write the line at the top of its first reply",
