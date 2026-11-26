@@ -5,8 +5,8 @@ execution, journal, audit record and policy. It passes the whole
 [conformance suite](../../conformance/README.md), the same 298 cases as the reference implementation.
 
 In this repository the sources are TypeScript that Node runs directly (Node 22.6 or newer, on Node 22
-with `--experimental-strip-types`; from Node 23.6 without a flag). The npm package is the compiled
-code instead (`npm run build`, run by `npm pack` and `npm publish`): `dist/`, with its type
+with `--experimental-strip-types`; from Node 23.6 without a flag). The npm package, `@sezeren/soz`, is
+the compiled code instead (`npm run build`, run by `npm pack` and `npm publish`): `dist/`, with its type
 declarations, because Node does not strip types in `node_modules`. Installed, it needs Node 22 or
 newer and nothing else, and gives the API (the same exports as `src/index.ts`) and three commands:
 `soz-mcp` (the gateway, section below), `soz-journal` (resolve unresolved steps) and `soz-approve`

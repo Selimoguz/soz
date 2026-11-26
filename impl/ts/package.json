@@ -1,5 +1,5 @@
 {
-  "name": "soz",
+  "name": "@sezeren/soz",
   "version": "0.5.0",
   "description": "A plan language a language model writes and a checker proves before anything runs (TypeScript implementation).",
   "license": "Apache-2.0",
@@ -20,6 +20,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "typecheck": "tsc -p .",
     "conformance": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/conformance.ts",
