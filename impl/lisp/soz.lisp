@@ -384,7 +384,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 
 (defstruct (operation (:conc-name op-)) name effect params returns key
   label)   ; what its results are labelled with (SPEC 5.2): their source is tool:LABEL
-(defstruct (param (:conc-name pa-)) name type required model-allowed)
+(defstruct (param (:conc-name pa-)) name type required model-allowed
+  from-step)   ; it may take what an earlier step returns, unseen at approval (SPEC 6, 10.3)
 
 (defvar *operations* (make-hash-table :test #'equal) "name-fold -> OPERATION")
 
@@ -433,7 +434,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
         (maphash (lambda (k v)
                    (push (make-param :name k :type (type-from-json v)
                                      :required (not (eq (gethash "required" v) :false))
-                                     :model-allowed (json-true-p (gethash "model_allowed" v)))
+                                     :model-allowed (json-true-p (gethash "model_allowed" v))
+                                     :from-step (json-true-p (gethash "from_step" v)))
                          params))
                  ps)))
     (setf (gethash (name-fold name) *operations*)
@@ -459,9 +461,10 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
          (make-operation :name ,(string-downcase (string name)) :effect ,(string-downcase (string effect)) :returns (lisp-type ',returns)
                          :key ',(mapcar (lambda (k) (string-downcase (string k))) key)
                          :params (list ,@(mapcar (lambda (p)
-                                                   (destructuring-bind (pn ty &key (required t) model-allowed) p
+                                                   (destructuring-bind (pn ty &key (required t) model-allowed from-step) p
                                                      `(make-param :name ,(string-downcase (string pn)) :type (lisp-type ',ty)
-                                                                  :required ,required :model-allowed ,model-allowed)))
+                                                                  :required ,required :model-allowed ,model-allowed
+                                                                  :from-step ,from-step)))
                                                  params)))))
 
 ;;; ------------------------------------------------------------------

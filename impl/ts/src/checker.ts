@@ -123,7 +123,11 @@ export type Type =
   | { kind: "record"; fields: [string, Type][] }
   | { kind: "enum"; base: "text" | "number"; values: (string | Rational)[] };
 
-export type Param = { name: string; type: Type; required: boolean; modelAllowed: boolean };
+export type Param = {
+  name: string; type: Type; required: boolean; modelAllowed: boolean;
+  /** It may take what an earlier step of the same plan returns, unseen at approval (SPEC 6, 10.3). */
+  fromStep?: boolean;
+};
 export type Operation = {
   name: string; effect: string; params: Param[]; returns: Type; key: string[] | null;
   /** What its results are labelled with (SPEC 5.2): their source is tool:LABEL. */
@@ -157,6 +161,7 @@ export function operationFromJson(j: Json): Operation {
     name, type: typeFromJson(p),
     required: !(isObject(p) && p.required === false),
     modelAllowed: isObject(p) && p.model_allowed === true,
+    fromStep: isObject(p) && p.from_step === true,
   })) : [];
   if (j.label !== undefined && (typeof j.label !== "string" || !LABEL.test(j.label)))
     throw new Error(`bad label ${JSON.stringify(j.label)} in operation ${j.name}: lowercase letters, digits, _ and -`);
@@ -185,6 +190,7 @@ export function typeToJson(t: Type): { [k: string]: unknown } {
 export function operationToJson(op: Operation): { [k: string]: unknown } {
   const params = Object.fromEntries(op.params.map(p => [p.name, {
     ...typeToJson(p.type), ...(p.required ? {} : { required: false }), ...(p.modelAllowed ? { model_allowed: true } : {}),
+    ...(p.fromStep ? { from_step: true } : {}),
   }]));
   return { name: op.name, effect: op.effect, params, returns: typeToJson(op.returns), ...(op.key ? { key: op.key } : {}),
            ...(op.label ? { label: op.label } : {}) };

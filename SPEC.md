@@ -341,7 +341,14 @@ The host declares the operations a plan may call. Declaration (JSON):
   needs approval. A domain adds its own effects this way without changing the core.
 - **An operation without `effect` is `write`**: one that someone forgot to mark stays on the safe
   side.
-- `required` defaults to true, `model_allowed` to false, `returns` to `{"type": "any"}`.
+- `required` defaults to true, `model_allowed` to false, `from_step` to false, `returns` to
+  `{"type": "any"}`.
+- `from_step` (on a parameter) says it may take what an **earlier step of the same plan returns**
+  without the person seeing that value first: the identifier the system creates for a new record
+  (an order's number, to add lines to that order). Declare it only for a parameter whose value does
+  not change what the person approves. A parameter that decides what the approval means (an amount, a
+  recipient, an account, a target environment) is never `from_step`; it gets a value from an earlier
+  step only through a second approval (10.3, 10.4).
 - `key` (0.2) lists the parameters that make up the operation's idempotency key (section 10.3);
   default: all of them. A key names one thing done once, so it should be an identifier the host or
   the user's system gives (an order number and a line number, an invoice number), not a description
@@ -452,6 +459,13 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
    `(result of step N).field`. Using a pending value in anything else (arithmetic, a comparison, an
    `if` condition, a `for-each` list, an argument of a `read`) is `depends-on-write`: such a plan
    cannot be previewed.
+   A step that has a pending value (or a list or record holding one) in an argument of a parameter
+   **not** declared `from_step` (section 6) lists that parameter in its **confirm** list, and the
+   preview tells the person: the value is known only once the step before has run, and the step
+   waits for their approval of it then (10.4). The person approves now what they can see; what they
+   cannot see yet is not covered by this approval.
+   A step whose key is already in the journal as `done` gives the result recorded there, not a
+   pending value, so the steps after it are shown with the real values.
 4. Each step has an **idempotency key**: the operation's name (`name-fold`) and the values of its
    **key parameters**. An operation declares them with `"key": ["customer", "product", "date"]`;
    without `key`, all its parameters are key parameters. Exactly, the key is the canonical JSON
@@ -491,6 +505,12 @@ with live reads. For every step reached, in order:
 1. If the preview has no step with that index, or its operation or arguments differ, execution stops
    with `changed` **before** calling it, and says what differs. A pending argument in the preview
    matches any value. (The balance moved, the stock ran out: the person approved something else.)
+   If the previewed step has a confirm list (10.3) and its key is not in the journal as `done`, it is
+   not called either: its status is `not_run` and execution stops with **`confirm`**, with the values
+   of those parameters, which are known now, in its message. The steps before it are done and stay
+   done. The plan is previewed again: the steps already done give their recorded results (10.3), so
+   the value is in the new preview like any other, the person approves that preview, and its
+   execution runs what is left (the done steps are `already_done`).
 2. If its key is in the journal with other arguments (as in 10.3), it is not called: its status is
    `not_run` and execution stops with `conflict`. (Another execution wrote that key after the
    preview.)
@@ -551,7 +571,7 @@ value is `{"pending": N}` or `{"pending": N, "path": ["field", ...]}`.
 ### 10.7 Error and outcome codes
 
 Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, `duplicate-step`, `no-implementation`,
-`read-failed`, `key-conflict`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`,
+`read-failed`, `key-conflict`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`, `confirm`,
 `changed`, `conflict`, `failed`, `unknown`, `unresolved`, `not-approved`, and with a policy `denied`.
 
 ### 10.8 Journal and audit stores
@@ -610,8 +630,8 @@ Every tool of every configured server becomes the operation `SERVER.TOOL`:
 - **label** the server's name, if it is a label (section 6): every value from the `erp` server has
   source `tool:erp`.
 
-The configuration may override, per operation, `effect`, `returns`, `key`, `label` and
-`model_allowed` (a list of parameter names).
+The configuration may override, per operation, `effect`, `returns`, `key`, `label`,
+`model_allowed` and `from_step` (each a list of parameter names).
 
 A tool call that returns `isError`, or a JSON-RPC error, reached the server. For a `read` operation it
 is **failed**. For a side-effect operation it is **unknown**: the server may have done the work and

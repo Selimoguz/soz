@@ -863,6 +863,165 @@
           "erp.find_customer"
         ]
       }
+    },
+    {
+      "name": "a value from an earlier step that decides the approval: the step waits for a second approval",
+      "message": "Invoice order SO-7 and pay Yilmaz Market",
+      "plan": [
+        "(plan \"Invoice and pay\"",
+        "  (let ((inv (erp.create_invoice order \"SO-7\")))",
+        "    (pay to \"Yilmaz Market\" amount (get inv total))))"
+      ],
+      "tools": {
+        "erp.create_invoice": [
+          {
+            "result": {
+              "id": "INV-9",
+              "total": 120.5
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "index": 1,
+            "operation": "erp.create_invoice",
+            "confirm": []
+          },
+          {
+            "index": 2,
+            "operation": "pay",
+            "confirm": [
+              "amount"
+            ]
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "confirm",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.create_invoice"
+        ]
+      },
+      "then": {
+        "expect_preview": {
+          "status": "ready",
+          "steps": [
+            {
+              "index": 1,
+              "already_done": true
+            },
+            {
+              "index": 2,
+              "operation": "pay",
+              "args": {
+                "amount": 120.5,
+                "to": "Yilmaz Market"
+              },
+              "confirm": []
+            }
+          ]
+        },
+        "expect_execute": {
+          "outcome": "done",
+          "steps": [
+            {
+              "index": 1,
+              "status": "already_done"
+            },
+            {
+              "index": 2,
+              "status": "done"
+            }
+          ],
+          "calls": [
+            {
+              "operation": "pay",
+              "args": {
+                "amount": 120.5,
+                "to": "Yilmaz Market"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "a parameter declared from_step takes an earlier step's result without a second approval",
+      "message": "New order for Yilmaz Market: 20 tomatoes",
+      "plan": [
+        "(plan \"Order\"",
+        "  (let ((o (erp.create_order customer \"Yilmaz Market\")))",
+        "    (erp.add_line order (get o id) product \"tomatoes\" quantity 20)))"
+      ],
+      "tools": {
+        "erp.create_order": [
+          {
+            "result": {
+              "id": "O-1"
+            }
+          }
+        ],
+        "erp.add_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "index": 1,
+            "confirm": []
+          },
+          {
+            "index": 2,
+            "confirm": []
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "done",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "done"
+          }
+        ],
+        "calls": [
+          "erp.create_order",
+          {
+            "operation": "erp.add_line",
+            "args": {
+              "order": "O-1",
+              "product": "tomatoes",
+              "quantity": 20
+            }
+          }
+        ]
+      }
     }
   ]
 }

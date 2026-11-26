@@ -292,9 +292,10 @@ function toolOperation(server: string, tool: Tool, overrides: Json | undefined):
   const input = isObject(tool.inputSchema) ? tool.inputSchema : null;
   const required = Array.isArray(input?.required) ? input!.required as string[] : [];
   const allowed = Array.isArray(o?.model_allowed) ? o!.model_allowed as string[] : [];
+  const fromStep = Array.isArray(o?.from_step) ? o!.from_step as string[] : [];
   const readOnly = isObject(tool.annotations) && tool.annotations.readOnlyHint === true;
   const params: Param[] = isObject(input?.properties) ? Object.entries(input!.properties).map(([k, v]) => ({
-    name: k, type: schemaType(v, false), required: required.includes(k), modelAllowed: allowed.includes(k),
+    name: k, type: schemaType(v, false), required: required.includes(k), modelAllowed: allowed.includes(k), fromStep: fromStep.includes(k),
   })) : [];
   return {
     name, params,
@@ -403,6 +404,9 @@ Tools that only read can be called directly. Everything that changes something (
 pays) goes through a plan: call soz_preview with the plan and the user's message, show the user
 the preview, and call soz_execute only after they agree. The user approves in their own client or
 by telling you a code shown to them outside the chat; you cannot approve for them.
+If an execution ends with "confirm", a value the user could not see at approval (an amount from a
+step before) is known now: call soz_preview again with the same plan and message, and show that
+preview; what already ran will not run again.
 
 A plan is one s-expression:
 

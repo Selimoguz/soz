@@ -92,5 +92,27 @@ const twoRun = await execute(two, two.hash ?? "", { implementations: flaky.imple
 check("the second step's outcome is unknown; the first is done and said to have run, not undone",
       twoRun.outcome === "unknown" && twoRun.steps[0].status === "done" && (twoRun.message ?? "").includes("step 1 (bank.pay) ran before this and is not undone"));
 
+console.log("\nA value from an earlier step that decides the approval (SPEC 10.3, 10.4)");
+const invoiced = defineOperations(
+  defineOperation({ name: "erp.create_invoice", effect: "write", params: { order: t.text() },
+                    returns: t.record({ id: t.text(), total: t.number() }), run: () => ({ id: "INV-9", total: 120.5 }) }),
+  defineOperation({ name: "bank.pay", effect: "money", params: { to: t.text(), amount: t.number() }, run: () => null }),
+);
+const invoicePlan = `(plan "Invoice and pay" (let ((inv (erp.create_invoice order "SO-7"))) (bank.pay to "TR33 0006 1005" amount (get inv total))))`;
+const invoiceMessage = "Invoice order SO-7 and pay TR33 0006 1005";
+const ledger = new Journal();
+const first = await preview(invoicePlan, { message: invoiceMessage, operations: invoiced.operations, implementations: invoiced.implementations, journal: ledger });
+check("the preview says the amount is approved later, when it is known",
+      previewSummary(first).includes("amount is known only when the step before has run: this step waits for your approval of it then")
+      && renderPreview(first, "text").includes("it waits for your approval of that value then"));
+const firstRun = await execute(first, first.hash ?? "", { implementations: invoiced.implementations, journal: ledger });
+check("execution stops before paying, with the amount now known, and the invoice step done",
+      firstRun.outcome === "confirm" && (firstRun.message ?? "").includes("amount=120.5") && firstRun.steps[0].status === "done" && firstRun.steps[1].status === "not_run");
+const second = await preview(invoicePlan, { message: invoiceMessage, operations: invoiced.operations, implementations: invoiced.implementations, journal: ledger });
+check("previewed again, the amount is shown as a value, with nothing left to confirm",
+      previewSummary(second).includes("amount=120.5") && second.steps[1].confirm.length === 0 && second.steps[0].alreadyDone);
+const secondRun = await execute(second, second.hash ?? "", { implementations: invoiced.implementations, journal: ledger });
+check("... and its approval pays, without creating a second invoice", secondRun.outcome === "done" && secondRun.steps[0].status === "already_done" && secondRun.steps[1].status === "done");
+
 console.log(`\n${failed ? `${failed} FAILED` : "All render tests passed"}`);
 process.exit(failed ? 1 : 0);

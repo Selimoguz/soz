@@ -120,7 +120,8 @@
     "effect": "write",
     "params": {
       "order": {
-        "type": "text"
+        "type": "text",
+        "from_step": true
       },
       "product": {
         "type": "text"
@@ -182,6 +183,26 @@
       "text": {
         "type": "text",
         "model_allowed": true
+      }
+    }
+  },
+  {
+    "name": "erp.create_invoice",
+    "effect": "write",
+    "params": {
+      "order": {
+        "type": "text"
+      }
+    },
+    "returns": {
+      "type": "record",
+      "fields": {
+        "id": {
+          "type": "text"
+        },
+        "total": {
+          "type": "number"
+        }
       }
     }
   },

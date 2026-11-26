@@ -297,6 +297,7 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 (defstruct (plan-step (:conc-name step-)) index operation args key already-done status result
   requires        ; policy: ((role four-eyes rule-name) ...) approvals this step needs besides the person's own
   sources         ; ((param . (source-name ...)) ...): where each argument comes from (SPEC 5)
+  confirm         ; parameters whose value an earlier step gives, unseen: approved again once known (SPEC 10.3, 10.4)
   journal-status) ; already-done: its key is in the journal; this says done, pending or unknown
 
 (defvar *approvers* '() "Execution: the people who approved (ACTORs).")
@@ -519,6 +520,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                (key (step-key-text op argv))
                (done (journal-get *journal* key))
                (st (make-plan-step :index index :operation op :args (rec argv) :key key :already-done (and done t) :journal-status (and done (gethash "status" done))
+                                   :confirm (loop for (k . v) in argv
+                                                  when (and (has-pending-p v)
+                                                            (not (pa-from-step (find k (op-params op) :key #'pa-name :test #'string=))))
+                                                    collect k)
                                    :sources (let ((c (find-if (lambda (c) (and (= (call-line c) (node-line node))
                                                                                (eql (call-column c) (node-column node))))
                                                               *checked-calls*)))
@@ -540,7 +545,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
              (when (journal-conflict-p done args-json)   ; neither new nor done
                (setf (step-already-done st) nil)
                (problem "key-conflict" "~a" (conflict-text index op key done args-json)))
-             (make-pending :step index))
+             ;; a step done before gives what it gave then, so the steps after it show real values (10.4)
+             (if (and done (equal (gethash "status" done) "done"))
+                 (from-host-or-any (gethash "result" done) op)
+                 (make-pending :step index)))
             (:execute
              (let ((p (find index *previewed* :key #'step-index)))
                (unless (and p (string= (op-name (step-operation p)) (op-name op)) (args-match-p (step-args p) (step-args st)))
@@ -554,6 +562,15 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                (when (journal-conflict-p done args-json)
                  (setf (step-status st) "not_run")
                  (error 'plan-halted :outcome "conflict" :message (conflict-text index op key done args-json)))
+               ;; a value the person did not see when approving (an earlier step gave it) is shown now, and
+               ;; the step waits for its approval: a new preview, in which the steps before are done
+               (when (and (step-confirm p) (not (and done (equal (gethash "status" done) "done"))))
+                 (setf (step-status st) "not_run")
+                 (error 'plan-halted :outcome "confirm"
+                                     :message (format nil "step ~d (~a) waits for approval of ~{~a~^, ~}, known only now; preview the plan again to approve it (what ran before will not run again)"
+                                                      index (op-name op)
+                                                      (mapcar (lambda (k) (format nil "~a=~a" k (visible (value-text (cdr (assoc k argv :test #'string=))))))
+                                                              (step-confirm p)))))
                ;; What was approved is unchanged; the policy is applied again with the actual values
                ;; (a pending value from the preview is known now).
                (multiple-value-bind (denials requires) (step-policy op argv)
@@ -641,6 +658,7 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
   (map 'vector (lambda (s) (obj "index" (step-index s) "operation" (op-name (step-operation s))
                                 "effect" (op-effect (step-operation s)) "args" (step-args s) "key" (step-key s)
                                 "already_done" (bool (step-already-done s)) "journal_status" (or (step-journal-status s) :null)
+                                "confirm" (coerce (step-confirm s) 'vector)
                                 "requires" (map 'vector (lambda (r) (obj "role" (first r) "four_eyes" (bool (second r))
                                                                          "rule" (third r)))
                                                 (step-requires s))
@@ -807,7 +825,10 @@ an IBAN read differently). Everything else stays as it is."
                        (loop for (k . v) in (cdr (step-args s)) collect (arg-with-source s k v))
                        (journal-note s))
                (when (and (step-requires s) (not (step-already-done s)))
-                 (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))))
+                 (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))
+               (when (and (step-confirm s) (not (step-already-done s)))
+                 (format o "     ~{~a~^, ~} ~:[are~;is~] known only when the step before has run: this step waits for your approval of ~:[them~;it~] then~%"
+                         (step-confirm s) (= (length (step-confirm s)) 1) (= (length (step-confirm s)) 1)))))
            (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (visible (preview-stop-reason p))))
            (dolist (pr (preview-problems p)) (format o "Cannot run: ~a~%" (visible (cdr (assoc "message" (cdr pr) :test #'string=)))))
            (when (string= (preview-status p) "nothing") (format o "Nothing to do.~%"))

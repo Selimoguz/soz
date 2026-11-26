@@ -331,6 +331,9 @@ export type Step = {
   status?: string; result?: Value; requires: Requirement[];
   /** Where each argument comes from, as the checker proved it (SPEC 5): parameter -> sources. */
   sources: [string, string[]][];
+  /** Parameters whose value an earlier step gives and the person has not seen: once it is known, the
+   * step runs only after a new approval (SPEC 10.3, 10.4). */
+  confirm: string[];
 };
 
 type Ctx = {
@@ -487,7 +490,8 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
   const key = stepKeyText(op, argv);
   const done = await c.journal.get(key);
   const sources = c.calls.find(x => x.line === node.line && x.column === node.column)?.sources ?? [];
-  const st: Step = { index, operation: op, args: new RecordV(argv), key, alreadyDone: !!done, journalStatus: done?.status ?? null, requires: [], sources };
+  const confirm = argv.filter(([k, v]) => hasPending(v) && !op.params.find(p => p.name === k)?.fromStep).map(([k]) => k);
+  const st: Step = { index, operation: op, args: new RecordV(argv), key, alreadyDone: !!done, journalStatus: done?.status ?? null, requires: [], sources, confirm };
   c.steps.push(st);
   // The journal keeps every argument of a step, not only its key's (SPEC 10.8). The same key with
   // other arguments names the same thing done differently: neither done already nor new (10.3, 10.4).
@@ -506,6 +510,9 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
     if (c.steps.slice(0, -1).some(s => s.key === key))
       problem("duplicate-step", `step ${index} (${op.name}) is the same as an earlier step: same operation, same key ${key}`);
     if (conflicts(done)) { st.alreadyDone = false; problem("key-conflict", conflictText(done!)); }   // neither new nor done
+    // A step done before gives what it gave then, so that the steps after it are shown with real values
+    // (this is how a value that needed a second approval is seen: the plan is previewed again, 10.4).
+    if (done?.status === "done") return fromHostOrAny(done.result, op);
     return new Pending(index);
   }
 
@@ -517,6 +524,13 @@ async function evalCall(c: Ctx, op: Operation, args: Node[], env: Env, node: Nod
       : `step ${index} (${op.name}) was not in the approved preview`);
   }
   if (conflicts(done)) { st.status = "not_run"; throw new PlanHalted("conflict", conflictText(done!)); }
+  // A value the person did not see when approving (it came from an earlier step) is shown now, and the
+  // step waits for an approval of it: a new preview, in which the steps before are already done.
+  if (p.confirm.length && done?.status !== "done") {
+    st.status = "not_run";
+    throw new PlanHalted("confirm", `step ${index} (${op.name}) waits for approval of ${p.confirm.map(k => `${k}=${visible(valueText(st.args.fields.find(f => f[0] === k)![1]))}`).join(", ")}, `
+      + "known only now; preview the plan again to approve it (what ran before will not run again)");
+  }
   const { denials, requires } = stepPolicy(c, op, argv);
   st.requires = requires;
   if (denials.length) { st.status = "not_run"; throw new PlanHalted("denied", `step ${index}: ${denialText(op, denials)}`); }
@@ -590,7 +604,7 @@ const planBody = (text: string): Node[] => (readPlan(text) as { items: Node[] })
 const requiresJson = (rs: Requirement[]) => rs.map(r => ({ role: r.role, four_eyes: r.fourEyes, rule: r.rule }));
 export const stepsJson = (steps: Step[]) => steps.map(s => ({
   index: Rational.of(s.index), operation: s.operation.name, effect: s.operation.effect, args: s.args, key: s.key,
-  already_done: s.alreadyDone, journal_status: s.journalStatus, requires: requiresJson(s.requires),
+  already_done: s.alreadyDone, journal_status: s.journalStatus, requires: requiresJson(s.requires), confirm: s.confirm,
   sources: Object.fromEntries(s.sources),
 }));
 
@@ -713,6 +727,8 @@ export function previewSummary(p: Preview): string {
       o += `  ${s.index}. ${s.operation.name}` + s.args.fields.map(([k, v]) => ` ${argWithSource(s, k, v)}`).join("")
         + journalNote(s) + "\n";
       if (s.requires.length && !s.alreadyDone) o += `     needs ${requirementsText(s.requires, p.actor)}\n`;
+      if (s.confirm.length && !s.alreadyDone)
+        o += `     ${s.confirm.join(", ")} ${s.confirm.length === 1 ? "is" : "are"} known only when the step before has run: this step waits for your approval of ${s.confirm.length === 1 ? "it" : "them"} then\n`;
     }
   }
   if (p.stopReason) o += `The plan stops: ${visible(p.stopReason)}\n`;

@@ -129,6 +129,7 @@
          (input (gethash "inputSchema" tool))
          (required (coerce (or (and input (gethash "required" input)) #()) 'list))
          (allowed (coerce (or (and o (gethash "model_allowed" o)) #()) 'list))
+         (from-step (coerce (or (and o (gethash "from_step" o)) #()) 'list))
          (read-only (eq (jget tool "annotations" "readOnlyHint") :true))
          (effect (or (and o (gethash "effect" o)) (if read-only "read" "write")))
          (params (let ((props (and input (gethash "properties" input))) (out '()))
@@ -136,7 +137,8 @@
                      (maphash (lambda (k v)
                                 (push (soz::make-param :name k :type (schema-type v)
                                                        :required (and (member k required :test #'string=) t)
-                                                       :model-allowed (and (member k allowed :test #'string=) t))
+                                                       :model-allowed (and (member k allowed :test #'string=) t)
+                                                       :from-step (and (member k from-step :test #'string=) t))
                                       out))
                               props))
                    (sort out #'string< :key #'soz::pa-name))))
@@ -276,6 +278,9 @@ Tools that only read can be called directly. Everything that changes something (
 pays) goes through a plan: call soz_preview with the plan and the user's message, show the user
 the preview, and call soz_execute only after they agree. The user approves in their own client;
 you cannot approve for them.
+If an execution ends with \"confirm\", a value the user could not see at approval (an amount from a
+step before) is known now: call soz_preview again with the same plan and message, and show that
+preview; what already ran will not run again.
 
 A plan is one s-expression:
 
