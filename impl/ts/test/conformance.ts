@@ -60,6 +60,7 @@ const stepField: Record<string, (s: Step) => unknown> = {
   index: s => Rational.of(s.index),
   status: s => s.status,
   requires: s => s.requires.map(r => ({ role: r.role, four_eyes: r.fourEyes, rule: r.rule })),
+  confirm: s => s.confirm,
 };
 
 function compareSteps(want: Json[], got: Step[]) {
@@ -145,6 +146,15 @@ async function runExecutionCase(c: Json, message: string | null, policy: Rule[],
   if (has(c, "expect_execute_again")) {
     const log3: Log = [];
     compareExecution(get(c, "expect_execute_again")!, await execute(p, p.hash ?? "", { implementations: scripts(tools, log3), journal }), log3);
+  }
+  // "then": the plan previewed again with the same journal (a second approval, SPEC 10.4), and executed
+  if (has(c, "then")) {
+    const then = get(c, "then")!;
+    const log4: Log = [], log5: Log = [];
+    const p2 = await preview(planText(get(c, "plan")!), { message, operations: ops, implementations: scripts(tools, log4), journal, policy, actor });
+    if (has(then, "expect_preview")) comparePreview(get(then, "expect_preview")!, p2);
+    if (has(then, "expect_execute"))
+      compareExecution(get(then, "expect_execute")!, await execute(p2, p2.hash ?? "", { implementations: scripts(tools, log5), journal, approvers }), log5);
   }
 }
 

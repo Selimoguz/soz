@@ -297,6 +297,7 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
 (defstruct (plan-step (:conc-name step-)) index operation args key already-done status result
   requires        ; policy: ((role four-eyes rule-name) ...) approvals this step needs besides the person's own
   sources         ; ((param . (source-name ...)) ...): where each argument comes from (SPEC 5)
+  confirm         ; parameters whose value an earlier step gives, unseen: approved again once known (SPEC 10.3, 10.4)
   journal-status) ; already-done: its key is in the journal; this says done, pending or unknown
 
 (defvar *approvers* '() "Execution: the people who approved (ACTORs).")
@@ -519,6 +520,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                (key (step-key-text op argv))
                (done (journal-get *journal* key))
                (st (make-plan-step :index index :operation op :args (rec argv) :key key :already-done (and done t) :journal-status (and done (gethash "status" done))
+                                   :confirm (loop for (k . v) in argv
+                                                  when (and (has-pending-p v)
+                                                            (not (pa-from-step (find k (op-params op) :key #'pa-name :test #'string=))))
+                                                    collect k)
                                    :sources (let ((c (find-if (lambda (c) (and (= (call-line c) (node-line node))
                                                                                (eql (call-column c) (node-column node))))
                                                               *checked-calls*)))
@@ -540,7 +545,10 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
              (when (journal-conflict-p done args-json)   ; neither new nor done
                (setf (step-already-done st) nil)
                (problem "key-conflict" "~a" (conflict-text index op key done args-json)))
-             (make-pending :step index))
+             ;; a step done before gives what it gave then, so the steps after it show real values (10.4)
+             (if (and done (equal (gethash "status" done) "done"))
+                 (from-host-or-any (gethash "result" done) op)
+                 (make-pending :step index)))
             (:execute
              (let ((p (find index *previewed* :key #'step-index)))
                (unless (and p (string= (op-name (step-operation p)) (op-name op)) (args-match-p (step-args p) (step-args st)))
@@ -554,6 +562,15 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
                (when (journal-conflict-p done args-json)
                  (setf (step-status st) "not_run")
                  (error 'plan-halted :outcome "conflict" :message (conflict-text index op key done args-json)))
+               ;; a value the person did not see when approving (an earlier step gave it) is shown now, and
+               ;; the step waits for its approval: a new preview, in which the steps before are done
+               (when (and (step-confirm p) (not (and done (equal (gethash "status" done) "done"))))
+                 (setf (step-status st) "not_run")
+                 (error 'plan-halted :outcome "confirm"
+                                     :message (format nil "step ~d (~a) waits for approval of ~{~a~^, ~}, known only now; preview the plan again to approve it (what ran before will not run again)"
+                                                      index (op-name op)
+                                                      (mapcar (lambda (k) (format nil "~a=~a" k (visible (value-text (cdr (assoc k argv :test #'string=))))))
+                                                              (step-confirm p)))))
                ;; What was approved is unchanged; the policy is applied again with the actual values
                ;; (a pending value from the preview is known now).
                (multiple-value-bind (denials requires) (step-policy op argv)
@@ -641,6 +658,7 @@ and the SHA-256 of that line as prev), so that restarting the host never starts 
   (map 'vector (lambda (s) (obj "index" (step-index s) "operation" (op-name (step-operation s))
                                 "effect" (op-effect (step-operation s)) "args" (step-args s) "key" (step-key s)
                                 "already_done" (bool (step-already-done s)) "journal_status" (or (step-journal-status s) :null)
+                                "confirm" (coerce (step-confirm s) 'vector)
                                 "requires" (map 'vector (lambda (r) (obj "role" (first r) "four_eyes" (bool (second r))
                                                                          "rule" (third r)))
                                                 (step-requires s))
@@ -690,7 +708,8 @@ PROFILE is the language profile for the message (SPEC 5.4). Returns a PREVIEW."
     (let* ((steps (reverse *steps*))
            (p (make-preview :text text :message message :check check :status status :steps steps
                             :problems (reverse problems) :stop-reason reason :actor actor :policy policy)))
-      (when (member status '("ready" "stopped") :test #'string=)
+      ;; only a complete plan can be approved: a plan that stops has no hash (SPEC 10.3)
+      (when (string= status "ready")
         (setf (preview-hash p)
               (sha256-hex (canonical-json (obj "plan" text "message" (or message :null)
                                                "steps" (map 'vector (lambda (s) (obj "operation" (op-name (step-operation s))
@@ -719,9 +738,11 @@ people who approved it; by default the person who asked. Returns an EXECUTION."
   (when (or (not (preview-hash p)) (not (equal approval (preview-hash p))) (preview-used p))
     (audit-append audit "outcome" (obj "outcome" "not-approved"))
     (return-from execute (make-execution :outcome "not-approved" :steps '()
-                                         :message (if (preview-used p)
-                                                      "this preview was already executed; an approval is for one execution"
-                                                      "the approval does not match this preview; nothing ran"))))
+                                         :message (cond ((preview-used p)
+                                                         "this preview was already executed; an approval is for one execution")
+                                                        ((equal (preview-status p) "stopped")
+                                                         "the plan stops before it is complete, so it cannot be approved; nothing ran")
+                                                        (t "the approval does not match this preview; nothing ran")))))
   (setf (preview-used p) t)
   (audit-append audit "approval" (apply #'obj "hash" approval "by" approved-by
                                         "approvers" (map 'vector (lambda (a) (obj "id" (actor-id a) "roles" (coerce (actor-roles a) 'vector)))
@@ -745,6 +766,13 @@ people who approved it; by default the person who asked. Returns an EXECUTION."
                                                        :args (step-args s) :key (step-key s) :status "not_run"))
                                 (remove-if (lambda (s) (find (step-index s) reached :key #'step-index)) *previewed*)))))
       (dolist (s all) (unless (step-status s) (setf (step-status s) "not_run")))
+      ;; what already happened stays happened: an execution that ends otherwise than done says which steps ran
+      (let ((ran (remove-if-not (lambda (s) (equal (step-status s) "done")) all)))
+        (when (and ran (not (string= outcome "done")))
+          (setf message (format nil "~@[~a; ~]~:[steps~;step~] ~{~a~^, ~} ran before this and ~:[are~;is~] not undone"
+                                message (= (length ran) 1)
+                                (mapcar (lambda (s) (format nil "~d (~a)" (step-index s) (op-name (step-operation s)))) ran)
+                                (= (length ran) 1)))))
       (audit-append audit "outcome" (obj "outcome" outcome "message" (or message :null) "stop_reason" (or reason :null)
                                          "steps" (map 'vector (lambda (s) (obj "index" (step-index s) "status" (step-status s))) all)))
       (make-execution :outcome outcome :steps all :message message :stop-reason reason))))
@@ -788,16 +816,22 @@ an IBAN read differently). Everything else stays as it is."
                             (soz-error-code e) (visible (soz-error-message e)))))
           (t
            (when (preview-steps p)
-             (format o "If you approve, these will happen:~%")
+             (format o (if (string= (preview-status p) "stopped")
+                           "The plan stops before it is complete. These steps come before the stop; they are not run on their own:~%"
+                           "If you approve, these will happen:~%"))
              (dolist (s (preview-steps p))
                (format o "  ~d. ~a~{ ~a~}~a~%"
                        (step-index s) (op-name (step-operation s))
                        (loop for (k . v) in (cdr (step-args s)) collect (arg-with-source s k v))
                        (journal-note s))
                (when (and (step-requires s) (not (step-already-done s)))
-                 (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))))
+                 (format o "     needs ~a~%" (requirements-text (step-requires s) (preview-actor p))))
+               (when (and (step-confirm s) (not (step-already-done s)))
+                 (format o "     ~{~a~^, ~} ~:[are~;is~] known only when the step before has run: this step waits for your approval of ~:[them~;it~] then~%"
+                         (step-confirm s) (= (length (step-confirm s)) 1) (= (length (step-confirm s)) 1)))))
            (when (preview-stop-reason p) (format o "The plan stops: ~a~%" (visible (preview-stop-reason p))))
            (dolist (pr (preview-problems p)) (format o "Cannot run: ~a~%" (visible (cdr (assoc "message" (cdr pr) :test #'string=)))))
            (when (string= (preview-status p) "nothing") (format o "Nothing to do.~%"))
+           (when (string= (preview-status p) "stopped") (format o "There is nothing to approve. Nothing will happen.~%"))
            (when (preview-hash p) (format o "Preview: ~a~%" (subseq (preview-hash p) 0 12)))))))
 

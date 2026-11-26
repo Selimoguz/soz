@@ -11,15 +11,19 @@ export class Schema<T, Optional extends boolean = false> {
   readonly type: Type;
   readonly required: boolean;
   readonly allowModel: boolean;
+  readonly allowStep: boolean;
   declare readonly _value: T;            // type-level only
   declare readonly _optional: Optional;  // type-level only
-  constructor(type: Type, required = true, allowModel = false) {
-    this.type = type; this.required = required; this.allowModel = allowModel;
+  constructor(type: Type, required = true, allowModel = false, fromStep = false) {
+    this.type = type; this.required = required; this.allowModel = allowModel; this.allowStep = fromStep;
   }
   /** As a parameter: it may be left out. */
-  optional(): Schema<T, true> { return new Schema<T, true>(this.type, false, this.allowModel); }
+  optional(): Schema<T, true> { return new Schema<T, true>(this.type, false, this.allowModel, this.allowStep); }
   /** As a parameter: the model may fill it with its own text (a note, a reason). */
-  modelAllowed(): Schema<T, Optional> { return new Schema<T, Optional>(this.type, this.required, true); }
+  modelAllowed(): Schema<T, Optional> { return new Schema<T, Optional>(this.type, this.required, true, this.allowStep); }
+  /** As a parameter: it may take what an earlier step returns (a new record's id) without a second
+   * approval once it is known (SPEC 6, 10.3). Not for a value that decides what is approved. */
+  fromStep(): Schema<T, Optional> { return new Schema<T, Optional>(this.type, this.required, this.allowModel, true); }
 }
 
 type AnySchema = Schema<any, boolean>;
@@ -78,7 +82,7 @@ export function defineOperation<P extends Fields, R = Json>(spec: OperationSpec<
   if (spec.label !== undefined && !LABEL.test(spec.label)) throw new Error(`bad label ${JSON.stringify(spec.label)} in operation ${spec.name}`);
   const operation: Operation = {
     name: spec.name, effect,
-    params: Object.entries(spec.params).map(([name, s]) => ({ name, type: s.type, required: s.required, modelAllowed: s.allowModel })),
+    params: Object.entries(spec.params).map(([name, s]) => ({ name, type: s.type, required: s.required, modelAllowed: s.allowModel, fromStep: s.allowStep })),
     returns: spec.returns?.type ?? "any",
     key: spec.key ?? null,
     label: spec.label ?? null,

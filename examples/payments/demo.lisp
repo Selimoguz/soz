@@ -6,6 +6,12 @@
 
 (defvar *here* (make-pathname :name nil :type nil :defaults *load-truename*))
 
+;;; The requests write amounts as people in Turkey do (12.450,75 TRY): the Turkish profile reads them so,
+;;; one value each (SPEC 5.1, 5.4). Without it, 3.200 could be 3.2 or 3200 and would not be taken.
+(setf *profile* (profile-from-json
+                 (with-open-file (s (merge-pathnames "../../profiles/tr.json" *load-truename*) :external-format :utf-8)
+                   (json:json-oku (let ((text (make-string (file-length s)))) (subseq text 0 (read-sequence text s)))))))
+
 ;;; The pretend bank. Its pay call has no duplicate check of its own, like many real ones.
 (defvar *invoices* (list (list "INV-2026-118" "Akdeniz Gida" 1245075/100 "TRY" "TR33 0006 1005 1978 6457 8413 26" "open")
                          (list "INV-2026-120" "Akdeniz Gida" 3200 "TRY" "TR33 0006 1005 1978 6457 8413 26" "open")

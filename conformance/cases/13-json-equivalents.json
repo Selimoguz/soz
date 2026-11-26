@@ -194,15 +194,19 @@
         "effects": [
           "money"
         ],
-        "errors": [],
+        "errors": [
+          {
+            "code": "ambiguous-number"
+          }
+        ],
         "max_calls": 1,
         "may_stop": false,
         "only": true,
         "requires_approval": true,
-        "valid": true
+        "valid": false
       },
       "message": "pay Yilmaz 1.250 lira",
-      "name": "02-provenance: 1.250 reads as 1250",
+      "name": "02-provenance: without a language profile 1.250 is ambiguous: 1250 is not taken",
       "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"pay\", \"args\": [{\"name\": \"to\", \"value\": \"Yilmaz\"}, {\"name\": \"amount\", \"value\": 1250}]}]}"
     },
     {
@@ -210,15 +214,19 @@
         "effects": [
           "money"
         ],
-        "errors": [],
+        "errors": [
+          {
+            "code": "ambiguous-number"
+          }
+        ],
         "max_calls": 1,
         "may_stop": false,
         "only": true,
         "requires_approval": true,
-        "valid": true
+        "valid": false
       },
       "message": "pay Yilmaz 1.250 lira",
-      "name": "02-provenance: 1.250 also reads as 1.25",
+      "name": "02-provenance: ... and neither is 1.25",
       "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"pay\", \"args\": [{\"name\": \"to\", \"value\": \"Yilmaz\"}, {\"name\": \"amount\", \"value\": 1.25}]}]}"
     },
     {
@@ -267,6 +275,42 @@
       },
       "message": "pay Yilmaz 12,5 lira",
       "name": "02-provenance: 12,5 reads as 12.5",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"pay\", \"args\": [{\"name\": \"to\", \"value\": \"Yilmaz\"}, {\"name\": \"amount\", \"value\": 12.5}]}]}"
+    },
+    {
+      "expect": {
+        "effects": [
+          "money"
+        ],
+        "errors": [
+          {
+            "code": "invented-value"
+          }
+        ],
+        "max_calls": 1,
+        "may_stop": false,
+        "only": true,
+        "requires_approval": true,
+        "valid": false
+      },
+      "message": "pay Yilmaz 12,5 lira",
+      "name": "02-provenance: 12,5 is never 125",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"pay\", \"args\": [{\"name\": \"to\", \"value\": \"Yilmaz\"}, {\"name\": \"amount\", \"value\": 125}]}]}"
+    },
+    {
+      "expect": {
+        "effects": [
+          "money"
+        ],
+        "errors": [],
+        "max_calls": 1,
+        "may_stop": false,
+        "only": true,
+        "requires_approval": true,
+        "valid": true
+      },
+      "message": "pay Yilmaz 12.5 dollars",
+      "name": "02-provenance: 12.5 reads as 12.5: a comma cannot group a 1-digit run",
       "plan": "{\"plan\": \"x\", \"body\": [{\"call\": \"pay\", \"args\": [{\"name\": \"to\", \"value\": \"Yilmaz\"}, {\"name\": \"amount\", \"value\": 12.5}]}]}"
     },
     {
@@ -617,8 +661,29 @@
         "requires_approval": true,
         "valid": true
       },
-      "message": "if Yilmaz owes less than 50.000, send 20 tomatoes",
+      "message": "if Yilmaz owes less than 50000, send 20 tomatoes",
       "name": "03-conditions: a threshold from the message is fine",
+      "plan": "{\"plan\": \"x\", \"body\": [{\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz\"}]}}], \"body\": [{\"if\": {\"op\": \"<\", \"args\": [{\"get\": {\"var\": \"c\"}, \"field\": \"balance\"}, 50000]}, \"then\": {\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}}, {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": 20}]}}]}]}"
+    },
+    {
+      "expect": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "errors": [
+          {
+            "code": "invented-condition"
+          }
+        ],
+        "max_calls": 2,
+        "may_stop": false,
+        "only": true,
+        "requires_approval": true,
+        "valid": false
+      },
+      "message": "if Yilmaz owes less than 50.000, send 20 tomatoes",
+      "name": "03-conditions: an ambiguous threshold (50.000 without a profile) cannot decide a write",
       "plan": "{\"plan\": \"x\", \"body\": [{\"let\": [{\"name\": \"c\", \"value\": {\"call\": \"erp.find_customer\", \"args\": [{\"name\": \"name\", \"value\": \"Yilmaz\"}]}}], \"body\": [{\"if\": {\"op\": \"<\", \"args\": [{\"get\": {\"var\": \"c\"}, \"field\": \"balance\"}, 50000]}, \"then\": {\"call\": \"erp.add_order_line\", \"args\": [{\"name\": \"customer\", \"value\": {\"get\": {\"var\": \"c\"}, \"field\": \"code\"}}, {\"name\": \"product\", \"value\": \"tomatoes\"}, {\"name\": \"quantity\", \"value\": 20}]}}]}]}"
     },
     {

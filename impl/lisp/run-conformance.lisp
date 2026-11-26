@@ -114,6 +114,7 @@
         (cons "requires" (lambda (s) (map 'vector (lambda (r) (soz::obj "role" (first r) "four_eyes" (if (second r) :true :false)
                                                                         "rule" (third r)))
                                           (step-requires s))))
+        (cons "confirm" (lambda (s) (coerce (soz::step-confirm s) 'vector)))
         (cons "status" #'step-status)))
 
 (defun compare-preview (expect p)
@@ -173,7 +174,20 @@
               (let ((log3 (make-array 0 :adjustable t :fill-pointer t)))
                 (install-scripts (or (gethash "execute_tools" c) (gethash "tools" c)) log3)
                 (compare-execution (gethash "expect_execute_again" c)
-                                   (execute p (preview-hash p) :journal journal) log3)))))))))
+                                   (execute p (preview-hash p) :journal journal) log3)))
+            ;; "then": the plan previewed again with the same journal (a second approval, SPEC 10.4), and executed
+            (let ((then (gethash "then" c)))
+              (when then
+                (let ((log4 (make-array 0 :adjustable t :fill-pointer t)))
+                  (install-scripts (or (gethash "execute_tools" c) (gethash "tools" c)) log4)
+                  (let ((p2 (preview text :message message :journal journal :policy *case-policy* :actor *case-actor*)))
+                    (when (gethash "expect_preview" then) (compare-preview (gethash "expect_preview" then) p2))
+                    (when (gethash "expect_execute" then)
+                      (setf (fill-pointer log4) 0)
+                      (compare-execution (gethash "expect_execute" then)
+                                         (execute p2 (preview-hash p2) :journal journal
+                                                  :approvers (map 'list #'actor-from-json (or (gethash "approvers" c) #())))
+                                         log4))))))))))))
 
 (defun run (folder)
   (let ((total 0) (failed 0))

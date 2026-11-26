@@ -2,10 +2,17 @@
 // HTTP client. Prints its port. It wants "Authorization: Bearer $FAKE_TOKEN", keeps sessions, answers
 // tools/call as server-sent events (asking the client something first), everything else as JSON.
 // POST /control {"mode": ...} makes it misbehave: "forget" (drops all sessions), "fail500" (records an
-// order line, then answers 500), "slow" (add_order_line answers after 3 s), "lose-session" (forgets every
+// order line, then answers 500), "fail422" (records an order line, then answers 422), "refuse403" (records
+// nothing and answers 403), "apply-404-refuse" (records an order line, forgets every session and answers 404,
+// then refuses to start a new session with 403 until "normal"), "slow" (add_order_line answers after 3 s), "lose-session" (forgets every
 // session when add_order_line comes, and answers 404, once), "normal".
 
 import { createServer } from "node:http";
+
+// FAKE_STATELESS=1: a server that keeps no sessions: initialize is answered without Mcp-Session-Id (MCP
+// allows it), and requests are served without one. GET /stats says how many initialize requests came.
+const stateless = process.env.FAKE_STATELESS === "1";
+let initializes = 0;
 
 type Obj = Record<string, unknown>;
 const orders: Obj[] = [];
@@ -32,18 +39,21 @@ function call(name: string, args: Obj) {
 const server = createServer((req, res) => {
   let body = "";
   req.on("data", c => { body += String(c); }).on("end", () => {
+    if (req.url === "/stats") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ initialize: initializes, orders: orders.length })); return; }
     if (req.url === "/control") { mode = (JSON.parse(body) as { mode: string }).mode; if (mode === "forget") { sessions.clear(); mode = "normal"; } res.writeHead(200); res.end("{}"); return; }
     if (req.headers.authorization !== `Bearer ${process.env.FAKE_TOKEN}`) { res.writeHead(401); res.end(); return; }
     if (req.method === "DELETE") { sessions.delete(String(req.headers["mcp-session-id"])); res.writeHead(200); res.end(); return; }
     let m: Obj;
     try { m = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
     if (m.method === "initialize") {
+      if (mode === "refuse-init") { res.writeHead(403); res.end(); return; }
+      initializes++;
       const id = `s${++nextSession}`; sessions.add(id);
-      res.writeHead(200, { "Content-Type": "application/json", "Mcp-Session-Id": id });
+      res.writeHead(200, stateless ? { "Content-Type": "application/json" } : { "Content-Type": "application/json", "Mcp-Session-Id": id });
       res.end(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake-erp-http", version: "1" } } }));
       return;
     }
-    if (!sessions.has(String(req.headers["mcp-session-id"]))) { res.writeHead(404); res.end(); return; }
+    if (!stateless && !sessions.has(String(req.headers["mcp-session-id"]))) { res.writeHead(404); res.end(); return; }
     if (req.headers["mcp-protocol-version"] !== "2025-06-18") { res.writeHead(400); res.end(); return; }
     if (m.id === undefined) { res.writeHead(202); res.end(); return; }          // notifications, and our declined questions
     const params = (m.params ?? {}) as Obj;
@@ -51,6 +61,11 @@ const server = createServer((req, res) => {
     if (m.method === "tools/call") {
       const name = String(params.name);
       if (mode === "fail500" && name === "add_order_line") { call(name, (params.arguments ?? {}) as Obj); res.writeHead(500); res.end(); return; }
+      if (mode === "fail422" && name === "add_order_line") { call(name, (params.arguments ?? {}) as Obj); res.writeHead(422); res.end(); return; }
+      if (mode === "refuse403" && name === "add_order_line") { res.writeHead(403); res.end(); return; }
+      if (mode === "apply-404-refuse" && name === "add_order_line") {
+        call(name, (params.arguments ?? {}) as Obj); sessions.clear(); mode = "refuse-init"; res.writeHead(404); res.end(); return;
+      }
       if (mode === "lose-session" && name === "add_order_line") { sessions.clear(); mode = "normal"; res.writeHead(404); res.end(); return; }
       const answer = () => {
         res.writeHead(200, { "Content-Type": "text/event-stream" });

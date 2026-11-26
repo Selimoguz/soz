@@ -767,6 +767,261 @@
           "erp.find_customer"
         ]
       }
+    },
+    {
+      "name": "a plan that stops cannot be approved, not even the steps before the stop",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (do (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20)",
+        "      (stop \"ask the user about the peppers\")))"
+      ],
+      "tools": {
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "stopped",
+        "hash": null,
+        "stop_reason": "ask the user about the peppers",
+        "steps": [
+          {
+            "index": 1,
+            "operation": "erp.add_order_line"
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "not-approved",
+        "calls": []
+      }
+    },
+    {
+      "name": "a stop reached while executing: the steps that ran are reported done, the rest not run",
+      "plan": [
+        "(plan \"Order for Yilmaz Market\"",
+        "  (do (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20)",
+        "      (let ((c (erp.find_customer name \"Yilmaz Market\")))",
+        "        (if (> (get c balance) (get c limit))",
+        "            (stop \"over the limit\")",
+        "            (erp.add_order_line customer (get c code) product \"peppers\" quantity 5)))))"
+      ],
+      "tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 100,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "execute_tools": {
+        "erp.find_customer": [
+          {
+            "result": {
+              "code": "C1",
+              "title": "Yilmaz Market",
+              "balance": 1500,
+              "limit": 1000
+            }
+          }
+        ],
+        "erp.add_order_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready"
+      },
+      "expect_execute": {
+        "outcome": "stopped",
+        "stop_reason": "over the limit",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.add_order_line",
+          "erp.find_customer"
+        ]
+      }
+    },
+    {
+      "name": "a value from an earlier step that decides the approval: the step waits for a second approval",
+      "message": "Invoice order SO-7 and pay Yilmaz Market",
+      "plan": [
+        "(plan \"Invoice and pay\"",
+        "  (let ((inv (erp.create_invoice order \"SO-7\")))",
+        "    (pay to \"Yilmaz Market\" amount (get inv total))))"
+      ],
+      "tools": {
+        "erp.create_invoice": [
+          {
+            "result": {
+              "id": "INV-9",
+              "total": 120.5
+            }
+          }
+        ],
+        "pay": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "index": 1,
+            "operation": "erp.create_invoice",
+            "confirm": []
+          },
+          {
+            "index": 2,
+            "operation": "pay",
+            "confirm": [
+              "amount"
+            ]
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "confirm",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "not_run"
+          }
+        ],
+        "calls": [
+          "erp.create_invoice"
+        ]
+      },
+      "then": {
+        "expect_preview": {
+          "status": "ready",
+          "steps": [
+            {
+              "index": 1,
+              "already_done": true
+            },
+            {
+              "index": 2,
+              "operation": "pay",
+              "args": {
+                "amount": 120.5,
+                "to": "Yilmaz Market"
+              },
+              "confirm": []
+            }
+          ]
+        },
+        "expect_execute": {
+          "outcome": "done",
+          "steps": [
+            {
+              "index": 1,
+              "status": "already_done"
+            },
+            {
+              "index": 2,
+              "status": "done"
+            }
+          ],
+          "calls": [
+            {
+              "operation": "pay",
+              "args": {
+                "amount": 120.5,
+                "to": "Yilmaz Market"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "a parameter declared from_step takes an earlier step's result without a second approval",
+      "message": "New order for Yilmaz Market: 20 tomatoes",
+      "plan": [
+        "(plan \"Order\"",
+        "  (let ((o (erp.create_order customer \"Yilmaz Market\")))",
+        "    (erp.add_line order (get o id) product \"tomatoes\" quantity 20)))"
+      ],
+      "tools": {
+        "erp.create_order": [
+          {
+            "result": {
+              "id": "O-1"
+            }
+          }
+        ],
+        "erp.add_line": [
+          {
+            "result": null
+          }
+        ]
+      },
+      "expect_preview": {
+        "status": "ready",
+        "steps": [
+          {
+            "index": 1,
+            "confirm": []
+          },
+          {
+            "index": 2,
+            "confirm": []
+          }
+        ]
+      },
+      "expect_execute": {
+        "outcome": "done",
+        "steps": [
+          {
+            "index": 1,
+            "status": "done"
+          },
+          {
+            "index": 2,
+            "status": "done"
+          }
+        ],
+        "calls": [
+          "erp.create_order",
+          {
+            "operation": "erp.add_line",
+            "args": {
+              "order": "O-1",
+              "product": "tomatoes",
+              "quantity": 20
+            }
+          }
+        ]
+      }
     }
   ]
 }

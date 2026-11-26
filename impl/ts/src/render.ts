@@ -18,7 +18,7 @@ type Doc = {
 };
 
 const STATUS: Record<string, string> = {
-  ready: "Ready to approve", stopped: "Stops partway; the steps before the stop can be approved",
+  ready: "Ready to approve", stopped: "Stops before it is complete; nothing to approve",
   nothing: "Nothing to do", denied: "Not allowed by the policy", error: "Cannot run", invalid: "The plan has errors",
 };
 
@@ -31,6 +31,8 @@ function doc(p: Preview): Doc {
       steps.push(`     ${k}: ${visible(valueText(v))}${src.length ? `   (${sourceText(src)})` : ""}`);
     }
     if (s.requires.length && !s.alreadyDone) notes.push(`Step ${s.index} needs ${requirementsText(s.requires, p.actor)}.`);
+    if (s.confirm.length && !s.alreadyDone)
+      notes.push(`Step ${s.index}: ${s.confirm.join(", ")} ${s.confirm.length === 1 ? "is" : "are"} known only after the step before runs; it waits for your approval of ${s.confirm.length === 1 ? "that value" : "those values"} then.`);
   }
   return {
     title: visible(p.check.title ?? "(no title)"), status: STATUS[p.status] ?? p.status,

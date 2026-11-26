@@ -180,17 +180,28 @@ that is not a letter or digit. (`"Yilmaz Market"` is in "Send it to Yılmaz Mark
 not in "talimat".)
 
 A **number** literal `N` is in the message if `N ≥ 0` and `N` is one of the **message numbers**.
-Message numbers come from each maximal run in the message matching `[0-9]+([.,][0-9]+)*`; each run
-gives every value it has under these readings, where a reading applies only if the result is a
-valid decimal:
+Message numbers come from each maximal run in the message matching `[0-9]+([.,][0-9]+)*`. **A run
+means one value or none, never two.** It is read in a **format**: a decimal mark (`,` or `.`), the
+other mark grouping thousands. A run is written in a format if it is digits, or a group of 1 to 3
+digits followed by groups of exactly 3 each after the grouping mark, optionally followed by the
+decimal mark and at least one digit (with `,` as the decimal mark: `1250`, `1.250`, `1.250,50`,
+`12,5`; not `12.5`, `1.25.0` or `12,`). Its value is the digits with the grouping marks removed and
+the decimal mark as the point.
 
-- digits only: the integer;
-- `.` groups thousands, one `,` is the decimal point (`1.250,50` → 1250.5);
-- `,` groups thousands, one `.` is the decimal point (`1,250.50` → 1250.5);
-- the separators are removed (`1.250` → 1250, `12,5` → 125).
+- Digits only: the integer, in any format.
+- With a language profile that declares its decimal mark (5.4: Turkish `,`, English `.`), the run is
+  read in that format only. Turkish `1.250` is 1250 and `12,5` is 12.5; English `1.250` is 1.25.
+- Without one, the run is read in both formats. If only one reads it, or both give the same value,
+  that is its value (`12,5` → 12.5, `1,250.50` → 1250.5, `12450.75` → 12450.75).
 
-So `1.250` gives {1.25, 1250}, `12,5` gives {12.5, 125} and `20` gives {20}. A negative literal is
-never in the message.
+Otherwise the run is **ambiguous**: without a profile, both formats read it and disagree (`1.250` is
+1.25 or 1250, `50.000` is 50 or 50000); with one, its format cannot read it but the other can
+(`12.5` in a Turkish message). An ambiguous run gives **no** message number. A literal equal to one of
+the values it could mean is invented, as any other literal not in the message, but the error for it
+in an argument of a side-effect operation is `ambiguous-number` instead of `invented-value`
+(section 5.3), so that the model asks the user which value they meant instead of choosing one. `20`
+gives {20}; the readings that removed every mark (`12,5` as 125) are gone: no format reads a run so.
+A negative literal is never in the message.
 
 **Schema constants.** In `(= A B)` or `(!= A B)`, if one side is a literal and the other a value
 returned by an operation for a field declared with `enum`, and the literal is one of the declared
@@ -231,6 +242,32 @@ can be shown and reported, but cannot drive a side effect (section 5.2).
 Provenance does not catch a model that repeats a line of the message twice; every value of the
 second copy is in the message. Execution (0.2) handles that with idempotency keys.
 
+- **ambiguous-number.** As `invented-value`, for a literal that equals a value an ambiguous run of
+  the message could mean (5.1). The model should stop and ask; the host can prevent it by checking
+  with the language profile of the person who wrote the message.
+
+### 5.5 In the message is not for that field
+
+Provenance proves that a value **occurs** in the message. It does not prove that the person said it
+**for the field it is passed to**. "Order SO-2041: 12 crates" has 2041 and 12 in it, and a plan that
+orders 2041 crates of order 12 passes the checker: both values are in the message. No rule in this
+section can tell the two apart, because the message is free text and the association is in its
+meaning, not in its characters.
+
+That association is checked by the **person**, in the preview (10.3): every value of every step is
+shown with where it came from ("from the message", "from erp", "written by the assistant"), next to
+the parameter it is passed to. So:
+
+- Hosts must not claim more than this. "A value the model made up does not reach an operation" is
+  what soz guarantees; "a value from the message reaches the right field" is not, and the approval
+  is where it is caught.
+- For a parameter that decides what the approval means (an amount, a recipient, an account), a host
+  should prefer a value from a system of record over one from the message: an order's total read from
+  the ERP, not a number in the text. A policy can require it (`args_from`, section 12.1), so that a
+  number from the message cannot be the amount at all.
+- Numbers are read in one format (5.1), so the person and the checker cannot read the same digits as
+  two different values.
+
 ### 5.4 Language profiles
 
 A host MAY check with a **language profile**: data (`profiles/*.json`) under which number words in the
@@ -240,10 +277,15 @@ in 5.1.
 
 ```json
 {"language": "tr",
- "numbers": {"units": {"bir": 1, "iki": 2, "on": 10, "yirmi": 20, "...": 0},
+ "numbers": {"decimal": ",",
+             "units": {"bir": 1, "iki": 2, "on": 10, "yirmi": 20, "...": 0},
              "hundred": ["yüz", "yuz"], "scales": {"bin": 1000, "milyon": 1000000},
              "joiners": [], "compound": true}}
 ```
+
+`decimal` (`","` or `"."`, optional) is the decimal mark numbers are written with in this language;
+with it, a run of digits in the message is read in that format only (5.1): `1.250` is 1250 in
+Turkish and 1.25 in English, and a run the format cannot read is ambiguous, not guessed.
 
 `units` are words with their values (0 to 99, as the language has them: English lists eleven to
 nineteen); `hundred` multiplies; `scales` are thousand, million, ...; `joiners` (English `and`) may
@@ -268,8 +310,9 @@ stand between number words; with `compound`, a word may be several number words 
      before; `total += max(group, 1) × s`, `group = 0`.
    - a joiner continues only between number words.
    So `iki yüz elli üç` is 253, `bin iki yüz` 1200, `iki üç` is 2 and 3 (never 5).
-5. A digit run joined to a following scale word gives each of its readings times the scale
-   (`2 bin` → 2000, `2,5 milyon` → 2500000 and 25000000).
+5. A digit run joined to a following scale word gives its value times the scale (`2 bin` → 2000,
+   Turkish `2,5 milyon` → 2500000, never 25000000); an ambiguous run stays ambiguous, times the
+   scale.
 
 Not covered, deliberately: fractions in words (`buçuk`, `yarım`, "a half") and inflected numbers
 (`beşer`, `ikisi`), which would need rules where a wrong reading would let a made-up value through.
@@ -298,7 +341,14 @@ The host declares the operations a plan may call. Declaration (JSON):
   needs approval. A domain adds its own effects this way without changing the core.
 - **An operation without `effect` is `write`**: one that someone forgot to mark stays on the safe
   side.
-- `required` defaults to true, `model_allowed` to false, `returns` to `{"type": "any"}`.
+- `required` defaults to true, `model_allowed` to false, `from_step` to false, `returns` to
+  `{"type": "any"}`.
+- `from_step` (on a parameter) says it may take what an **earlier step of the same plan returns**
+  without the person seeing that value first: the identifier the system creates for a new record
+  (an order's number, to add lines to that order). Declare it only for a parameter whose value does
+  not change what the person approves. A parameter that decides what the approval means (an amount, a
+  recipient, an account, a target environment) is never `from_step`; it gets a value from an earlier
+  step only through a second approval (10.3, 10.4).
 - `key` (0.2) lists the parameters that make up the operation's idempotency key (section 10.3);
   default: all of them. A key names one thing done once, so it should be an identifier the host or
   the user's system gives (an order number and a line number, an invoice number), not a description
@@ -363,7 +413,7 @@ The checker's result (the conformance suite compares these fields):
 `not-a-plan`, `empty-plan`, `empty-form`, `bad-form`, `unknown-name`, `unknown-operation`,
 `unknown-parameter`, `duplicate-parameter`, `missing-parameter`, `duplicate-field`,
 `unknown-field`, `type-mismatch`, `not-a-list`, `not-a-record`, `mixed-list`, `division-by-zero`,
-`invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`, in the JSON syntax
+`invented-value`, `ambiguous-number`, `invented-condition`, `list-too-long`, `too-many-calls`, in the JSON syntax
 `bad-json` (section 2.1), and with a policy `policy-denied`, `policy-source` (section 12).
 
 ## 10. Execution (0.2)
@@ -377,8 +427,12 @@ The host gives every operation an implementation: a function from the arguments 
 parameter name to value) to one of
 
 - a **result**, a value of the declared `returns` type;
-- **failed**: the operation did not happen (a validation error, a refusal);
-- **unknown**: it is not known whether it happened (a timeout, a lost connection).
+- **failed**: the operation did not happen (a validation error, a refusal), and the implementation
+  **knows** it did not: it checked before acting, or the system it calls answers in a way its
+  contract says means "nothing done". A failed step's claim is released, so it may run again;
+- **unknown**: it is not known whether it happened (a timeout, a lost connection, an error from a
+  system that may have acted first). When in doubt, an implementation answers unknown, never failed:
+  unknown stops and waits for a person, failed lets the same step run a second time.
 
 A result that does not match the declared type is `bad-result`; so is a value outside a declared
 `enum` (texts compared after `fold`). A list result longer than 50 is
@@ -405,6 +459,13 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
    `(result of step N).field`. Using a pending value in anything else (arithmetic, a comparison, an
    `if` condition, a `for-each` list, an argument of a `read`) is `depends-on-write`: such a plan
    cannot be previewed.
+   A step that has a pending value (or a list or record holding one) in an argument of a parameter
+   **not** declared `from_step` (section 6) lists that parameter in its **confirm** list, and the
+   preview tells the person: the value is known only once the step before has run, and the step
+   waits for their approval of it then (10.4). The person approves now what they can see; what they
+   cannot see yet is not covered by this approval.
+   A step whose key is already in the journal as `done` gives the result recorded there, not a
+   pending value, so the steps after it are shown with the real values.
 4. Each step has an **idempotency key**: the operation's name (`name-fold`) and the values of its
    **key parameters**. An operation declares them with `"key": ["customer", "product", "date"]`;
    without `key`, all its parameters are key parameters. Exactly, the key is the canonical JSON
@@ -423,9 +484,14 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
    it) or `pending` / `unknown` (an earlier run may or may not have happened; execution stops there
    with `unresolved` until a person resolves it, 10.4 and 10.8).
 5. The preview's status is `ready` (it may be approved), `stopped` (a `stop` was reached; the steps
-   before it are listed and may still be approved), `nothing` (no steps) or `error` (a run-time
-   error, `depends-on-write`, `duplicate-step`, `key-conflict`, or a failed read).
-6. The **preview hash** is the SHA-256, in lower-case hex, of the canonical JSON (10.6) of
+   before it are listed, so that the person sees what the plan would have done, but they **cannot be
+   approved**), `nothing` (no steps) or `error` (a run-time error, `depends-on-write`,
+   `duplicate-step`, `key-conflict`, or a failed read).
+   A plan that stops is not complete: approving the steps before its stop would do part of a whole
+   (a refund without the message that goes with it). Only a `ready` preview has a hash; executing a
+   `stopped` one is `not-approved` and nothing runs. To do a part, the model writes a plan with only
+   that part, which is previewed and approved as a whole.
+6. The **preview hash** (of a `ready` preview only) is the SHA-256, in lower-case hex, of the canonical JSON (10.6) of
    `{"plan": PLAN-TEXT, "message": MESSAGE-OR-NULL, "steps": [{"operation", "args", "key"}...]}`.
 
 ### 10.4 Approval and execution
@@ -439,6 +505,12 @@ with live reads. For every step reached, in order:
 1. If the preview has no step with that index, or its operation or arguments differ, execution stops
    with `changed` **before** calling it, and says what differs. A pending argument in the preview
    matches any value. (The balance moved, the stock ran out: the person approved something else.)
+   If the previewed step has a confirm list (10.3) and its key is not in the journal as `done`, it is
+   not called either: its status is `not_run` and execution stops with **`confirm`**, with the values
+   of those parameters, which are known now, in its message. The steps before it are done and stay
+   done. The plan is previewed again: the steps already done give their recorded results (10.3), so
+   the value is in the new preview like any other, the person approves that preview, and its
+   execution runs what is left (the done steps are `already_done`).
 2. If its key is in the journal with other arguments (as in 10.3), it is not called: its status is
    `not_run` and execution stops with `conflict`. (Another execution wrote that key after the
    preview.)
@@ -459,7 +531,13 @@ with live reads. For every step reached, in order:
    by accident, not even across a crash.
 
 If evaluation ends with fewer steps than the preview had, the outcome is `changed`, unless a `stop`
-was reached, which gives `stopped`. Otherwise the outcome is `done`. Every step has a status:
+was reached, which gives `stopped`. Otherwise the outcome is `done`.
+
+**What ran stays done.** Execution does not undo anything: when it ends with any outcome other than
+`done` (a `stop` that the live reads reached, `changed`, `failed`, `unknown`, ...), the steps that
+were called before have status `done`, the rest `not_run`, and the execution's message names the
+steps that ran and says they are not undone, so that the person knows what happened and what did
+not. A step that may have happened is `unknown` or `unresolved`, never `not_run`. Every step has a status:
 `done`, `already_done`, `failed`, `unknown`, `unresolved` or `not_run`. Two flags of two moments:
 in a preview, `already_done` means "in the journal, it will not be called", whatever the entry's
 status (10.3, with `journal_status`); in an execution, the step status `already_done` is for a
@@ -493,7 +571,7 @@ value is `{"pending": N}` or `{"pending": N, "path": ["field", ...]}`.
 ### 10.7 Error and outcome codes
 
 Preview: `bad-result`, `list-too-long`, `division-by-zero`, `depends-on-write`, `duplicate-step`, `no-implementation`,
-`read-failed`, `key-conflict`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`,
+`read-failed`, `key-conflict`, and with a policy `policy-denied` (section 12). Execution outcomes: `done`, `stopped`, `confirm`,
 `changed`, `conflict`, `failed`, `unknown`, `unresolved`, `not-approved`, and with a policy `denied`.
 
 ### 10.8 Journal and audit stores
@@ -552,8 +630,8 @@ Every tool of every configured server becomes the operation `SERVER.TOOL`:
 - **label** the server's name, if it is a label (section 6): every value from the `erp` server has
   source `tool:erp`.
 
-The configuration may override, per operation, `effect`, `returns`, `key`, `label` and
-`model_allowed` (a list of parameter names).
+The configuration may override, per operation, `effect`, `returns`, `key`, `label`,
+`model_allowed` and `from_step` (each a list of parameter names).
 
 A tool call that returns `isError`, or a JSON-RPC error, reached the server. For a `read` operation it
 is **failed**. For a side-effect operation it is **unknown**: the server may have done the work and
@@ -656,12 +734,23 @@ request):
   sends it again only if it is safe to: initialization, listing tools, and calls of `read`
   operations. A call of a side-effect operation is **not** sent again; its outcome is **unknown**
   (the step becomes `unresolved` for a person to resolve), and the new session serves what follows.
+  It stays unknown if the new session cannot be started (the server refuses it, or cannot be
+  reached): the call itself reached the server, and nothing after that proves it did not run. The
+  gateway then starts a session before its next request; if that fails, that next request was not
+  sent. A server that answers `initialize` without an `Mcp-Session-Id` (MCP allows it) keeps no
+  session: it is initialized once and then used as it is, and its lack of a session id is not taken
+  for a lost session.
   Requests the server makes of the gateway are declined.
 - A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
   when the request certainly did not reach the server: the connection was refused, the host was not
-  found, its certificate was not trusted, or it answered 4xx other than that 404. A timeout, a
-  broken connection after sending, a 5xx, a lost session or a tool error (section 11.1) during a
-  write makes the outcome **unknown**: the operation may have happened.
+  found, or its certificate was not trusted. Once the server has the request, nothing it answers
+  short of a result proves that a write did not happen: a server may act and then answer with an
+  error, and an HTTP status says nothing about which. So during a call of a side-effect operation
+  an HTTP error of **any** status (4xx and 5xx alike), a timeout, a broken connection after sending,
+  a lost session or a tool error (section 11.1) makes the outcome **unknown**. The journal keeps the
+  step as `unknown`, and it is not run again by itself: a later execution that reaches it stops with
+  `unresolved` until a person has checked the system and resolved the entry (10.8). A read that is
+  answered with an error status failed (`read-failed` in a preview); it changed nothing.
 - A server that cannot be reached or initialized at start is left out, with a message on standard
   error; the gateway runs with the others.
 

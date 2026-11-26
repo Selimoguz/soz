@@ -88,8 +88,9 @@ interface Link {
 
 /**
  * The request certainly did not reach the server (refused, no such host, a certificate it would not
- * trust, an HTTP 4xx): an operation that fails so did not happen and may run again. Anything else
- * after sending (a timeout, a broken connection, a 5xx) leaves its outcome unknown.
+ * trust): an operation that fails so did not happen and may run again. Anything once the server has the
+ * request (an HTTP error of any status, a timeout, a broken connection) leaves a write's outcome unknown:
+ * a server may act and then answer with an error, and a status code does not say which (SPEC 11.4).
  */
 class NotSent extends Error {}
 
@@ -113,6 +114,9 @@ const NOT_SENT_CODES = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "CERT_HAS_EXPI
 class HttpLink implements Link {
   url: string; headers: Record<string, string>; name: string;
   session: string | null = null; protocol: string | null = null; next = 0;
+  /** The server lost our session (a 404) and a new one could not be started then. Not the same as having
+   * no session id: a server may answer initialize without one (MCP allows it) and keep none. */
+  lost = false;
   initParams: unknown = null; timeout = 60000;
   constructor(name: string, url: string, headers: Record<string, string>) { this.name = name; this.url = url; this.headers = headers; }
 
@@ -134,7 +138,18 @@ class HttpLink implements Link {
              ...(this.session ? { "Mcp-Session-Id": this.session } : {}), ...(this.protocol ? { "MCP-Protocol-Version": this.protocol } : {}) };
   }
 
+  /** A new session: initialize, then the notification that it is initialized. */
+  private async startSession(timeoutMs: number) {
+    const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
+    if (!init || init.error) throw new Timeout(`${this.name}: the session was lost and a new one could not be started`);
+    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
+    this.lost = false;
+  }
+
   private async post(m: { [k: string]: unknown }, timeoutMs: number, again = false, resend = true): Promise<Message | null> {
+    // A session that was lost and could not be started again then is started before the next request.
+    // If that fails, the request was not sent.
+    if (this.lost && !again && m.method !== "initialize") await this.startSession(timeoutMs);
     let res: FetchResponse;
     try { res = await fetch(this.url, { method: "POST", headers: this.head(), body: canonicalJson(m), signal: AbortSignal.timeout(timeoutMs) }); }
     catch (e) {
@@ -146,15 +161,22 @@ class HttpLink implements Link {
     // MCP says a 404 to a session was not processed, but behind a proxy that is not certain, so a call
     // that changes something is not sent twice; its outcome is unknown and a person resolves it.
     if (res.status === 404 && this.session && !again && m.method !== "initialize") {
-      this.session = null; this.protocol = null;
-      const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
-      if (!init || init.error) throw new Timeout(`${this.name}: the session was lost and a new one could not be started`);
-      await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
-      if (!resend) throw new Timeout(`${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`);
+      this.session = null; this.protocol = null; this.lost = true;
+      // The write reached the server, whatever happens next: its outcome is unknown, and a new session
+      // that cannot be started (refused, unreachable) must not turn it into "not sent" (SPEC 11.4).
+      const lost = `${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`;
+      try { await this.startSession(timeoutMs); }
+      catch (e) {
+        if (!resend) throw new Timeout(`${lost} (a new session could not be started: ${(e as Error).message})`);
+        throw e;
+      }
+      if (!resend) throw new Timeout(lost);
       return this.post(m, timeoutMs, true);
     }
-    if (res.status >= 400 && res.status < 500) throw new NotSent(`${this.name}: HTTP ${res.status}`);
-    if (res.status >= 500) throw new Timeout(`${this.name}: HTTP ${res.status}`);
+    // An answer means the request arrived. A read or a set-up request that is refused did not change
+    // anything and may be tried again; for a write, the status does not prove it did not happen.
+    if (res.status >= 400 && res.status < 500 && resend) throw new NotSent(`${this.name}: HTTP ${res.status}`);
+    if (res.status >= 400) throw new Timeout(`${this.name}: HTTP ${res.status} after the request reached it`);
     if (m.id === undefined) return null;                                   // a notification: 202
     if (m.method === "initialize") {
       this.session = res.headers.get("mcp-session-id");
@@ -289,9 +311,10 @@ function toolOperation(server: string, tool: Tool, overrides: Json | undefined):
   const input = isObject(tool.inputSchema) ? tool.inputSchema : null;
   const required = Array.isArray(input?.required) ? input!.required as string[] : [];
   const allowed = Array.isArray(o?.model_allowed) ? o!.model_allowed as string[] : [];
+  const fromStep = Array.isArray(o?.from_step) ? o!.from_step as string[] : [];
   const readOnly = isObject(tool.annotations) && tool.annotations.readOnlyHint === true;
   const params: Param[] = isObject(input?.properties) ? Object.entries(input!.properties).map(([k, v]) => ({
-    name: k, type: schemaType(v, false), required: required.includes(k), modelAllowed: allowed.includes(k),
+    name: k, type: schemaType(v, false), required: required.includes(k), modelAllowed: allowed.includes(k), fromStep: fromStep.includes(k),
   })) : [];
   return {
     name, params,
@@ -400,6 +423,9 @@ Tools that only read can be called directly. Everything that changes something (
 pays) goes through a plan: call soz_preview with the plan and the user's message, show the user
 the preview, and call soz_execute only after they agree. The user approves in their own client or
 by telling you a code shown to them outside the chat; you cannot approve for them.
+If an execution ends with "confirm", a value the user could not see at approval (an amount from a
+step before) is known now: call soz_preview again with the same plan and message, and show that
+preview; what already ran will not run again.
 
 A plan is one s-expression:
 
