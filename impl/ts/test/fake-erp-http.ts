@@ -3,7 +3,8 @@
 // tools/call as server-sent events (asking the client something first), everything else as JSON.
 // POST /control {"mode": ...} makes it misbehave: "forget" (drops all sessions), "fail500" (records an
 // order line, then answers 500), "fail422" (records an order line, then answers 422), "refuse403" (records
-// nothing and answers 403), "slow" (add_order_line answers after 3 s), "lose-session" (forgets every
+// nothing and answers 403), "apply-404-refuse" (records an order line, forgets every session and answers 404,
+// then refuses to start a new session with 403 until "normal"), "slow" (add_order_line answers after 3 s), "lose-session" (forgets every
 // session when add_order_line comes, and answers 404, once), "normal".
 
 import { createServer } from "node:http";
@@ -39,6 +40,7 @@ const server = createServer((req, res) => {
     let m: Obj;
     try { m = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
     if (m.method === "initialize") {
+      if (mode === "refuse-init") { res.writeHead(403); res.end(); return; }
       const id = `s${++nextSession}`; sessions.add(id);
       res.writeHead(200, { "Content-Type": "application/json", "Mcp-Session-Id": id });
       res.end(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake-erp-http", version: "1" } } }));
@@ -54,6 +56,9 @@ const server = createServer((req, res) => {
       if (mode === "fail500" && name === "add_order_line") { call(name, (params.arguments ?? {}) as Obj); res.writeHead(500); res.end(); return; }
       if (mode === "fail422" && name === "add_order_line") { call(name, (params.arguments ?? {}) as Obj); res.writeHead(422); res.end(); return; }
       if (mode === "refuse403" && name === "add_order_line") { res.writeHead(403); res.end(); return; }
+      if (mode === "apply-404-refuse" && name === "add_order_line") {
+        call(name, (params.arguments ?? {}) as Obj); sessions.clear(); mode = "refuse-init"; res.writeHead(404); res.end(); return;
+      }
       if (mode === "lose-session" && name === "add_order_line") { sessions.clear(); mode = "normal"; res.writeHead(404); res.end(); return; }
       const answer = () => {
         res.writeHead(200, { "Content-Type": "text/event-stream" });

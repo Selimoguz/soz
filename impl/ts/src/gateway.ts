@@ -135,7 +135,17 @@ class HttpLink implements Link {
              ...(this.session ? { "Mcp-Session-Id": this.session } : {}), ...(this.protocol ? { "MCP-Protocol-Version": this.protocol } : {}) };
   }
 
+  /** A new session: initialize, then the notification that it is initialized. */
+  private async startSession(timeoutMs: number) {
+    const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
+    if (!init || init.error) throw new Timeout(`${this.name}: the session was lost and a new one could not be started`);
+    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
+  }
+
   private async post(m: { [k: string]: unknown }, timeoutMs: number, again = false, resend = true): Promise<Message | null> {
+    // A session that was lost and could not be started again then is started before the next request.
+    // If that fails, the request was not sent.
+    if (!this.session && !again && this.initParams !== null && m.method !== "initialize") await this.startSession(timeoutMs);
     let res: FetchResponse;
     try { res = await fetch(this.url, { method: "POST", headers: this.head(), body: canonicalJson(m), signal: AbortSignal.timeout(timeoutMs) }); }
     catch (e) {
@@ -148,10 +158,15 @@ class HttpLink implements Link {
     // that changes something is not sent twice; its outcome is unknown and a person resolves it.
     if (res.status === 404 && this.session && !again && m.method !== "initialize") {
       this.session = null; this.protocol = null;
-      const init = await this.post({ jsonrpc: "2.0", id: `g${++this.next}`, method: "initialize", params: this.initParams }, timeoutMs, true);
-      if (!init || init.error) throw new Timeout(`${this.name}: the session was lost and a new one could not be started`);
-      await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, timeoutMs, true);
-      if (!resend) throw new Timeout(`${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`);
+      // The write reached the server, whatever happens next: its outcome is unknown, and a new session
+      // that cannot be started (refused, unreachable) must not turn it into "not sent" (SPEC 11.4).
+      const lost = `${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`;
+      try { await this.startSession(timeoutMs); }
+      catch (e) {
+        if (!resend) throw new Timeout(`${lost} (a new session could not be started: ${(e as Error).message})`);
+        throw e;
+      }
+      if (!resend) throw new Timeout(lost);
       return this.post(m, timeoutMs, true);
     }
     // An answer means the request arrived. A read or a set-up request that is refused did not change

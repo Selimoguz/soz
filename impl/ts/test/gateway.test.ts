@@ -335,6 +335,17 @@ console.log("\nA server over streamable HTTP");
   await control("normal");
   check("a 4xx that did nothing is still unknown: the status does not prove it", r403.includes("Outcome: unknown") && await orders(c) === 4);
   check("... and stays for a person to resolve", (await run(line("SO-2008", "peppers", 8), M4)).includes("Outcome: unresolved") && await orders(c) === 4);
+  // The server applies the write and answers 404 (its session gone); starting a new session is then refused.
+  // The write reached it: unknown, not failed, whatever the new session does (SPEC 11.4).
+  const M9 = "Order SO-2009, Yilmaz Market: 11 tomatoes";
+  await control("apply-404-refuse");
+  const r404 = await run(line("SO-2009", "tomatoes", 11), M9);
+  await control("normal");
+  check("a write applied, a 404, and a new session refused: the outcome stays unknown, not failed",
+        r404.includes("Outcome: unknown") && !r404.includes("Outcome: failed") && r404.includes("a new session could not be started"));
+  check("... the write happened once", await orders(c) === 5);
+  const again404 = await run(line("SO-2009", "tomatoes", 11), M9);
+  check("the same plan run again: unresolved, not run a second time", again404.includes("Outcome: unresolved") && await orders(c) === 5);
   await control("slow");
   const slow = await run(line("SO-2005", "peppers", 20));
   await control("normal");

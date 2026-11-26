@@ -734,6 +734,10 @@ request):
   sends it again only if it is safe to: initialization, listing tools, and calls of `read`
   operations. A call of a side-effect operation is **not** sent again; its outcome is **unknown**
   (the step becomes `unresolved` for a person to resolve), and the new session serves what follows.
+  It stays unknown if the new session cannot be started (the server refuses it, or cannot be
+  reached): the call itself reached the server, and nothing after that proves it did not run. The
+  gateway then starts a session before its next request; if that fails, that next request was not
+  sent.
   Requests the server makes of the gateway are declined.
 - A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
   when the request certainly did not reach the server: the connection was refused, the host was not

@@ -265,7 +265,7 @@ sbcl --script impl/lisp/test-gateway.lisp   # the gateway end to end: a client, 
 | Part | State |
 |---|---|
 | [Specification](SPEC.md) 0.4: syntax, provenance, effects, bounds, preview, approval, execution, journal (claimed before each call), audit, policy | draft |
-| [Conformance suite](conformance/): 279 language-neutral cases in JSON (231 checker, 48 preview and execution), every convertible checker case in both syntaxes | done |
+| [Conformance suite](conformance/): 298 language-neutral cases in JSON (246 checker, 52 preview and execution), every convertible checker case in both syntaxes | done |
 | Reference implementation in Common Lisp (`impl/lisp/`) | passes the suite |
 | [TypeScript implementation](impl/ts/README.md) (`impl/ts/`), no dependencies | passes the suite |
 | MCP gateway over stdio, in Lisp and in TypeScript (both without dependencies), with elicitation or approval-code approval, resources and a prompt; end-to-end tests | available |
@@ -287,7 +287,7 @@ sbcl --script impl/lisp/run-conformance.lisp      # the Lisp reference implement
 cd impl/ts && npm run conformance                 # the TypeScript implementation against the same suite
 ```
 
-Two implementations in two very different languages pass the same 279 cases, including one that
+Two implementations in two very different languages pass the same 298 cases, including one that
 pins the preview hash computed independently in Python: the suite, not either implementation, is
 what defines soz.
 
