@@ -377,8 +377,12 @@ The host gives every operation an implementation: a function from the arguments 
 parameter name to value) to one of
 
 - a **result**, a value of the declared `returns` type;
-- **failed**: the operation did not happen (a validation error, a refusal);
-- **unknown**: it is not known whether it happened (a timeout, a lost connection).
+- **failed**: the operation did not happen (a validation error, a refusal), and the implementation
+  **knows** it did not: it checked before acting, or the system it calls answers in a way its
+  contract says means "nothing done". A failed step's claim is released, so it may run again;
+- **unknown**: it is not known whether it happened (a timeout, a lost connection, an error from a
+  system that may have acted first). When in doubt, an implementation answers unknown, never failed:
+  unknown stops and waits for a person, failed lets the same step run a second time.
 
 A result that does not match the declared type is `bad-result`; so is a value outside a declared
 `enum` (texts compared after `fold`). A list result longer than 50 is
@@ -659,9 +663,14 @@ request):
   Requests the server makes of the gateway are declined.
 - A call to an operation **failed** (section 10.4: it did not happen, the claim is released) only
   when the request certainly did not reach the server: the connection was refused, the host was not
-  found, its certificate was not trusted, or it answered 4xx other than that 404. A timeout, a
-  broken connection after sending, a 5xx, a lost session or a tool error (section 11.1) during a
-  write makes the outcome **unknown**: the operation may have happened.
+  found, or its certificate was not trusted. Once the server has the request, nothing it answers
+  short of a result proves that a write did not happen: a server may act and then answer with an
+  error, and an HTTP status says nothing about which. So during a call of a side-effect operation
+  an HTTP error of **any** status (4xx and 5xx alike), a timeout, a broken connection after sending,
+  a lost session or a tool error (section 11.1) makes the outcome **unknown**. The journal keeps the
+  step as `unknown`, and it is not run again by itself: a later execution that reaches it stops with
+  `unresolved` until a person has checked the system and resolved the entry (10.8). A read that is
+  answered with an error status failed (`read-failed` in a preview); it changed nothing.
 - A server that cannot be reached or initialized at start is left out, with a message on standard
   error; the gateway runs with the others.
 

@@ -323,6 +323,18 @@ console.log("\nA server over streamable HTTP");
   await control("normal");
   check("a 500 after sending: the outcome is unknown, never assumed", r500.includes("Outcome: unknown") && await orders(c) === 3);
   check("and the step is not run again: unresolved", (await run(line("SO-2004", "tomatoes", 5))).includes("Outcome: unresolved") && await orders(c) === 3);
+  // An HTTP error status means the request arrived: the server may have acted before it answered (SPEC 11.4).
+  const M4 = "Orders SO-2007 and SO-2008, Yilmaz Market: 6 tomatoes, 8 peppers";
+  await control("fail422");
+  const r422 = await run(line("SO-2007", "tomatoes", 6), M4);
+  await control("normal");
+  check("a 4xx after the server acted: unknown, not failed", r422.includes("Outcome: unknown") && !r422.includes("Outcome: failed") && await orders(c) === 4);
+  check("... and it is not run again by itself: unresolved", (await run(line("SO-2007", "tomatoes", 6), M4)).includes("Outcome: unresolved") && await orders(c) === 4);
+  await control("refuse403");
+  const r403 = await run(line("SO-2008", "peppers", 8), M4);
+  await control("normal");
+  check("a 4xx that did nothing is still unknown: the status does not prove it", r403.includes("Outcome: unknown") && await orders(c) === 4);
+  check("... and stays for a person to resolve", (await run(line("SO-2008", "peppers", 8), M4)).includes("Outcome: unresolved") && await orders(c) === 4);
   await control("slow");
   const slow = await run(line("SO-2005", "peppers", 20));
   await control("normal");

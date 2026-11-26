@@ -88,8 +88,9 @@ interface Link {
 
 /**
  * The request certainly did not reach the server (refused, no such host, a certificate it would not
- * trust, an HTTP 4xx): an operation that fails so did not happen and may run again. Anything else
- * after sending (a timeout, a broken connection, a 5xx) leaves its outcome unknown.
+ * trust): an operation that fails so did not happen and may run again. Anything once the server has the
+ * request (an HTTP error of any status, a timeout, a broken connection) leaves a write's outcome unknown:
+ * a server may act and then answer with an error, and a status code does not say which (SPEC 11.4).
  */
 class NotSent extends Error {}
 
@@ -153,8 +154,10 @@ class HttpLink implements Link {
       if (!resend) throw new Timeout(`${this.name}: the server lost its session during a call that changes something; whether it ran is unknown`);
       return this.post(m, timeoutMs, true);
     }
-    if (res.status >= 400 && res.status < 500) throw new NotSent(`${this.name}: HTTP ${res.status}`);
-    if (res.status >= 500) throw new Timeout(`${this.name}: HTTP ${res.status}`);
+    // An answer means the request arrived. A read or a set-up request that is refused did not change
+    // anything and may be tried again; for a write, the status does not prove it did not happen.
+    if (res.status >= 400 && res.status < 500 && resend) throw new NotSent(`${this.name}: HTTP ${res.status}`);
+    if (res.status >= 400) throw new Timeout(`${this.name}: HTTP ${res.status} after the request reached it`);
     if (m.id === undefined) return null;                                   // a notification: 202
     if (m.method === "initialize") {
       this.session = res.headers.get("mcp-session-id");

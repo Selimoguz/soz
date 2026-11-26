@@ -2,7 +2,8 @@
 // HTTP client. Prints its port. It wants "Authorization: Bearer $FAKE_TOKEN", keeps sessions, answers
 // tools/call as server-sent events (asking the client something first), everything else as JSON.
 // POST /control {"mode": ...} makes it misbehave: "forget" (drops all sessions), "fail500" (records an
-// order line, then answers 500), "slow" (add_order_line answers after 3 s), "lose-session" (forgets every
+// order line, then answers 500), "fail422" (records an order line, then answers 422), "refuse403" (records
+// nothing and answers 403), "slow" (add_order_line answers after 3 s), "lose-session" (forgets every
 // session when add_order_line comes, and answers 404, once), "normal".
 
 import { createServer } from "node:http";
@@ -51,6 +52,8 @@ const server = createServer((req, res) => {
     if (m.method === "tools/call") {
       const name = String(params.name);
       if (mode === "fail500" && name === "add_order_line") { call(name, (params.arguments ?? {}) as Obj); res.writeHead(500); res.end(); return; }
+      if (mode === "fail422" && name === "add_order_line") { call(name, (params.arguments ?? {}) as Obj); res.writeHead(422); res.end(); return; }
+      if (mode === "refuse403" && name === "add_order_line") { res.writeHead(403); res.end(); return; }
       if (mode === "lose-session" && name === "add_order_line") { sessions.clear(); mode = "normal"; res.writeHead(404); res.end(); return; }
       const answer = () => {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
