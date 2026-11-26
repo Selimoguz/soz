@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // soz-mcp.ts — Runs the soz MCP gateway over stdio.
 //   node --experimental-strip-types --disable-warning=ExperimentalWarning src/soz-mcp.ts gateway.json
 // Standard output carries only MCP messages; everything else goes to standard error.
