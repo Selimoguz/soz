@@ -327,8 +327,8 @@ rewritten. The newest 5 releases are kept whole (`--keep-packages N`), the manif
 ```sh
 soz-guard gate package 3f9c2a1b7e44                        # its digest, its files, where they are kept
 soz-guard gate package 3f9c2a1b7e44 --to D:/deploy/v928    # a copy to deploy, into an empty folder
-soz-guard gate package 3f9c2a1b7e44 --verify D:/sites/erp --ignore logs,uploads
-soz-guard digest D:/sites/erp --ignore logs,uploads         # on a live server that is another machine
+soz-guard gate package 3f9c2a1b7e44 --verify D:/sites/app --ignore logs,uploads
+soz-guard digest D:/sites/app --ignore logs,uploads         # on a live server that is another machine
 ```
 
 `--verify` compares the live folder (or file) with the package file by file and names what is changed,
@@ -382,7 +382,7 @@ change. Git cannot tell the two apart.
 
 ## Several sessions in one folder
 
-Some people run many Claude Code sessions in the same project at once (one for the ERP part, one for
+Some people run many Claude Code sessions in the same project at once (one for the backend, one for
 the CRM, one that coordinates them). Then the difference from one session's snapshot holds the others'
 work too, and a gap one session left would stop all of them. With
 
@@ -409,6 +409,47 @@ What it cannot separate, plainly:
 
 Sessions already open when it is installed do not have the hooks yet: Claude Code reads hooks when a
 session starts. Close them and open them again from the conversation history; nothing is lost.
+
+## What it guards here: doctor, and the line a session starts with
+
+A project having a test command does not mean soz-guard runs it. Only the checks in `.soz-guard.json` run
+when the agent tries to finish; a `npm test` in `package.json` that no check runs is a test nobody runs here.
+A setup that guards less than the person thinks looks the same as one that guards everything, until the
+work turns out unfinished. So soz-guard says what it guards, from the project's own settings:
+
+```sh
+soz-guard doctor          # the detail; read-only, it changes nothing
+soz-guard doctor --json   # the same, as data
+```
+
+It says which checks run when the agent finishes, and when (`when`); which test commands the project has
+that no check runs (`npm test` and `npm run test:*` in `package.json`, `mvn test`, `gradle test`, `pytest`,
+`go test`, `dotnet test`), with the line that would run them; the code rules on the changed lines, built in
+and the project's own; what counts as a change to the tests (and which of the project's own files are
+watched but not run); whether the Claude Code, Codex and git hooks are there, switched off, or point at a
+soz-guard that is not on this machine; when a hook last ran; and the server's gate. The gate can be read
+only when the remote is a folder on this machine; otherwise it says **not verified from here** and where to look
+(`soz-guard gate log` on the server). Run in the server's repository, it shows that repository's gate.
+
+Every session starts with the same diagnosis in one line, which the SessionStart hook gives to the person
+(Claude Code's `systemMessage`) and to the agent (`additionalContext`), and writes to the log:
+
+```
+soz-guard · No project test is set to run when the agent finishes · npm test: in the project, not run by soz-guard · Code rules: 8 · Changes to tests watched: test files · soz-guard gate on the server: not verified from here
+soz-guard · Runs when the agent finishes: tests · soz-guard gate on the server: not verified from here
+```
+
+With no check, the line names the rules that still hold, since those are all there is. A finish hook that
+is missing comes first. Both are in Turkish on a Turkish machine (`SOZ_GUARD_LANG=tr` or `en` to choose). The
+instructions in `CLAUDE.md` tell the agent that a session without this line is one where the hooks do not
+run, and to tell the user so.
+
+Claude's desktop app keeps a hook's `systemMessage` in the transcript but shows nothing on screen. There
+(`CLAUDE_CODE_ENTRYPOINT=claude-desktop`) the agent is told to write the line at the top of its first reply,
+and the Stop hook looks for it in the agent's replies in the transcript: hooks' own records do not count.
+If it is not there, the agent is stopped once and given the line to write; after that it is not stopped for
+it again. Either way the log says whether the person was shown it (`session-line`). Codex is not yet
+checked: there the line goes out as a `systemMessage`, as in the terminal.
 
 ## The hook
 

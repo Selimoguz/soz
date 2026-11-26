@@ -75,6 +75,21 @@ Ayarlar zaten commit edildiği için bu komut yalnızca o makinenin kancasını 
 **4. Açık Claude oturumlarını kapatıp yeniden açın.** Claude Code kancaları oturum başında okur; açık
 oturumlar soz-guard'ı görmez. Konuşma geçmişi kaybolmaz.
 
+**5. Neyi koruduğuna bakın.** Proje klasöründe:
+
+```sh
+soz-guard doctor
+```
+
+Yalnızca okur, hiçbir şeyi değiştirmez. İş bitince hangi testlerin çalışacağını, projede olup da
+soz-guard'ın çalıştırmadığı test komutlarını (ör. `package.json`'daki `npm test`, `.soz-guard.json`'da
+zorunlu kontrol değilse), etkin kuralları, kancaların durumunu ve sunucudaki soz-guard gate'i (push
+denetimi) söyler. Sunucu bu makineden okunamıyorsa "buradan doğrulanamadı" der; bu, projenin kendi
+betikleriyle ilgili değildir. Her yeni Claude oturumu da bunun özetiyle, `soz-guard ·` ile
+başlayan bir satırla açılır. Claude masaüstü uygulaması bu satırı ekranda göstermediği için orada satırı
+ajan ilk cevabının başına yazar; soz-guard yazıp yazmadığını denetler. Satır görünmüyorsa kancalar
+çalışmıyordur; nedenini `soz-guard doctor` söyler.
+
 ## Kurduktan sonra neler göreceksiniz
 
 | Durum | Ne olur | Ne yapılır |
@@ -126,7 +141,7 @@ soz-guard gate install --branches main --setup "npm ci"
 
   ```sh
   soz-guard gate package <hash> --to D:/deploy/yeni-surum      # onaylanan paketin kopyası
-  soz-guard gate package <hash> --verify D:/siteler/erp --ignore logs   # canlıdaki klasör aynı mı
+  soz-guard gate package <hash> --verify D:/siteler/uygulama --ignore logs   # canlıdaki klasör aynı mı
   ```
 
   Canlı sunucu başka bir makineyse orada `soz-guard digest <klasör>` çalıştırılır ve çıkan özet kapının

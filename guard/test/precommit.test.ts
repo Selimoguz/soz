@@ -21,8 +21,11 @@ const git = (...args: string[]) => execFileSync("git", [...gitArgs, ...args], { 
 /** A real `git commit`, through the installed hook. */
 const commit = (msg: string) => spawnSync("git", [...gitArgs, "commit", "-q", "-m", msg], { cwd: repo, encoding: "utf8" });
 const write = (path: string, text: string) => { mkdirSync(dirname(join(repo, path)), { recursive: true }); writeFileSync(join(repo, path), text); };
+// the hooks as no particular app runs them: run from Claude's desktop app, CLAUDE_CODE_ENTRYPOINT would say it is
+// that app, which soz-guard asks to have the session's line written in a reply
+const { CLAUDE_CODE_ENTRYPOINT: _app, ...hostless } = process.env;
 const run = (args: string[], input?: string) => spawnSync(process.execPath,
-  ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", cli, ...args], { cwd: repo, encoding: "utf8", input });
+  ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", cli, ...args], { cwd: repo, encoding: "utf8", input, env: hostless });
 const head = () => git("rev-parse", "HEAD");
 
 git("init", "-q", "-b", "main");

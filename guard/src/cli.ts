@@ -2,7 +2,9 @@
 // cli.ts — soz-guard: work is finished when the checks say so, not when the agent does.
 //
 //   soz-guard hook                     a Claude Code Stop hook (reads the hook's JSON on stdin)
-//   soz-guard session-start            a Claude Code SessionStart hook: records where this session began
+//   soz-guard session-start            a Claude Code SessionStart hook: records where this session began, and
+//                                      tells the person and the agent in one line what soz-guard guards here
+//   soz-guard doctor [--json]          what this setup guards right now, in detail (read-only)
 //   soz-guard check [--json]           the verdict on what changed since HEAD, checks run; exit 1 unless finished
 //   soz-guard ci --base REF [--checks] [--criteria block|report] [--json]
 //                                      the same verdict in CI, on a pull request against its base
@@ -24,12 +26,14 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
-import { scan, report, repoRoot, loadConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
+import { scan, report, repoRoot, loadConfig, parseConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
 import { evaluate, verdictReport, deferredReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
-import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell } from "./session.ts";
+import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell,
+         recordSessionLine, readSessionLine, markSessionLine, lineInReplies } from "./session.ts";
 import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
 import { gate } from "./gate.ts";
 import { manifestOf, digestOf } from "./package.ts";
+import { diagnose, diagnoseServer, doctorText, serverText, sessionLine, sessionContext, language } from "./doctor.ts";
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -44,6 +48,7 @@ const finished = (state: string) => state === "verified" || state === "unchecked
 
 type HookInput = {
   cwd?: string; session_id?: string; source?: string; hook_event_name?: string;
+  transcript_path?: string; last_assistant_message?: string;
   tool_name?: string; tool_use_id?: string; tool_input?: { file_path?: string; notebook_path?: string };
 };
 
@@ -87,12 +92,51 @@ function track(): number {
 const hookInput = (): HookInput => { try { return JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { return {}; } };
 
 /** Claude Code SessionStart hook: records the working tree as it is, so that the verdict at the end is about
- * what this session changed, not about work that was uncommitted before it (see session.ts). */
+ * what this session changed, not about work that was uncommitted before it (see session.ts). It also says, in
+ * one line, what soz-guard guards here (doctor.ts): to the person (systemMessage) and to the agent
+ * (additionalContext). Claude's desktop app keeps a systemMessage in the transcript and shows nothing, so there
+ * the agent is told to start its first reply with the line, and the Stop hook sees that it did (session.ts).
+ * A setup that guards less than the person thinks is seen at the start, not after the work. */
+const LINE_NOT_SHOWN_BY = ["claude-desktop"];
 function sessionStart(): number {
   const input = hookInput();
   const root = repoRoot(input.cwd ?? process.cwd());
-  if (!root || !input.session_id) return 0;
-  startSession(root, input.session_id, loadConfig(root).exclude, input.source ?? "startup");
+  if (!root) return 0;
+  // a .soz-guard.json that cannot be read is said in the line below; the session is still recorded, with the
+  // default exclusions, so that the verdict at its end is about what it changed
+  let exclude: string[];
+  try { exclude = loadConfig(root).exclude; } catch { exclude = parseConfig(null).exclude; }
+  if (input.session_id) startSession(root, input.session_id, exclude, input.source ?? "startup");
+  const relay = LINE_NOT_SHOWN_BY.includes(process.env.CLAUDE_CODE_ENTRYPOINT ?? "");
+  let line: string, context: string;
+  try {
+    const d = diagnose(root);
+    line = sessionLine(d);
+    context = sessionContext(d, language(), relay);
+  } catch (e) {
+    // the diagnosis never keeps a session from starting: it says it could not be made
+    line = context = `soz-guard: ${language() === "tr" ? "neyi koruduğu okunamadı" : "what it guards could not be read"}: ${(e as Error).message}`;
+  }
+  appendLog(root, { event: "session-start", session: input.session_id ?? null, source: input.source ?? "startup", line });
+  if (input.session_id && relay) recordSessionLine(root, input.session_id, line);
+  process.stdout.write(JSON.stringify({ systemMessage: line, hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }) + "\n");
+  return 0;
+}
+
+/** soz-guard doctor: what this setup guards right now. Read-only. In a server repository (a bare one), its gate. */
+function doctor(args: string[]): number {
+  const server = diagnoseServer(process.cwd());
+  if (server) {
+    process.stdout.write(args.includes("--json") ? JSON.stringify(server, null, 2) + "\n" : serverText(server));
+    return 0;
+  }
+  if (!repoRoot(process.cwd())) {
+    process.stderr.write(language() === "tr" ? "Burası bir git deposu değil: soz-guard doctor projenin klasöründe çalışır.\n"
+                                             : "This is not a git repository: run soz-guard doctor in the project's folder.\n");
+    return 1;
+  }
+  const d = diagnose(process.cwd());
+  process.stdout.write(args.includes("--json") ? JSON.stringify({ ...d, sessionLine: sessionLine(d) }, null, 2) + "\n" : doctorText(d));
   return 0;
 }
 
@@ -117,7 +161,9 @@ function hook(): number {
   let state: { blocks: number; told?: string } = { blocks: 0 };
   try { if (existsSync(stateFile)) state = JSON.parse(readFileSync(stateFile, "utf8")); } catch { state = { blocks: 0 }; }
   const log = (decision: string) => appendLog(root, { event: "hook", session: input.session_id ?? null, decision, state: verdict.state, change: verdict.change });
+  const lineAsk = sessionLineAsk(root, input);
   if (finished(verdict.state)) {
+    if (lineAsk) { process.stderr.write(lineAsk + "\n"); return 2; }
     writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
     log(verdict.deferred.length ? `finished, ${verdict.deferred.length} line(s) left as they are on the agent's word` : "finished");
     // Codex expects JSON from a Stop hook that lets the agent stop; what the agent left is told to the person
@@ -134,6 +180,7 @@ function hook(): number {
     && verdict.criteria.length > 0 && !verdict.criteriaAccepted;
   const told = waitsForPerson ? `${criteriaFingerprint(verdict.criteria)}:${verdict.change}` : undefined;
   if (told && state.told === told) {
+    if (lineAsk) { process.stderr.write(lineAsk + "\n"); return 2; }
     log("let the agent stop: the changes to the criteria it was told about wait for a person");
     process.stdout.write(JSON.stringify({
       systemMessage: `soz-guard: still waiting for you, not for the agent:\n${verdictReport(verdict, false)}\nAccept in a terminal with  soz-guard accept "<why>", or undo the change.`,
@@ -147,9 +194,10 @@ function hook(): number {
     log(`stopped the agent (${state.blocks} of ${config.maxBlocks})${told ? ": the criteria changed, a person decides" : ""}`);
     process.stderr.write(`soz-guard: you are about to finish, but the work is not finished yet.\n${verdictReport(verdict, true)}\n`
       + (told ? `If you stop now and change nothing else, you will not be stopped for these same changes again; say plainly\nin your final message that they wait for the user. ` : "")
-      + `(check ${state.blocks} of ${config.maxBlocks})\n`);
+      + `(check ${state.blocks} of ${config.maxBlocks})\n` + (lineAsk ? lineAsk + "\n" : ""));
     return 2;
   }
+  if (lineAsk) { process.stderr.write(lineAsk + "\n"); return 2; }
   // Stopped enough times: let the agent finish, but tell the person, plainly, that it is not finished.
   log("let the agent stop unfinished, after the last check");
   writeFileSync(stateFile, JSON.stringify({ blocks: 0 }));
@@ -157,6 +205,29 @@ function hook(): number {
     systemMessage: `soz-guard: the agent stopped after ${config.maxBlocks} checks, but the work is ${verdict.state}, not finished:\n${verdictReport(verdict, false)}`,
   }) + "\n");
   return 0;
+}
+
+/** The line this session started with, while the person has not seen it in the agent's replies: what to tell
+ * the agent, once. Asked once and still not there, it is logged as not shown and the agent is not stopped for
+ * it again: the line is to be seen, it does not hold the work. */
+function sessionLineAsk(root: string, input: HookInput): string | undefined {
+  const session = input.session_id;
+  const rec = session ? readSessionLine(root, session) : null;
+  if (!session || !rec || rec.shown) return undefined;
+  // with neither a transcript nor the last message there is nothing to look in: the agent is not stopped for
+  // what cannot be seen either way
+  if (!input.transcript_path && !input.last_assistant_message) return undefined;
+  const shown = lineInReplies(rec.line, input.transcript_path, input.last_assistant_message);
+  if (shown || rec.asked) {
+    markSessionLine(root, session, { shown: true });
+    appendLog(root, { event: "session-line", session, shown, line: rec.line });
+    return undefined;
+  }
+  markSessionLine(root, session, { asked: true });
+  appendLog(root, { event: "session-line", session, asked: true, line: rec.line });
+  return language() === "tr"
+    ? `soz-guard: bu oturumun açılış satırını kullanıcıya henüz yazmadın; kullanıcının uygulaması onu göstermeyebilir. Cevabının başına, tek satır olarak, değiştirmeden yaz:\n${rec.line}`
+    : `soz-guard: you have not yet written this session's opening line to the user; their app may not show it. Write it at the top of your reply, as one line, unchanged:\n${rec.line}`;
 }
 
 const gitOut = (root: string, args: string[]) =>
@@ -535,6 +606,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "log") return logCommand(rest);
   if (cmd === "gate") return gate(rest);
   if (cmd === "digest") return digest(rest);
+  if (cmd === "doctor") return doctor(rest);
   if (cmd === "scan" || cmd === undefined) {
     const json = rest.includes("--json");
     const { root, findings } = scan(process.cwd(), flag(rest, "--base") ?? "HEAD");
@@ -542,7 +614,7 @@ async function main(argv: string[]): Promise<number> {
     else process.stdout.write(findings.length ? `Unfinished work in what changed:\n${report(findings)}\n` : "Nothing unfinished in what changed.\n");
     return findings.length ? 1 : 0;
   }
-  process.stderr.write('usage: soz-guard hook | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]\n');
+  process.stderr.write('usage: soz-guard hook | doctor [--json] | check [--json] | ci --base REF [--checks] [--criteria block|report] | replay COMMIT|FROM..TO | accept "<why>" | pre-commit [--checks] | scan [--json] | init [DIR] [--claude] [--local] [--sessions] [--codex] [--git [--checks]]\n');
   return 2;
 }
 

@@ -39,7 +39,7 @@ const cli = join(dirname(self), `cli${self.endsWith(".ts") ? ".ts" : ".js"}`);
 const nodeArgs = self.endsWith(".ts") ? ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"] : [];
 const ZERO = /^0+$/;
 
-type GateConfig = { branches: string[]; setup: string; timeoutSeconds: number;
+export type GateConfig = { branches: string[]; setup: string; timeoutSeconds: number;
                     /** only the delivery of an approved task, complete on the pushed commit, goes in */
                     requireTask: boolean;
                     /** the command that builds the package, and where the package is (relative to the repository) */
@@ -70,10 +70,10 @@ function gitDirOf(dir: string): string {
   return git(dir, ["rev-parse", "--absolute-git-dir"]);
 }
 
-const gateDir = (gitDir: string) => join(gitDir, OWN_DIR, "gate");
+export const gateDir = (gitDir: string) => join(gitDir, OWN_DIR, "gate");
 const configPath = (gitDir: string) => join(gateDir(gitDir), "config.json");
 
-function readConfig(gitDir: string): GateConfig {
+export function readConfig(gitDir: string): GateConfig {
   const p = configPath(gitDir);
   const j = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) as Partial<GateConfig> : {};
   return { branches: j.branches ?? ["main"], setup: j.setup ?? "", timeoutSeconds: j.timeoutSeconds ?? 900,
