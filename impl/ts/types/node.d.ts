@@ -66,6 +66,11 @@ declare module "node:child_process" {
   export function spawn(command: string, args: string[], options?: {
     cwd?: string; env?: Record<string, string | undefined>; stdio?: ("pipe" | "ignore" | "inherit")[]; windowsHide?: boolean;
   }): ChildProcess;
+  type SyncOptions = { cwd?: string; encoding: "utf8"; input?: string; shell?: boolean; timeout?: number;
+                       env?: Record<string, string | undefined>; stdio?: ("pipe" | "ignore" | "inherit")[] };
+  export function execFileSync(file: string, args: string[], options: SyncOptions): string;
+  export function spawnSync(command: string, args: string[], options: SyncOptions): { status: number | null; stdout: string; stderr: string };
+  export function spawnSync(command: string, options: SyncOptions): { status: number | null; stdout: string; stderr: string };
 }
 
 declare module "node:readline" {

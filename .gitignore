@@ -5,3 +5,4 @@ node_modules/
 guard/dist/
 *.tgz
 .soz-guard/
+impl/ts/dist/

@@ -1,30 +1,45 @@
 {
   "name": "soz",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A plan language a language model writes and a checker proves before anything runs (TypeScript implementation).",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22"
   },
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "typecheck": "tsc -p .",
     "conformance": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/conformance.ts",
     "example": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/example.ts",
-    "test": "npm run typecheck && npm run conformance && npm run example && npm run define && npm run stores && npm run render && npm run order && npm run gateway",
+    "test": "npm run typecheck && npm run conformance && npm run example && npm run define && npm run stores && npm run render && npm run order && npm run gateway && npm run package",
     "gateway": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/gateway.test.ts",
     "define": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/define.test.ts",
     "stores": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/stores.test.ts",
     "order": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/order-example.test.ts",
-    "render": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/render.test.ts"
+    "render": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/render.test.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "package": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/pack.test.ts"
   },
   "devDependencies": {
     "typescript": "5.9.3"
   },
   "bin": {
-    "soz-mcp": "src/soz-mcp.ts",
-    "soz-journal": "src/journal-cli.ts",
-    "soz-approve": "src/approve-cli.ts"
+    "soz-mcp": "dist/soz-mcp.js",
+    "soz-journal": "dist/journal-cli.js",
+    "soz-approve": "dist/approve-cli.js"
   }
 }

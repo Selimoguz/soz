@@ -1,4 +1,4 @@
-# soz specification, version 0.4 (draft)
+# soz specification, version 0.5 (draft)
 
 This document defines the soz plan language and its **checker**: the program that decides, before
 anything runs, whether a plan written by a language model may run, what it touches and how many

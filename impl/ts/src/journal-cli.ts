@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // journal-cli.ts — For a person to see and resolve steps the journal holds as pending or unknown
 // (SPEC 10.8). Deliberately not a tool the model gets: deciding whether something happened is the
 // person's, after checking the system the operation acts on.

@@ -4,11 +4,17 @@ A second implementation of [soz](../../README.md), with no dependencies: the che
 execution, journal, audit record and policy. It passes the whole
 [conformance suite](../../conformance/README.md), the same 298 cases as the reference implementation.
 
-Requires Node 22.6 or newer. The sources are TypeScript that Node runs directly (on Node 22 with
-`--experimental-strip-types`; from Node 23.6 without a flag); there is no build step yet.
+In this repository the sources are TypeScript that Node runs directly (Node 22.6 or newer, on Node 22
+with `--experimental-strip-types`; from Node 23.6 without a flag). The npm package is the compiled
+code instead (`npm run build`, run by `npm pack` and `npm publish`): `dist/`, with its type
+declarations, because Node does not strip types in `node_modules`. Installed, it needs Node 22 or
+newer and nothing else, and gives the API (the same exports as `src/index.ts`) and three commands:
+`soz-mcp` (the gateway, section below), `soz-journal` (resolve unresolved steps) and `soz-approve`
+(another person's approval).
 
 ```sh
-npm test          # type check (tsc, strict), the 298 conformance cases, the example, defineOperation, the stores with real processes, the renderer, the order example, the gateway
+npm test          # type check (tsc, strict), the 298 conformance cases, the example, defineOperation, the stores with real processes, the renderer, the order example, the gateway, the package
+npm run package   # the package alone: npm pack, installed into a fresh project offline, its API and commands run
 ```
 
 The only development dependency is the TypeScript compiler, for type checking; nothing is needed

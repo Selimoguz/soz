@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // approve-cli.ts — soz-approve: for the other person a plan needs (approval by finance, four eyes).
 // Runs on their own machine, with their own key; never a tool the model gets.
 //
