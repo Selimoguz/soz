@@ -416,37 +416,57 @@ function constantEqual(x: string | Rational, y: string | Rational): boolean {
 
 // Message matching (SPEC 5.1)
 
-/** The values a run like 1.250,50 may mean (SPEC 5.1). */
-export function digitReadings(run: string): Rational[] {
-  const out: Rational[] = [];
-  const count = (s: string, c: string) => s.split(c).length - 1;
-  const readings = [
-    /^\d+$/.test(run) ? run : null,
-    (() => { const r = run.replaceAll(".", ""); return count(r, ",") <= 1 ? r.replace(",", ".") : null; })(),
-    (() => { const r = run.replaceAll(",", ""); return count(r, ".") <= 1 ? r : null; })(),
-    run.replace(/[^0-9]/g, ""),
-  ];
-  for (const r of readings) {
-    const v = r === null ? null : parseNumber(r);
-    if (v && !out.some(x => x.eq(v))) out.push(v);
-  }
-  return out;
+/** What a run of digits means (SPEC 5.1): one value, or none and the values it could mean (ambiguous). */
+export type Reading = { values: Rational[]; ambiguous: Rational[] };
+
+/** RUN read with D as the decimal mark (the other mark groups thousands, by threes), or null. */
+function readAs(run: string, d: "," | "."): Rational | null {
+  const g = d === "," ? "." : ",";
+  const e = (c: string) => "\\" + c;
+  if (!new RegExp(`^(?:\\d{1,3}(?:${e(g)}\\d{3})+|\\d+)(?:${e(d)}\\d+)?$`).test(run)) return null;
+  return parseNumber(run.split(g).join("").replace(d, "."));
 }
 
-/** The message numbers: from digits, and with a language profile from number words too (SPEC 5.4). */
-export function messageNumbers(message: string, profile: Profile | null = null): Rational[] {
-  const out: Rational[] = [];
-  const add = (v: Rational) => { if (!out.some(x => x.eq(v))) out.push(v); };
+/** The value a run like 1.250,50 means (SPEC 5.1): read with the profile's decimal mark if there is one,
+ * else with both, and if those disagree it is ambiguous, never both. */
+export function digitReadings(run: string, decimal: "," | "." | null = null): Reading {
+  if (/^\d+$/.test(run)) return { values: [parseNumber(run)!], ambiguous: [] };
+  if (decimal) {
+    const v = readAs(run, decimal);
+    if (v) return { values: [v], ambiguous: [] };
+    const other = readAs(run, decimal === "," ? "." : ",");
+    return { values: [], ambiguous: other ? [other] : [] };
+  }
+  const vs: Rational[] = [];
+  for (const v of [readAs(run, ","), readAs(run, ".")]) if (v && !vs.some(x => x.eq(v))) vs.push(v);
+  return vs.length === 1 ? { values: vs, ambiguous: [] } : { values: [], ambiguous: vs };
+}
+
+/** The message numbers: from digits, and with a language profile from number words too (SPEC 5.4); and the
+ * values that runs of digits in it could mean but do not certainly mean. */
+export function messageReading(message: string, profile: Profile | null = null): Reading {
+  const out: Reading = { values: [], ambiguous: [] };
+  const add = (into: Rational[]) => (v: Rational) => { if (!into.some(x => x.eq(v))) into.push(v); };
   const isDigit = (k: number) => k >= 0 && k < message.length && message[k] >= "0" && message[k] <= "9";
+  const read = (run: string) => digitReadings(run, profile?.decimal ?? null);
   let i = 0;
   while (i < message.length) {
     if (!isDigit(i)) { i++; continue; }
     const start = i;
     while (i < message.length && (isDigit(i) || (".,".includes(message[i]) && isDigit(i + 1)))) i++;
-    digitReadings(message.slice(start, i)).forEach(add);
+    const r = read(message.slice(start, i));
+    r.values.forEach(add(out.values)); r.ambiguous.forEach(add(out.ambiguous));
   }
-  if (profile) profileNumbers(message, profile, digitReadings).forEach(add);
+  if (profile) {
+    const r = profileNumbers(message, profile, read);
+    r.values.forEach(add(out.values)); r.ambiguous.forEach(add(out.ambiguous));
+  }
+  out.ambiguous = out.ambiguous.filter(a => !out.values.some(v => v.eq(a)));
   return out;
+}
+
+export function messageNumbers(message: string, profile: Profile | null = null): Rational[] {
+  return messageReading(message, profile).values;
 }
 
 export function textInMessage(literal: string, message: string): boolean {
@@ -473,11 +493,14 @@ class Checker {
   policy: Rule[];
   actor: Actor | null;
   profile: Profile | null;
-  private messageNumbersCache: Rational[] | null = null;
+  private messageCache: Reading | null = null;
+  /** Literals that equal what a number in the message could mean, but not certainly (SPEC 5.1). */
+  ambiguousLiterals = new Set<Node>();
 
-  numbers(): Rational[] {
-    return this.messageNumbersCache ??= this.message === null ? [] : messageNumbers(this.message, this.profile);
+  reading(): Reading {
+    return this.messageCache ??= this.message === null ? { values: [], ambiguous: [] } : messageReading(this.message, this.profile);
   }
+  numbers(): Rational[] { return this.reading().values; }
 
   constructor(o: CheckOptions) {
     this.profile = o.profile ?? null;
@@ -501,6 +524,7 @@ class Checker {
     const inMessage = this.message !== null && (node.kind === "number"
       ? !node.value.isNegative() && this.numbers().some(x => x.eq(node.value))
       : textInMessage(node.value, this.message));
+    if (!inMessage && node.kind === "number" && this.reading().ambiguous.some(x => x.eq(node.value))) this.ambiguousLiterals.add(node);
     return inMessage ? val(type, { sources: ["message"] }) : val(type, { sources: ["model"], invented: [node] });
   }
 
@@ -678,7 +702,10 @@ class Checker {
       this.want(pv, v, p.type);
       if (sideEffect && !p.modelAllowed)
         for (const lit of v.invented)
-          this.err(lit, "invented-value", `${literalText(lit)} is not in the message; a value the model wrote cannot go to parameter ${p.name} of ${op.name}, directly or through the result of a read that looked it up. Use the value from the message or from a read operation; if it is unknown, ask the user with (stop "...").`);
+          if (this.ambiguousLiterals.has(lit))
+            this.err(lit, "ambiguous-number", `${literalText(lit)} is one of the values a number in the message could mean, but the message does not say which: `
+              + `ask the user which one they meant with (stop "..."); the host fixes how numbers are written with a language profile (SPEC 5.1, 5.4)`);
+          else this.err(lit, "invented-value", `${literalText(lit)} is not in the message; a value the model wrote cannot go to parameter ${p.name} of ${op.name}, directly or through the result of a read that looked it up. Use the value from the message or from a read operation; if it is unknown, ask the user with (stop "...").`);
     }
     for (const p of op.params)
       if (p.required && !given.some(g => g[0] === nameFold(p.name))) this.err(node, "missing-parameter", `${op.name} needs parameter ${p.name}`);

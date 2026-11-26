@@ -6,76 +6,263 @@
       "name": "yirmi is 20 with the Turkish profile",
       "message": "Yılmaz Market'e yirmi koli domates gönder",
       "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 20))",
-      "expect": {"valid": true}
+      "expect": {
+        "valid": true
+      }
     },
     {
       "name": "without a profile, 20 is invented",
       "profile": null,
       "message": "Yılmaz Market'e yirmi koli domates gönder",
       "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 20))",
-      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 1, "column": 83}], "only": true}
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
     },
     {
       "name": "iki yüz elli üç is 253, not 250",
       "message": "Yilmaz Market: iki yüz elli üç adet domates",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 253) (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 250)))",
-      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 1, "column": 164}], "only": true}
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 164
+          }
+        ],
+        "only": true
+      }
     },
     {
       "name": "words written together: yirmibeş, ikiyüzelli",
       "message": "Yilmaz Market: yirmibeş koli domates, ikiyüzelli kilo biber",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 25) (erp.add_order_line customer \"Yilmaz Market\" product \"biber\" quantity 250)))",
-      "expect": {"valid": true}
+      "expect": {
+        "valid": true
+      }
     },
     {
       "name": "iki üç koli is 2 and 3, not 5",
       "message": "Yilmaz Market: iki üç koli domates",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 3) (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 5)))",
-      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 1, "column": 162}], "only": true}
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 162
+          }
+        ],
+        "only": true
+      }
     },
     {
       "name": "digits and a scale word: 2 bin, 1,5 milyon",
       "message": "Yilmaz Market: 2 bin koli domates, 1,5 milyon gram biber",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 2000) (erp.add_order_line customer \"Yilmaz Market\" product \"biber\" quantity 1500000)))",
-      "expect": {"valid": true}
+      "expect": {
+        "valid": true
+      }
     },
     {
       "name": "upper case: BİN İKİ YÜZ",
       "message": "YILMAZ MARKET: BİN İKİ YÜZ DOMATES",
       "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 1200))",
-      "expect": {"valid": true}
+      "expect": {
+        "valid": true
+      }
     },
     {
       "name": "letters are not folded: ön is not on (10)",
       "message": "Yilmaz Market: domatesleri ön kapıya bırakın",
       "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 10))",
-      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 1, "column": 83}], "only": true}
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
     },
     {
       "name": "spellings without Turkish letters are listed: dort, bes",
       "message": "Yilmaz Market: dort koli domates, bes koli biber",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 4) (erp.add_order_line customer \"Yilmaz Market\" product \"biber\" quantity 5)))",
-      "expect": {"valid": true}
+      "expect": {
+        "valid": true
+      }
     },
     {
       "name": "not covered: bin buçuk is 1000, never 1500",
       "message": "Yilmaz Market: bin buçuk koli domates",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 1000) (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 1500)))",
-      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 1, "column": 165}], "only": true}
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 165
+          }
+        ],
+        "only": true
+      }
     },
     {
       "name": "English: two hundred and five, twenty-five",
       "profile": "en",
       "message": "Yilmaz Market: two hundred and five tomatoes and twenty-five peppers",
       "plan": "(plan \"x\" (do (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 205) (erp.add_order_line customer \"Yilmaz Market\" product \"peppers\" quantity 25)))",
-      "expect": {"valid": true}
+      "expect": {
+        "valid": true
+      }
     },
     {
       "name": "English is not Turkish: yirmi means nothing with the English profile",
       "profile": "en",
       "message": "Yilmaz Market: yirmi tomatoes",
       "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 20))",
-      "expect": {"valid": false, "errors": [{"code": "invented-value", "line": 1, "column": 84}], "only": true}
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 84
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "Turkish: 1.250 is 1250",
+      "message": "Yilmaz Market: 1.250 kg domates",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 1250))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "Turkish: 1.250 is not 1.25",
+      "message": "Yilmaz Market: 1.250 kg domates",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 1.25))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "Turkish: 12,5 is 12.5",
+      "message": "Yilmaz Market: 12,5 kg domates",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 12.5))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "Turkish: 12,5 is never 125",
+      "message": "Yilmaz Market: 12,5 kg domates",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 125))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "Turkish: 12.5 is not how Turkish writes a number, so it is ambiguous, not guessed",
+      "message": "Yilmaz Market: 12.5 kg domates",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 12.5))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "ambiguous-number",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "Turkish: 2,5 bin is 2500, never 25000",
+      "message": "Yilmaz Market: 2,5 bin domates",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"domates\" quantity 25000))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 83
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "English: 1.250 is 1.25",
+      "message": "Yilmaz Market: 1.250 kg tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 1.25))",
+      "expect": {
+        "valid": true
+      },
+      "profile": "en"
+    },
+    {
+      "name": "English: 1,250 is 1250",
+      "message": "Yilmaz Market: 1,250 kg tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 1250))",
+      "expect": {
+        "valid": true
+      },
+      "profile": "en"
+    },
+    {
+      "name": "English: 12,5 is ambiguous",
+      "message": "Yilmaz Market: 12,5 kg tomatoes",
+      "plan": "(plan \"x\" (erp.add_order_line customer \"Yilmaz Market\" product \"tomatoes\" quantity 12.5))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "ambiguous-number",
+            "line": 1,
+            "column": 84
+          }
+        ],
+        "only": true
+      },
+      "profile": "en"
     }
   ]
 }

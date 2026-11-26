@@ -633,37 +633,65 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 ;;; Provenance helpers (SPEC 5.1)
 ;;; ------------------------------------------------------------------
 
-(defun digit-readings (run)
-  "The values a run like 1.250,50 may mean (SPEC 5.1)."
-  (let ((out '()))
-    (dolist (r (list (and (every #'digit-char-p run) run)
-                     (let ((r (remove #\. run))) (and (<= (count #\, r) 1) (substitute #\. #\, r)))
-                     (let ((r (remove #\, run))) (and (<= (count #\. r) 1) r))
-                     (remove-if-not #'digit-char-p run)))
-      (let ((v (and r (parse-number r))))
-        (when v (pushnew v out))))
-    (nreverse out)))
+(defun read-as (run d)
+  "RUN read with D (#\\, or #\\.) as the decimal mark, the other mark grouping thousands by threes; NIL if
+it is not written so."
+  (let* ((g (if (char= d #\,) #\. #\,))
+         (dpos (position d run))
+         (int (subseq run 0 (or dpos (length run))))
+         (frac (and dpos (subseq run (1+ dpos))))
+         (groups (loop with start = 0
+                       for pos = (position g int :start start)
+                       collect (subseq int start pos)
+                       while pos do (setf start (1+ pos)))))
+    (when (and (or (null frac) (and (plusp (length frac)) (every #'digit-char-p frac)))
+               (every (lambda (x) (and (plusp (length x)) (every #'digit-char-p x))) groups)
+               (or (null (cdr groups))
+                   (and (<= (length (first groups)) 3) (every (lambda (x) (= (length x) 3)) (rest groups)))))
+      (parse-number (format nil "~{~a~}~@[.~a~]" groups frac)))))
 
-(defun message-numbers (message &optional profile)
-  "The message numbers: from digits, and with a language PROFILE from number words too (SPEC 5.4)."
-  (let ((out '()) (i 0) (n (length message)))
+(defun digit-readings (run &optional decimal)
+  "What a run like 1.250,50 means (SPEC 5.1): read with DECIMAL as the decimal mark if given, else both
+ways. Two values: the list of what it means (one value at most) and, if it is ambiguous, what it could mean."
+  (cond ((every #'digit-char-p run) (values (list (parse-number run)) '()))
+        (decimal
+         (let ((v (read-as run decimal)))
+           (if v
+               (values (list v) '())
+               (let ((other (read-as run (if (char= decimal #\,) #\. #\,))))
+                 (values '() (and other (list other)))))))
+        (t (let ((vs (remove-duplicates (remove nil (list (read-as run #\,) (read-as run #\.))) :test #'=)))
+             (if (= (length vs) 1) (values vs '()) (values '() vs))))))
+
+(defun message-reading (message &optional profile)
+  "The message numbers: from digits, and with a language PROFILE from number words too (SPEC 5.4). Second
+value: what runs of digits in it could mean but do not certainly mean."
+  (let ((out '()) (ambiguous '()) (i 0) (n (length message))
+        (decimal (and profile (profile-decimal profile))))
     (flet ((digit (k) (and (< -1 k n) (char<= #\0 (char message k) #\9))))
       (loop while (< i n)
             do (if (digit i)
                    (let ((start i))
                      (loop while (and (< i n) (or (digit i) (and (find (char message i) ".,") (digit (1+ i)))))
                            do (incf i))
-                     (dolist (v (digit-readings (subseq message start i))) (pushnew v out)))
+                     (multiple-value-bind (vs amb) (digit-readings (subseq message start i) decimal)
+                       (dolist (v vs) (pushnew v out))
+                       (dolist (v amb) (pushnew v ambiguous))))
                    (incf i))))
     (when profile
-      (dolist (v (profile-numbers message profile)) (pushnew v out)))
-    out))
+      (multiple-value-bind (vs amb) (profile-numbers message profile)
+        (dolist (v vs) (pushnew v out))
+        (dolist (v amb) (pushnew v ambiguous))))
+    (values out (remove-if (lambda (a) (member a out :test #'=)) ambiguous))))
+
+(defun message-numbers (message &optional profile)
+  (values (message-reading message profile)))
 
 ;;; --- Language profiles (SPEC 5.4): number words, from data in profiles/*.json
 
 (defvar *profile* nil "The language profile in force, or NIL.")
 
-(defstruct profile language (units (make-hash-table :test #'equal)) hundred (scales (make-hash-table :test #'equal)) joiners compound)
+(defstruct profile language decimal (units (make-hash-table :test #'equal)) hundred (scales (make-hash-table :test #'equal)) joiners compound)
 
 (defun profile-lower (s)
   "NFC, each code point lowercased (full mapping: İ gives i and U+0307), U+0307 removed. Marks stay: ö is not o."
@@ -675,7 +703,12 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
   (let ((n (and (hash-table-p j) (gethash "numbers" j))))
     (unless (and (stringp (gethash "language" j)) (hash-table-p n) (hash-table-p (gethash "units" n)))
       (error "a profile is {\"language\": ..., \"numbers\": {\"units\": {...}, ...}}"))
-    (let ((p (make-profile :language (gethash "language" j) :compound (eq (gethash "compound" n) :true))))
+    (let ((p (make-profile :language (gethash "language" j) :compound (eq (gethash "compound" n) :true)
+                           :decimal (let ((d (gethash "decimal" n)))
+                                      (cond ((null d) nil)
+                                            ((equal d ",") #\,)
+                                            ((equal d ".") #\.)
+                                            (t (error "profile ~a: decimal is \",\" or \".\"" (gethash "language" j))))))))
       (flet ((word (w)
                (unless (and (stringp w) (plusp (length w)) (string= w (profile-lower w)) (every #'alpha-char-p w))
                  (error "profile ~a: ~s is not a lowercase word" (profile-language p) w))
@@ -731,7 +764,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                        (t (unless (or (char= c #\-) (sb-unicode:whitespace-p c)) (setf gap-ok nil))
                           (incf i))))))
     (setf tokens (coerce (nreverse tokens) 'vector))
-    (let ((out '()) (started nil) (total 0) (group 0) (last-scale nil) (prev nil))
+    (let ((out '()) (ambiguous '()) (started nil) (total 0) (group 0) (last-scale nil) (prev nil))
       (labels ((emit ()
                  (when started (pushnew (+ total group) out))
                  (setf started nil total 0 group 0 last-scale nil prev nil))
@@ -763,7 +796,9 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                       (let* ((next (and (< (1+ k) (length tokens)) (aref tokens (1+ k))))
                              (s (and next (first next) (third next) (gethash (first next) (profile-scales p)))))
                         (when s
-                          (dolist (r (digit-readings digits)) (pushnew (* r s) out))
+                          (multiple-value-bind (vs amb) (digit-readings digits (profile-decimal p))
+                            (dolist (r vs) (pushnew (* r s) out))
+                            (dolist (r amb) (pushnew (* r s) ambiguous)))
                           (incf k))))
                      ((member word (profile-joiners p) :test #'string=)
                       (let ((next (and (< (1+ k) (length tokens)) (aref tokens (1+ k)))))
@@ -773,7 +808,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                           (if items (mapc #'take items) (emit))))))
                  (incf k))
         (emit))
-      (nreverse out))))
+      (values (nreverse out) ambiguous))))
 
 (defun text-in-message-p (literal message)
   (let ((f (fold (string-trim '(#\Space #\Tab #\Newline #\Return) literal)))
@@ -786,6 +821,11 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 
 (defun number-in-message-p (value message)
   (and (>= value 0) (member value (message-numbers message *profile*) :test #'=)))
+
+(defvar *ambiguous-literals* nil "Literal nodes equal to what a number in the message could mean, not certainly (SPEC 5.1).")
+
+(defun number-ambiguous-p (value message)
+  (member value (nth-value 1 (message-reading message *profile*)) :test #'=))
 
 ;;; ------------------------------------------------------------------
 ;;; Checker
@@ -892,6 +932,8 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                   (if (eq type :number)
                       (number-in-message-p (node-value node) *message*)
                       (text-in-message-p (node-value node) *message*)))))
+    (when (and (not in) *message* (eq type :number) (number-ambiguous-p (node-value node) *message*))
+      (push node *ambiguous-literals*))
     (if in
         (make-val :type type :sources (list :message))
         (make-val :type type :sources (list :model) :invented (list node)))))
@@ -1079,9 +1121,13 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
                        (want pv v (pa-type p))
                        (when (and side-effect (not (pa-model-allowed p)))
                          (dolist (lit (v-invented v))
+                           (if (member lit *ambiguous-literals*)
+                               (err lit "ambiguous-number"
+                                    "~a is one of the values a number in the message could mean, but the message does not say which: ask the user which one they meant with (stop \"...\"); the host fixes how numbers are written with a language profile (SPEC 5.1, 5.4)"
+                                    (literal-text lit))
                            (err lit "invented-value"
                                 "~a is not in the message; a value the model wrote cannot go to parameter ~a of ~a, directly or through the result of a read that looked it up. Use the value from the message or from a read operation; if it is unknown, ask the user with (stop \"...\")."
-                                (literal-text lit) (pa-name p) (op-name op)))))))))))
+                                (literal-text lit) (pa-name p) (op-name op))))))))))))
     (dolist (p params)
       (when (and (pa-required p) (not (assoc (name-fold (pa-name p)) given :test #'string=)))
         (err node "missing-parameter" "~a needs parameter ~a" (op-name op) (pa-name p))))
@@ -1126,7 +1172,7 @@ syntax (SPEC 2.1). Signals SYNTAX-ERROR."
 (defun check-plan (text &key message (policy *policy*) (actor *actor*) (profile *profile*))
   "Checks the plan in TEXT against MESSAGE (what the user wrote, or NIL), under POLICY for ACTOR.
 Runs nothing. Returns a RESULT."
-  (let ((*errors* (quote ())) (*message* message) (*multiplier* 1) (*condition* nil) (*policy* policy) (*actor* actor) (*profile* profile)
+  (let ((*errors* (quote ())) (*message* message) (*ambiguous-literals* '()) (*multiplier* 1) (*condition* nil) (*policy* policy) (*actor* actor) (*profile* profile)
         (*conditional* nil) (*calls* '()) (*may-stop* nil) (title nil) (root nil))
     (handler-case
         (setf root (read-plan text))

@@ -7,7 +7,10 @@ Model araçları tek tek çağırmak yerine işin tamamını küçük bir plan o
 
 - **Kaynak:** her değer nereden geldiğini bilir (kullanıcının mesajı, bir araç ya da model).
   Kullanıcı 20 kasa istediyse ve planda 25 yazıyorsa plan çalışmaz. Modelin uydurduğu bir değer bir
-  şeyi değiştiren işleme gidemez, uydurma bir eşiğe bağlı bir koşulla da yapılamaz.
+  şeyi değiştiren işleme gidemez, uydurma bir eşiğe bağlı bir koşulla da yapılamaz. Kanıtlanan,
+  değerin mesajda geçtiğidir; kullanıcının onu hangi alan için söylediğini onaylayan kişi önizlemede
+  görür (SPEC 5.5). Mesajdaki bir sayı tek anlamla okunur: Türkçe profille `12,5` 12.5'tir, `1.250`
+  1250'dir; iki türlü okunabilen bir sayı hiç alınmaz ve model kullanıcıya sormaya yönlendirilir.
 - **Etki:** planın neye dokunduğu (`read`, `write`, `external`, `money` ya da alanın kendi etkileri,
   örneğin `erp.post`) ve onay gerekip gerekmediği metninden bilinir.
 - **Sınır:** döngüler yalnızca sonlu listeler üzerindedir; en fazla kaç işlem çağrılacağı önceden

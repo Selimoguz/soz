@@ -2,6 +2,7 @@
   "language": "tr",
   "description": "Türkçe sayı kelimeleri (SPEC 5.4). Türkçe harfsiz yazımlar (dort, bes, uc, yuz) ayrıca listelenir; 'ön' gibi kelimeler 10 sayılmasın diye harfler katlanmaz.",
   "numbers": {
+    "decimal": ",",
     "units": {
       "sıfır": 0, "sifir": 0,
       "bir": 1, "iki": 2, "üç": 3, "uc": 3, "dört": 4, "dort": 4, "beş": 5, "bes": 5,

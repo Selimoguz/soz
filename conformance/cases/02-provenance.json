@@ -155,19 +155,35 @@
       }
     },
     {
-      "name": "1.250 reads as 1250",
+      "name": "without a language profile 1.250 is ambiguous: 1250 is not taken",
       "message": "pay Yilmaz 1.250 lira",
       "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 1250))",
       "expect": {
-        "valid": true
+        "valid": false,
+        "errors": [
+          {
+            "code": "ambiguous-number",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
       }
     },
     {
-      "name": "1.250 also reads as 1.25",
+      "name": "... and neither is 1.25",
       "message": "pay Yilmaz 1.250 lira",
       "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 1.25))",
       "expect": {
-        "valid": true
+        "valid": false,
+        "errors": [
+          {
+            "code": "ambiguous-number",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
       }
     },
     {
@@ -189,6 +205,30 @@
     {
       "name": "12,5 reads as 12.5",
       "message": "pay Yilmaz 12,5 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 12.5))",
+      "expect": {
+        "valid": true
+      }
+    },
+    {
+      "name": "12,5 is never 125",
+      "message": "pay Yilmaz 12,5 lira",
+      "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 125))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-value",
+            "line": 1,
+            "column": 35
+          }
+        ],
+        "only": true
+      }
+    },
+    {
+      "name": "12.5 reads as 12.5: a comma cannot group a 1-digit run",
+      "message": "pay Yilmaz 12.5 dollars",
       "plan": "(plan \"x\" (pay to \"Yilmaz\" amount 12.5))",
       "expect": {
         "valid": true

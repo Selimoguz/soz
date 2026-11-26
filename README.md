@@ -25,8 +25,12 @@ Without running anything, the checker proves:
   made up cannot reach an operation that changes something. Nor can such an operation depend on a
   condition built on a made-up threshold (`(if (> balance 50000) ...)` with 50000 from nowhere).
   What it proves is that each value is in the message it was given, not that it went where the user
-  meant it, and that message is passed by the agent: the person who approves sees it word for word next
-  to the steps, and is the last check ([SPEC 11.3](SPEC.md#113-approval)).
+  meant it ([SPEC 5.5](SPEC.md#55-in-the-message-is-not-for-that-field)), and that message is passed by
+  the agent: the person who approves sees it word for word next to the steps, with where each value
+  came from, and is the last check ([SPEC 11.3](SPEC.md#113-approval)). A number in the message means
+  one value: `12,5` is 12.5, and with a language profile `1.250` is 1250 in Turkish and 1.25 in English;
+  digits that could be read two ways are not taken at all, and the model is told to ask
+  ([SPEC 5.1](SPEC.md#51-literals)).
 - **Effects.** What the plan touches (`read`, `write`, `external`, `money`, or your own effects such
   as `erp.post`) and whether it needs approval are known from its text.
 - **Bounds.** Loops run only over finite lists, and the largest number of operation calls is known

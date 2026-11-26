@@ -180,17 +180,28 @@ that is not a letter or digit. (`"Yilmaz Market"` is in "Send it to Yılmaz Mark
 not in "talimat".)
 
 A **number** literal `N` is in the message if `N ≥ 0` and `N` is one of the **message numbers**.
-Message numbers come from each maximal run in the message matching `[0-9]+([.,][0-9]+)*`; each run
-gives every value it has under these readings, where a reading applies only if the result is a
-valid decimal:
+Message numbers come from each maximal run in the message matching `[0-9]+([.,][0-9]+)*`. **A run
+means one value or none, never two.** It is read in a **format**: a decimal mark (`,` or `.`), the
+other mark grouping thousands. A run is written in a format if it is digits, or a group of 1 to 3
+digits followed by groups of exactly 3 each after the grouping mark, optionally followed by the
+decimal mark and at least one digit (with `,` as the decimal mark: `1250`, `1.250`, `1.250,50`,
+`12,5`; not `12.5`, `1.25.0` or `12,`). Its value is the digits with the grouping marks removed and
+the decimal mark as the point.
 
-- digits only: the integer;
-- `.` groups thousands, one `,` is the decimal point (`1.250,50` → 1250.5);
-- `,` groups thousands, one `.` is the decimal point (`1,250.50` → 1250.5);
-- the separators are removed (`1.250` → 1250, `12,5` → 125).
+- Digits only: the integer, in any format.
+- With a language profile that declares its decimal mark (5.4: Turkish `,`, English `.`), the run is
+  read in that format only. Turkish `1.250` is 1250 and `12,5` is 12.5; English `1.250` is 1.25.
+- Without one, the run is read in both formats. If only one reads it, or both give the same value,
+  that is its value (`12,5` → 12.5, `1,250.50` → 1250.5, `12450.75` → 12450.75).
 
-So `1.250` gives {1.25, 1250}, `12,5` gives {12.5, 125} and `20` gives {20}. A negative literal is
-never in the message.
+Otherwise the run is **ambiguous**: without a profile, both formats read it and disagree (`1.250` is
+1.25 or 1250, `50.000` is 50 or 50000); with one, its format cannot read it but the other can
+(`12.5` in a Turkish message). An ambiguous run gives **no** message number. A literal equal to one of
+the values it could mean is invented, as any other literal not in the message, but the error for it
+in an argument of a side-effect operation is `ambiguous-number` instead of `invented-value`
+(section 5.3), so that the model asks the user which value they meant instead of choosing one. `20`
+gives {20}; the readings that removed every mark (`12,5` as 125) are gone: no format reads a run so.
+A negative literal is never in the message.
 
 **Schema constants.** In `(= A B)` or `(!= A B)`, if one side is a literal and the other a value
 returned by an operation for a field declared with `enum`, and the literal is one of the declared
@@ -231,6 +242,32 @@ can be shown and reported, but cannot drive a side effect (section 5.2).
 Provenance does not catch a model that repeats a line of the message twice; every value of the
 second copy is in the message. Execution (0.2) handles that with idempotency keys.
 
+- **ambiguous-number.** As `invented-value`, for a literal that equals a value an ambiguous run of
+  the message could mean (5.1). The model should stop and ask; the host can prevent it by checking
+  with the language profile of the person who wrote the message.
+
+### 5.5 In the message is not for that field
+
+Provenance proves that a value **occurs** in the message. It does not prove that the person said it
+**for the field it is passed to**. "Order SO-2041: 12 crates" has 2041 and 12 in it, and a plan that
+orders 2041 crates of order 12 passes the checker: both values are in the message. No rule in this
+section can tell the two apart, because the message is free text and the association is in its
+meaning, not in its characters.
+
+That association is checked by the **person**, in the preview (10.3): every value of every step is
+shown with where it came from ("from the message", "from erp", "written by the assistant"), next to
+the parameter it is passed to. So:
+
+- Hosts must not claim more than this. "A value the model made up does not reach an operation" is
+  what soz guarantees; "a value from the message reaches the right field" is not, and the approval
+  is where it is caught.
+- For a parameter that decides what the approval means (an amount, a recipient, an account), a host
+  should prefer a value from a system of record over one from the message: an order's total read from
+  the ERP, not a number in the text. A policy can require it (`args_from`, section 12.1), so that a
+  number from the message cannot be the amount at all.
+- Numbers are read in one format (5.1), so the person and the checker cannot read the same digits as
+  two different values.
+
 ### 5.4 Language profiles
 
 A host MAY check with a **language profile**: data (`profiles/*.json`) under which number words in the
@@ -240,10 +277,15 @@ in 5.1.
 
 ```json
 {"language": "tr",
- "numbers": {"units": {"bir": 1, "iki": 2, "on": 10, "yirmi": 20, "...": 0},
+ "numbers": {"decimal": ",",
+             "units": {"bir": 1, "iki": 2, "on": 10, "yirmi": 20, "...": 0},
              "hundred": ["yüz", "yuz"], "scales": {"bin": 1000, "milyon": 1000000},
              "joiners": [], "compound": true}}
 ```
+
+`decimal` (`","` or `"."`, optional) is the decimal mark numbers are written with in this language;
+with it, a run of digits in the message is read in that format only (5.1): `1.250` is 1250 in
+Turkish and 1.25 in English, and a run the format cannot read is ambiguous, not guessed.
 
 `units` are words with their values (0 to 99, as the language has them: English lists eleven to
 nineteen); `hundred` multiplies; `scales` are thousand, million, ...; `joiners` (English `and`) may
@@ -268,8 +310,9 @@ stand between number words; with `compound`, a word may be several number words 
      before; `total += max(group, 1) × s`, `group = 0`.
    - a joiner continues only between number words.
    So `iki yüz elli üç` is 253, `bin iki yüz` 1200, `iki üç` is 2 and 3 (never 5).
-5. A digit run joined to a following scale word gives each of its readings times the scale
-   (`2 bin` → 2000, `2,5 milyon` → 2500000 and 25000000).
+5. A digit run joined to a following scale word gives its value times the scale (`2 bin` → 2000,
+   Turkish `2,5 milyon` → 2500000, never 25000000); an ambiguous run stays ambiguous, times the
+   scale.
 
 Not covered, deliberately: fractions in words (`buçuk`, `yarım`, "a half") and inflected numbers
 (`beşer`, `ikisi`), which would need rules where a wrong reading would let a made-up value through.
@@ -363,7 +406,7 @@ The checker's result (the conformance suite compares these fields):
 `not-a-plan`, `empty-plan`, `empty-form`, `bad-form`, `unknown-name`, `unknown-operation`,
 `unknown-parameter`, `duplicate-parameter`, `missing-parameter`, `duplicate-field`,
 `unknown-field`, `type-mismatch`, `not-a-list`, `not-a-record`, `mixed-list`, `division-by-zero`,
-`invented-value`, `invented-condition`, `list-too-long`, `too-many-calls`, in the JSON syntax
+`invented-value`, `ambiguous-number`, `invented-condition`, `list-too-long`, `too-many-calls`, in the JSON syntax
 `bad-json` (section 2.1), and with a policy `policy-denied`, `policy-source` (section 12).
 
 ## 10. Execution (0.2)

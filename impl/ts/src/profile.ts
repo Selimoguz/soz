@@ -5,8 +5,12 @@
 
 import { Rational, isObject, type Json } from "./exact.ts";
 
+type Reading = { values: Rational[]; ambiguous: Rational[] };
+
 export type Profile = {
   language: string;
+  /** The decimal mark numbers are written with ("," in Turkish, "." in English), or null (SPEC 5.4). */
+  decimal: "," | "." | null;
   units: Map<string, bigint>; hundred: Set<string>; scales: Map<string, bigint>; joiners: Set<string>; compound: boolean;
 };
 
@@ -30,6 +34,8 @@ export function profileFromJson(j: Json): Profile {
   const strings = (x: Json | undefined) => (Array.isArray(x) ? x : []).map(w => word(String(w)));
   return {
     language: j.language,
+    decimal: n.decimal === undefined ? null : n.decimal === "," || n.decimal === "." ? n.decimal
+      : (() => { throw new Error(`profile ${j.language}: decimal is "," or "."`); })(),
     units: new Map(Object.entries(n.units).map(([w, v]) => [word(w), int(w, v)])),
     hundred: new Set(strings(n.hundred)),
     scales: new Map(Object.entries(isObject(n.scales) ? n.scales : {}).map(([w, v]) => [word(w), int(w, v)])),
@@ -63,7 +69,7 @@ function items(p: Profile, w: string): Item[] | null {
 }
 
 /** The numbers the profile reads in MESSAGE (besides its digits, SPEC 5.1). */
-export function profileNumbers(message: string, p: Profile, digitReadings: (run: string) => Rational[]): Rational[] {
+export function profileNumbers(message: string, p: Profile, digitReadings: (run: string) => Reading): Reading {
   const text = profileLower(message), cs = Array.from(text);
   const tokens: Token[] = [];
   let gapOk = true, i = 0;
@@ -83,8 +89,8 @@ export function profileNumbers(message: string, p: Profile, digitReadings: (run:
       i++;
     }
   }
-  const out: Rational[] = [];
-  const add = (v: Rational) => { if (!out.some(x => x.eq(v))) out.push(v); };
+  const out: Rational[] = [], ambiguous: Rational[] = [];
+  const add = (v: Rational, into = out) => { if (!into.some(x => x.eq(v))) into.push(v); };
   let started = false, total = 0n, group = 0n, lastScale = -1n, prev = "";
   const emit = () => { if (started) add(Rational.of(total + group)); started = false; total = 0n; group = 0n; lastScale = -1n; prev = ""; };
   const take = (it: Item) => {
@@ -110,7 +116,12 @@ export function profileNumbers(message: string, p: Profile, digitReadings: (run:
       emit();
       // "2 bin", "2,5 milyon": the digits' readings times the scale that follows
       const next = tokens[k + 1], s = next?.word && next.joined ? p.scales.get(next.word) : undefined;
-      if (s !== undefined) { for (const r of digitReadings(t.digits)) add(r.mul(Rational.of(s))); k++; }
+      if (s !== undefined) {
+        const r = digitReadings(t.digits);
+        for (const v of r.values) add(v.mul(Rational.of(s)));
+        for (const v of r.ambiguous) add(v.mul(Rational.of(s)), ambiguous);
+        k++;
+      }
       continue;
     }
     const w = t.word!;
@@ -124,5 +135,5 @@ export function profileNumbers(message: string, p: Profile, digitReadings: (run:
     for (const it of its) take(it);
   }
   emit();
-  return out;
+  return { values: out, ambiguous };
 }

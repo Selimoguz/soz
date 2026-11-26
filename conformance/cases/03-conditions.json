@@ -96,10 +96,26 @@
     },
     {
       "name": "a threshold from the message is fine",
-      "message": "if Yilmaz owes less than 50.000, send 20 tomatoes",
+      "message": "if Yilmaz owes less than 50000, send 20 tomatoes",
       "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (if (< (get c balance) 50000) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20))))",
       "expect": {
         "valid": true
+      }
+    },
+    {
+      "name": "an ambiguous threshold (50.000 without a profile) cannot decide a write",
+      "message": "if Yilmaz owes less than 50.000, send 20 tomatoes",
+      "plan": "(plan \"x\" (let ((c (erp.find_customer name \"Yilmaz\"))) (if (< (get c balance) 50000) (erp.add_order_line customer (get c code) product \"tomatoes\" quantity 20))))",
+      "expect": {
+        "valid": false,
+        "errors": [
+          {
+            "code": "invented-condition",
+            "line": 1,
+            "column": 86
+          }
+        ],
+        "only": true
       }
     }
   ]
