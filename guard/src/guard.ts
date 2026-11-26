@@ -60,8 +60,17 @@ export function guardState(read: (file: string) => string | null): GuardState {
 }
 
 /** soz-guard's own hook command, as init writes it: a Node (whatever its name: node, node.exe, nodejs), by full
- * path, running soz-guard's cli by full path. */
-const OWN_COMMAND = /^\s*(?:"[^"]+"|\S+)\s+(?:--[\w=-]+\s+)*"([^"]+[\\/]cli\.(?:ts|js))"\s+(hook|session-start|track)\s*$/i;
+ * path, running soz-guard's cli by full path. For Codex on Windows, which runs hooks with PowerShell, the same
+ * command after PowerShell's call operator and followed by "; exit $LASTEXITCODE" (see powershellCommand). */
+const OWN_COMMAND = /^\s*(?:&\s*)?(?:"[^"]+"|\S+)\s+(?:--[\w=-]+\s+)*"([^"]+[\\/]cli\.(?:ts|js))"\s+(hook|session-start|track)\s*(?:;\s*exit\s+\$LASTEXITCODE\s*)?$/i;
+
+/** COMMAND for PowerShell, which Codex runs its hooks with on Windows. There a line that starts with a quoted
+ * path is a string, not a command, so the call operator (&) runs it; and PowerShell's -Command ends with 1
+ * whenever a native command fails, so the hook's own exit code (2: keep working) is passed on explicitly. */
+export const powershellCommand = (command: string) => `& ${command}; exit $LASTEXITCODE`;
+
+/** A hook command without that PowerShell wrapping: what is left names the soz-guard subcommand it runs. */
+export const hookBody = (command: string) => command.trim().replace(/^&\s*/, "").replace(/;\s*exit\s+\$LASTEXITCODE\s*$/i, "").trimEnd();
 
 /** The script and subcommand of a command as init writes it (machine paths), or null for any other command,
  * such as a portable "npx soz-guard hook". */

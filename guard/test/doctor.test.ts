@@ -235,6 +235,63 @@ check("in the terminal, which shows the line itself, the agent is not told to wr
 r = stop("line-g", { transcript_path: transcript("g1", [says("Tamam.")]) });
 check("... nor stopped for it", r.status === 0 && lineLog("line-g").length === 0, `${r.status} ${r.stderr}`);
 
+console.log("\nThe line in Codex's desktop app");
+// Codex Desktop gives the SessionStart hook's context to the agent and shows the person nothing; its transcript's
+// first record names the app. That record holds Codex's instructions too, so it is long.
+const rollout = (name: string, originator: string, records: object[] = []) => transcript(name, [
+  { timestamp: "2026-11-26T11:17:07.409Z", type: "session_meta", payload: { session_id: name, cwd: shownDir, originator, cli_version: "0.171.0",
+    base_instructions: { text: "You are Codex. ".repeat(8000) } } }, ...records]);
+const codexSays = (text: string) => ({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+const hookPrompt = (text: string) => ({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `<hook_prompt hook_run_id="stop:1">${text}</hook_prompt>` }] } });
+const startCodex = (session: string, path: string) => {
+  const res = run(shownDir, ["session-start"], "tr", JSON.stringify({ cwd: shownDir, session_id: sid(session), transcript_path: path,
+    source: "startup", hook_event_name: "SessionStart", model: "m", permission_mode: "default" }));
+  return JSON.parse(res.stdout) as { systemMessage: string; hookSpecificOutput: { additionalContext: string } };
+};
+const startH = startCodex("line-h", rollout("h0", "Codex Desktop")), lineH = startH.systemMessage;
+check("Codex Desktop, named by its transcript's first record: the agent is told to write the line",
+      startH.hookSpecificOutput.additionalContext.includes("ilk cevabının başına onu tek satır olarak, değiştirmeden yaz"), startH.hookSpecificOutput.additionalContext);
+r = stop("line-h", { transcript_path: rollout("h1", "Codex Desktop", [codexSays("removeItem'ı ekliyorum."), hookPrompt(lineH)]),
+                     last_assistant_message: "removeItem'ı ekliyorum." });
+check("Codex Stop, the line only in a hook's feedback, not in the agent's replies: stopped once with the line to write",
+      r.status === 2 && r.stderr.includes(lineH), `${r.status} ${r.stderr}`);
+r = stop("line-h", { transcript_path: rollout("h2", "Codex Desktop", [codexSays(`${lineH}\n\nremoveItem'ı ekliyorum.`)]),
+                     last_assistant_message: "Bitti." });
+check("... once the agent's first visible reply starts with it, it may stop, and \"shown\" is logged",
+      r.status === 0 && lineLog("line-h").some(e => e.shown === true), `${r.status} ${r.stderr}`);
+const startI = startCodex("line-i", rollout("i0", "codex_cli_rs"));
+check("the Codex terminal (another originator) is not told to write the line",
+      !startI.hookSpecificOutput.additionalContext.includes("ilk cevabının başına"));
+const startJ = startCodex("line-j", join(top, "not-written-yet.jsonl"));
+check("no transcript file yet: no app named, the session still starts",
+      !startJ.hookSpecificOutput.additionalContext.includes("ilk cevabının başına") && startJ.systemMessage.startsWith("soz-guard"));
+
+console.log("\nCodex in soz-guard doctor");
+const codexDir = project("codex", { checks: [] });
+const codexInit = run(codexDir, ["init", "--codex"], "en");
+check("init --codex lists what to do in Codex: trust the project, approve the hooks in /hooks, a new session",
+      /trust the project/.test(codexInit.stdout) && /\/hooks/.test(codexInit.stdout) && /new Codex session/.test(codexInit.stdout), codexInit.stdout);
+const codexHome = mkdtempSync(join(top, "codex-home-"));
+const doctorWith = (toml: string | null, lang = "tr") => {
+  if (toml === null) rmSync(join(codexHome, "config.toml"), { force: true }); else writeFileSync(join(codexHome, "config.toml"), toml);
+  return spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", cli, "doctor"],
+                   { cwd: codexDir, encoding: "utf8", env: { ...hostless, SOZ_GUARD_LANG: lang, CODEX_HOME: codexHome } }).stdout;
+};
+// Codex writes Windows paths with backslashes, in whatever case the folder was opened with
+const asCodex = (p: string) => process.platform === "win32" ? p.replace(/\//g, "\\") : p;
+const hooksKey = asCodex(join(codexDir, ".codex", "hooks.json"));
+const trusted = `model = "m"\n\n[projects.'${process.platform === "win32" ? asCodex(codexDir).toLowerCase() : codexDir}']\ntrust_level = "trusted"\n\n`
+  + `[hooks.state.'${hooksKey}:session_start:0:0']\ntrusted_hash = "sha256:1"\n\n[hooks.state.'${hooksKey}:stop:0:0']\ntrusted_hash = "sha256:2"\n`;
+let text = doctorWith(trusted);
+check("doctor: the project trusted and both hooks approved, as Codex's own settings say (paths in any case)",
+      text.includes("1. Projeye güvenin") && text.includes(": güveniliyor") && text.includes("onay kaydı var") && text.includes("3. Yeni bir Codex oturumu açın"), text);
+text = doctorWith(`model = "m"\n`);
+check("doctor: a project Codex does not trust, and no approval: said", text.includes(": güvenilmiyor") && text.includes("onay kaydı yok"), text);
+text = doctorWith(null, "en");
+check("doctor: no Codex settings to read: says so instead of guessing", text.includes("Codex's settings could not be read") && text.includes("goes on silently"), text);
+check("doctor: before any run, it asks for a new session of the tools set up, not just \"the Claude session\"",
+      !text.includes("Open the Claude session") && text.includes("Codex session after setting it up"), text);
+
 rmSync(top, { recursive: true, force: true });
 console.log(`\n${failed ? `${failed} FAILED` : "All soz-guard doctor tests passed"}`);
 process.exit(failed ? 1 : 0);

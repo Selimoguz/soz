@@ -189,6 +189,20 @@ export function agentReplies(transcript: string): string[] {
   return out;
 }
 
+/** The app that writes a Codex transcript, as its first record (session_meta) names it ("Codex Desktop" for
+ * the desktop app); null for any other transcript, or none yet. Read when a session starts, while the
+ * transcript is still short. */
+export function codexOriginator(transcriptPath: string | undefined): string | null {
+  if (!transcriptPath) return null;
+  let text: string;
+  try { text = readFileSync(transcriptPath, "utf8"); } catch { return null; }   // no transcript (yet): no app named
+  const end = text.indexOf("\n");
+  try {
+    const o = JSON.parse(end < 0 ? text : text.slice(0, end)) as { type?: string; payload?: { originator?: unknown } };
+    return o.type === "session_meta" && typeof o.payload?.originator === "string" ? o.payload.originator : null;
+  } catch { return null; }                                       // not a Codex transcript
+}
+
 /** Whether LINE is in one of the agent's replies (or in its LAST message, which a hook may be given before the
  * transcript has it). Spaces and line breaks do not count, so that a wrapped or quoted line is still the line. */
 export function lineInReplies(line: string, transcriptPath: string | undefined, last: string | undefined): boolean {

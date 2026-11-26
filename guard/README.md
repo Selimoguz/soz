@@ -448,8 +448,11 @@ Claude's desktop app keeps a hook's `systemMessage` in the transcript but shows 
 (`CLAUDE_CODE_ENTRYPOINT=claude-desktop`) the agent is told to write the line at the top of its first reply,
 and the Stop hook looks for it in the agent's replies in the transcript: hooks' own records do not count.
 If it is not there, the agent is stopped once and given the line to write; after that it is not stopped for
-it again. Either way the log says whether the person was shown it (`session-line`). Codex is not yet
-checked: there the line goes out as a `systemMessage`, as in the terminal.
+it again. Either way the log says whether the person was shown it (`session-line`). Codex's desktop app
+does the same: it gives the hook's context to the agent and shows the person nothing. soz-guard knows it
+by the transcript Codex gives the hook (its first record names the app, `Codex Desktop`), and the agent
+writes the line in the same way; the Stop hook reads Codex's transcript, where the Stop hook's own feedback
+to the agent does not count as the agent's reply either.
 
 ## The hook
 
@@ -488,11 +491,29 @@ This works with any agent that commits, but only at the commit: an agent that ne
 that runs `git commit --no-verify`, passes it by. As everywhere locally, CI is where it is enforced.
 
 **Codex** has lifecycle hooks much like Claude Code's: the same fields on standard input, and a Stop
-hook that exits 2 makes the agent continue, with the reason as its next prompt. `init --codex` adds
-soz-guard's two hooks to the project's `.codex/hooks.json` and its section to `AGENTS.md`; Codex asks
-once, in `/hooks`, to trust them. A change to those hooks, or hooks switched off in
-`.codex/config.toml`, is a `guard` change, as for Claude Code. (Written from Codex's documentation and
-tested with Codex's input format; not yet tried in a live Codex session.)
+hook that exits 2 makes the agent continue, with the reason as its next prompt (the desktop app shows it
+as the hook's feedback). `init --codex` adds soz-guard's two hooks to the project's `.codex/hooks.json`
+and its section to `AGENTS.md`. A change to those hooks, or hooks switched off in `.codex/config.toml`,
+is a `guard` change, as for Claude Code.
+
+Codex runs them only after three steps of the person's, which `init --codex` and `soz-guard doctor` list:
+
+1. **Trust the project.** In a folder Codex does not trust, it runs none of the project's hooks.
+2. **Approve the hooks** in Codex's `/hooks`. A hook that changes needs a new approval, so after
+   `init --codex` changes them (another machine, Node or soz-guard moved), approve them again.
+3. **Open a new session.** Codex reads hooks when a session starts.
+
+`soz-guard doctor` reads Codex's own settings (`~/.codex/config.toml`, or `$CODEX_HOME`'s), without
+changing them, and says whether the project is trusted and whether an approval is recorded for each hook;
+whether that approval is for the hooks as they are now, only Codex knows. When a hook cannot run, Codex
+goes on silently, so a Codex session that starts without soz-guard's line is one where the hooks do not
+run: `soz-guard doctor` says why, and its last run.
+
+On Windows Codex runs hooks with PowerShell. There a line that starts with a quoted path is a string,
+not a command, and `-Command` ends with exit code 1 when a native command fails, which Codex does not read
+as "continue". So on Windows `init --codex` writes `& "node" "…/cli.js" hook; exit $LASTEXITCODE`, and
+brings a hook from an earlier soz-guard to that form; `soz-guard doctor` says when a hook is not in it. A
+command written by hand for Codex on Windows needs the same `; exit $LASTEXITCODE`.
 
 ## A pilot: replay the past
 

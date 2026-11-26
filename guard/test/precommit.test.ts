@@ -91,9 +91,33 @@ rmSync(join(repo, ".git", "hooks", "pre-commit"));
 console.log("\nCodex");
 const c = run(["init", "--codex"]);
 const hooks = JSON.parse(readFileSync(join(repo, ".codex", "hooks.json"), "utf8"));
-check("init --codex: SessionStart and Stop in .codex/hooks.json", c.status === 0 && hooks.hooks.SessionStart[0].hooks[0].command.endsWith(" session-start")
-      && hooks.hooks.Stop[0].hooks[0].command.endsWith(" hook"), c.stdout + c.stderr);
-check("running it again adds nothing", run(["init", "--codex"]).stdout.includes("already there"));
+const startCommand: string = hooks.hooks.SessionStart[0].hooks[0].command, stopCommand: string = hooks.hooks.Stop[0].hooks[0].command;
+// Codex runs hooks on Windows with PowerShell: a line starting with a quoted path is no command there, and -Command
+// turns a native exit code 2 into 1, so the command runs with & and passes its exit code on
+const ps = (sub: string) => new RegExp(`^& "[^"]+" .*"[^"]+cli\\.ts" ${sub}; exit \\$LASTEXITCODE$`);
+check("init --codex: SessionStart and Stop in .codex/hooks.json" + (process.platform === "win32" ? ", in the form PowerShell runs" : ""),
+      c.status === 0 && (process.platform === "win32" ? ps("session-start").test(startCommand) && ps("hook").test(stopCommand)
+                                                       : startCommand.endsWith(" session-start") && stopCommand.endsWith(" hook")), startCommand);
+const again = run(["init", "--codex"]);
+check("running it again adds nothing", again.stdout.includes("already there")
+      && JSON.parse(readFileSync(join(repo, ".codex", "hooks.json"), "utf8")).hooks.Stop.length === 1, again.stdout);
+const doctorHooks = (JSON.parse(run(["doctor", "--json"]).stdout) as { hooks: { tool: string; start: string; stop: string }[] }).hooks;
+check("doctor sees both Codex hooks on", doctorHooks.some(h => h.tool === "codex" && h.start === "on" && h.stop === "on"), JSON.stringify(doctorHooks));
+if (process.platform === "win32") {
+  // a .codex/hooks.json from an earlier soz-guard: init's command without the PowerShell form
+  const plain = (cmd: string) => cmd.replace(/^& /, "").replace(/; exit \$LASTEXITCODE$/, "");
+  write(".codex/hooks.json", JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: plain(startCommand) }] }],
+                                                       Stop: [{ hooks: [{ type: "command", command: plain(stopCommand) }] }] } }, null, 2) + "\n");
+  const doctorText = spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", cli, "doctor"],
+                               { cwd: repo, encoding: "utf8", env: { ...hostless, SOZ_GUARD_LANG: "en" } }).stdout;
+  check("doctor: Codex commands from an earlier soz-guard, not in the PowerShell form: said, with what to run",
+        doctorText.includes("not in that form") && doctorText.includes("soz-guard init --codex"), doctorText);
+  const upgrade = run(["init", "--codex"]);
+  const upgraded = JSON.parse(readFileSync(join(repo, ".codex", "hooks.json"), "utf8"));
+  check("... init --codex brings them to the PowerShell form, in place: no second hook",
+        upgrade.stdout.includes("updated") && upgraded.hooks.SessionStart.length === 1 && upgraded.hooks.Stop.length === 1
+        && upgraded.hooks.Stop[0].hooks[0].command === stopCommand && upgraded.hooks.SessionStart[0].hooks[0].command === startCommand, upgrade.stdout);
+}
 git("add", "-A"); git("commit", "-q", "--no-verify", "-m", "codex");
 const codexEvent = (name: string, sid: string) => run([name === "Stop" ? "hook" : "session-start"], JSON.stringify({
   session_id: sid, transcript_path: join(repo, "rollout.jsonl"), cwd: repo, hook_event_name: name, model: "m",
@@ -105,6 +129,18 @@ check("a Codex Stop with nothing open: exit 0 and JSON on stdout", done.status =
 write("src/cancel.ts", "export function cancel() {\n  // TODO: cancel the order\n}\n");   // soz-guard: ignore (test data)
 const open = codexEvent("Stop", sid);
 check("a Codex Stop with a gap: exit 2, the reason on stderr", open.status === 2 && open.stderr.includes("src/cancel.ts"), open.stderr);
+if (process.platform === "win32") {
+  // the Stop command exactly as init wrote it, run the way Codex runs it on Windows: PowerShell -Command, the
+  // event's JSON on stdin. Codex's own PowerShell is pwsh; Windows PowerShell where pwsh is not installed.
+  const shell = ["pwsh", "powershell"].find(s => spawnSync(s, ["-NoProfile", "-Command", "exit 0"], { encoding: "utf8" }).status === 0)!;
+  const viaShell = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", stopCommand], { cwd: repo, encoding: "utf8", env: hostless,
+    input: JSON.stringify({ session_id: sid, transcript_path: join(repo, "rollout.jsonl"), cwd: repo, hook_event_name: "Stop", model: "m", stop_hook_active: false }) });
+  check(`the Stop command, run by ${shell} -Command as Codex runs it: exit code 2 kept, the reason on stderr`,
+        viaShell.status === 2 && viaShell.stderr.includes("src/cancel.ts"), `${viaShell.status} ${viaShell.stderr}`);
+  const without = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", stopCommand.replace(/^& /, "").replace(/; exit \$LASTEXITCODE$/, "")],
+                            { cwd: repo, encoding: "utf8", env: hostless, input: "{}" });
+  check(`... which the plain command would not do (${shell} does not run it: exit ${without.status})`, without.status !== 2);
+}
 rmSync(join(repo, "src", "cancel.ts"));
 write(".codex/hooks.json", JSON.stringify({ hooks: { SessionStart: hooks.hooks.SessionStart } }, null, 2));
 codexEvent("Stop", sid);

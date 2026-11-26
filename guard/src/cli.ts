@@ -29,8 +29,8 @@ import { createHash } from "node:crypto";
 import { scan, report, repoRoot, loadConfig, parseConfig, configAt, CONFIG_FILE, OWN_DIR, gitIgnored as gitIgnoredPath, gitTracked, gitShow } from "./scan.ts";
 import { evaluate, verdictReport, deferredReport, criteriaFingerprint, writeOwn, appendLog, verifyLog, ACCEPTED } from "./verdict.ts";
 import { startSession, readBaseline, snapshotTree, readTouched, recordTouched, repoPath, beforeShell, afterShell,
-         recordSessionLine, readSessionLine, markSessionLine, lineInReplies } from "./session.ts";
-import { MARK, machineCommand, isThisSozGuard } from "./guard.ts";
+         recordSessionLine, readSessionLine, markSessionLine, lineInReplies, codexOriginator } from "./session.ts";
+import { MARK, machineCommand, isThisSozGuard, powershellCommand, hookBody } from "./guard.ts";
 import { gate } from "./gate.ts";
 import { manifestOf, digestOf } from "./package.ts";
 import { diagnose, diagnoseServer, doctorText, serverText, sessionLine, sessionContext, language } from "./doctor.ts";
@@ -97,7 +97,10 @@ const hookInput = (): HookInput => { try { return JSON.parse(readFileSync(0, "ut
  * (additionalContext). Claude's desktop app keeps a systemMessage in the transcript and shows nothing, so there
  * the agent is told to start its first reply with the line, and the Stop hook sees that it did (session.ts).
  * A setup that guards less than the person thinks is seen at the start, not after the work. */
-const LINE_NOT_SHOWN_BY = ["claude-desktop"];
+const LINE_NOT_SHOWN_BY = ["claude-desktop", "Codex Desktop"];
+/** Which app runs this session: Claude Code says so in CLAUDE_CODE_ENTRYPOINT; Codex writes it as the
+ * "originator" of the session's transcript (Codex Desktop), whose first record is there before hooks run. */
+const sessionApp = (input: HookInput) => process.env.CLAUDE_CODE_ENTRYPOINT || codexOriginator(input.transcript_path) || "";
 function sessionStart(): number {
   const input = hookInput();
   const root = repoRoot(input.cwd ?? process.cwd());
@@ -107,7 +110,7 @@ function sessionStart(): number {
   let exclude: string[];
   try { exclude = loadConfig(root).exclude; } catch { exclude = parseConfig(null).exclude; }
   if (input.session_id) startSession(root, input.session_id, exclude, input.source ?? "startup");
-  const relay = LINE_NOT_SHOWN_BY.includes(process.env.CLAUDE_CODE_ENTRYPOINT ?? "");
+  const relay = LINE_NOT_SHOWN_BY.includes(sessionApp(input));
   let line: string, context: string;
   try {
     const d = diagnose(root);
@@ -439,8 +442,8 @@ type HookList = { matcher?: string; hooks: { type: string; command: string }[] }
 /** Puts soz-guard's SUB hook in LIST with this machine's command: adds it, or updates one of soz-guard's that
  * runs it from somewhere else (another machine, or Node or soz-guard moved since). OURS tells soz-guard's
  * own command for SUB from the others, which are never touched. */
-function upsertHook(list: HookList, sub: string, ours: (command: string) => boolean, matcher?: string): "added" | "updated" | "there" {
-  const command = selfCommand(sub);
+function upsertHook(list: HookList, sub: string, ours: (command: string) => boolean, matcher?: string,
+                    command = selfCommand(sub)): "added" | "updated" | "there" {
   for (const m of list) for (const h of m.hooks ?? []) {
     if (!ours(h.command ?? "")) continue;
     // a command written by hand that finds soz-guard itself (npx soz-guard hook, soz-guard hook) works on any
@@ -460,11 +463,21 @@ function sharedHooks(root: string): string[] {
   } catch { return []; }                                         // no shared settings, or not JSON: none
 }
 const ourCommand = (sub: string) => (c: string) =>
-  (c.includes(self) || /soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && c.trimEnd().endsWith(` ${sub}`);
+  (c.includes(self) || /soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && hookBody(c).endsWith(` ${sub}`);
 const upsertNote = (r: "added" | "updated" | "there", what: string, where: string) =>
   r === "there" ? `${where}: the ${what} is already there` : r === "added" ? `${where}: ${what} added` : `${where}: ${what} updated to this machine's Node and soz-guard`;
 
-/** Codex: SessionStart and Stop hooks in the project's .codex/hooks.json, the same commands as for Claude
+/** The command Codex runs for SUB: on Windows Codex runs hooks with PowerShell (see powershellCommand). */
+const codexCommand = (sub: string) => process.platform === "win32" ? powershellCommand(selfCommand(sub)) : selfCommand(sub);
+
+/** What a person does in Codex before its hooks run, and again after init changes them. */
+const CODEX_STEPS = [
+  "trust the project in Codex (a folder Codex does not trust runs none of its hooks)",
+  "approve the hooks in Codex's /hooks (and again whenever init changes them: a changed hook needs a new approval)",
+  "open a new Codex session (hooks are read when a session starts)",
+];
+
+/** Codex: SessionStart and Stop hooks in the project's .codex/hooks.json, the same subcommands as for Claude
  * Code (Codex sends the same fields and reads exit code 2 with stderr as "continue"). */
 function installCodexHooks(root: string): string {
   const path = join(root, ".codex", "hooks.json");
@@ -472,13 +485,13 @@ function installCodexHooks(root: string): string {
   j.hooks ??= {};
   const notes: string[] = [];
   for (const [event, sub] of [["SessionStart", "session-start"], ["Stop", "hook"]] as const) {
-    const r = upsertHook(j.hooks[event] ??= [], sub, ourCommand(sub));
+    const r = upsertHook(j.hooks[event] ??= [], sub, ourCommand(sub), undefined, codexCommand(sub));
     if (r !== "there") notes.push(upsertNote(r, `${event} hook`, ".codex/hooks.json"));
   }
   if (!notes.length) return ".codex/hooks.json: the hooks are already there";
   mkdirSync(join(root, ".codex"), { recursive: true });
   writeFileSync(path, JSON.stringify(j, null, 2) + "\n");
-  return `${notes.join("\n  ")} (Codex asks you to trust them once, in /hooks)`;
+  return `${notes.join("\n  ")}\n  For Codex to run them:\n${CODEX_STEPS.map((s, i) => `    ${i + 1}. ${s}`).join("\n")}`;
 }
 
 /** soz-guard's section in an instructions file (CLAUDE.md for Claude Code, AGENTS.md for Codex and others). */
