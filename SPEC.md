@@ -427,9 +427,14 @@ structurally. `(/ x 0)` at run time is `division-by-zero`. Evaluation of the bod
    it) or `pending` / `unknown` (an earlier run may or may not have happened; execution stops there
    with `unresolved` until a person resolves it, 10.4 and 10.8).
 5. The preview's status is `ready` (it may be approved), `stopped` (a `stop` was reached; the steps
-   before it are listed and may still be approved), `nothing` (no steps) or `error` (a run-time
-   error, `depends-on-write`, `duplicate-step`, `key-conflict`, or a failed read).
-6. The **preview hash** is the SHA-256, in lower-case hex, of the canonical JSON (10.6) of
+   before it are listed, so that the person sees what the plan would have done, but they **cannot be
+   approved**), `nothing` (no steps) or `error` (a run-time error, `depends-on-write`,
+   `duplicate-step`, `key-conflict`, or a failed read).
+   A plan that stops is not complete: approving the steps before its stop would do part of a whole
+   (a refund without the message that goes with it). Only a `ready` preview has a hash; executing a
+   `stopped` one is `not-approved` and nothing runs. To do a part, the model writes a plan with only
+   that part, which is previewed and approved as a whole.
+6. The **preview hash** (of a `ready` preview only) is the SHA-256, in lower-case hex, of the canonical JSON (10.6) of
    `{"plan": PLAN-TEXT, "message": MESSAGE-OR-NULL, "steps": [{"operation", "args", "key"}...]}`.
 
 ### 10.4 Approval and execution
@@ -463,7 +468,13 @@ with live reads. For every step reached, in order:
    by accident, not even across a crash.
 
 If evaluation ends with fewer steps than the preview had, the outcome is `changed`, unless a `stop`
-was reached, which gives `stopped`. Otherwise the outcome is `done`. Every step has a status:
+was reached, which gives `stopped`. Otherwise the outcome is `done`.
+
+**What ran stays done.** Execution does not undo anything: when it ends with any outcome other than
+`done` (a `stop` that the live reads reached, `changed`, `failed`, `unknown`, ...), the steps that
+were called before have status `done`, the rest `not_run`, and the execution's message names the
+steps that ran and says they are not undone, so that the person knows what happened and what did
+not. A step that may have happened is `unknown` or `unresolved`, never `not_run`. Every step has a status:
 `done`, `already_done`, `failed`, `unknown`, `unresolved` or `not_run`. Two flags of two moments:
 in a preview, `already_done` means "in the journal, it will not be called", whatever the entry's
 status (10.3, with `journal_status`); in an execution, the step status `already_done` is for a

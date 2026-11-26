@@ -2,7 +2,7 @@
 // to turn text around, to become a link, bold, HTML or a code fence.
 
 import {
-  t, defineOperation, defineOperations, preview, previewSummary, renderPreview, visible, Journal, policyFromJson,
+  t, defineOperation, defineOperations, preview, previewSummary, renderPreview, visible, Journal, policyFromJson, execute, OperationUnknown,
   type RenderFormat,
 } from "../src/index.ts";
 
@@ -70,6 +70,27 @@ const invalid = await preview(`(plan "x" (bank.pay to "nowhere${RLO}" amount 99)
 check("an invalid plan shows its errors, made visible", renderPreview(invalid, "text").includes("[invented-value]") && noRawRLO(renderPreview(invalid, "telegram")));
 const stopped = await preview(`(plan "x" (stop "line one\nline two"))`, { message, operations, implementations, journal: new Journal() });
 check("a stop reason with a newline stays one line", renderPreview(stopped, "text").includes("The plan stops: line one\\nline two"));
+
+console.log("\nA plan that stops is not approved in part (SPEC 10.3)");
+const partial = await preview(`(plan "x" (do (bank.pay to "TR33 0006 1005" amount 12450.75) (stop "ask about the second payment")))`,
+                              { message, operations, implementations, journal: new Journal() });
+const partialText = previewSummary(partial);
+check("its steps are shown, as not run on their own", partialText.includes("they are not run on their own") && partialText.includes("bank.pay"));
+check("... with nothing to approve: no hash, no approval line", partial.hash === null && partialText.includes("There is nothing to approve") && !partialText.includes("If you approve"));
+const tried = await execute(partial, "", { implementations, journal: new Journal() });
+check("executing it anyway: not-approved, and why", tried.outcome === "not-approved" && (tried.message ?? "").includes("cannot be approved"));
+
+console.log("\nWhat ran stays done, and is said (SPEC 10.4)");
+let calls = 0;
+const flaky = defineOperations(
+  defineOperation({ name: "bank.pay", effect: "money", params: { to: t.text(), amount: t.number() },
+                    run: () => { if (++calls === 2) throw new OperationUnknown("no answer"); return null; } }),
+);
+const two = await preview(`(plan "x" (do (bank.pay to "TR33 0006 1005" amount 12450.75) (bank.pay to "TR33 0006 1005" amount 50)))`,
+                          { message: "Pay TR33 0006 1005 12.450,75 and 50", operations: flaky.operations, implementations: flaky.implementations, journal: new Journal() });
+const twoRun = await execute(two, two.hash ?? "", { implementations: flaky.implementations, journal: new Journal() });
+check("the second step's outcome is unknown; the first is done and said to have run, not undone",
+      twoRun.outcome === "unknown" && twoRun.steps[0].status === "done" && (twoRun.message ?? "").includes("step 1 (bank.pay) ran before this and is not undone"));
 
 console.log(`\n${failed ? `${failed} FAILED` : "All render tests passed"}`);
 process.exit(failed ? 1 : 0);

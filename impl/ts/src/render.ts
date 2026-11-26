@@ -18,7 +18,7 @@ type Doc = {
 };
 
 const STATUS: Record<string, string> = {
-  ready: "Ready to approve", stopped: "Stops partway; the steps before the stop can be approved",
+  ready: "Ready to approve", stopped: "Stops before it is complete; nothing to approve",
   nothing: "Nothing to do", denied: "Not allowed by the policy", error: "Cannot run", invalid: "The plan has errors",
 };
 

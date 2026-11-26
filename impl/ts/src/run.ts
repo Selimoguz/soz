@@ -637,7 +637,9 @@ export async function preview(text: string, o: RunOptions): Promise<Preview> {
     }
   }
   const steps = c.steps;
-  const hash = status === "ready" || status === "stopped"
+  // Only a complete plan can be approved: a plan that stops has no hash, so the steps before its stop
+  // cannot be run on their own (SPEC 10.3).
+  const hash = status === "ready"
     ? sha256Hex(canonicalJson({ plan: text, message, steps: steps.map(s => ({ operation: s.operation.name, args: s.args, key: s.key })) }))
     : null;
   await c.audit?.append("preview", { plan: text, message, valid: check.valid, actor, status, steps: stepsJson(steps), hash, stop_reason: reason });
@@ -665,7 +667,9 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
   if (!p.hash || approval !== p.hash || p.used) {
     await audit?.append("outcome", { outcome: "not-approved" });
     return { outcome: "not-approved", steps: [], stopReason: null,
-             message: p.used ? "this preview was already executed; an approval is for one execution" : "the approval does not match this preview; nothing ran" };
+             message: p.used ? "this preview was already executed; an approval is for one execution"
+               : p.status === "stopped" ? "the plan stops before it is complete, so it cannot be approved; nothing ran"
+               : "the approval does not match this preview; nothing ran" };
   }
   p.used = true;
   await audit?.append("approval", { hash: approval, by: o.approvedBy ?? "unknown", approvers: approvers.map(a => ({ id: a.id, roles: a.roles })),
@@ -687,6 +691,11 @@ export async function execute(p: Preview, approval: string, o: ExecuteOptions): 
   const all: Step[] = [...reached, ...p.steps.filter(s => !reached.some(r => r.index === s.index))
     .map(s => ({ ...s, status: "not_run", result: undefined }))];
   for (const s of all) s.status ??= "not_run";
+  // What already happened stays happened: an execution that ends otherwise than done says which steps ran.
+  const ran = all.filter(s => s.status === "done");
+  if (outcome !== "done" && ran.length)
+    message = [message, `${ran.length === 1 ? "step" : "steps"} ${ran.map(s => `${s.index} (${s.operation.name})`).join(", ")} ran before this and ${ran.length === 1 ? "is" : "are"} not undone`]
+      .filter(Boolean).join("; ");
   await audit?.append("outcome", { outcome, message, stop_reason: reason, steps: all.map(s => ({ index: Rational.of(s.index), status: s.status })) });
   return { outcome, steps: all, message, stopReason: reason };
 }
@@ -698,7 +707,8 @@ export function previewSummary(p: Preview): string {
     return o + "The plan did not run:\n" + p.check.errors.map((e, i) =>
       `${i + 1}. line ${e.line}, column ${e.column} [${e.code}]: ${visible(e.message)}\n`).join("");
   if (p.steps.length) {
-    o += "If you approve, these will happen:\n";
+    o += p.status === "stopped" ? "The plan stops before it is complete. These steps come before the stop; they are not run on their own:\n"
+      : "If you approve, these will happen:\n";
     for (const s of p.steps) {
       o += `  ${s.index}. ${s.operation.name}` + s.args.fields.map(([k, v]) => ` ${argWithSource(s, k, v)}`).join("")
         + journalNote(s) + "\n";
@@ -708,6 +718,7 @@ export function previewSummary(p: Preview): string {
   if (p.stopReason) o += `The plan stops: ${visible(p.stopReason)}\n`;
   for (const pr of p.problems) o += `Cannot run: ${visible(pr.message)}\n`;
   if (p.status === "nothing") o += "Nothing to do.\n";
+  if (p.status === "stopped") o += "There is nothing to approve. Nothing will happen.\n";
   if (p.hash) o += `Preview: ${p.hash.slice(0, 12)}\n`;
   return o;
 }
