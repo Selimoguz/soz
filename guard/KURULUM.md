@@ -40,7 +40,7 @@ Gereken: Node 18 veya üstü, git, Claude Code.
 makinesinde):
 
 ```sh
-npm install -g soz-guard
+npm install -g @sezeren/soz-guard
 ```
 
 Linux'ta `-g` kurulum yönetici yetkisi isteyebilir (`sudo npm install -g ...`). Kurulduğunu
@@ -115,7 +115,7 @@ ve geliştiricilerin (ve ajanlarının) bu deponun klasörüne yazamaması gerek
 
 ```sh
 # git kullanıcısı olarak, bir kez
-npm install -g soz-guard
+npm install -g @sezeren/soz-guard
 cd /srv/git/proje.git
 soz-guard gate install --branches main --setup "npm ci"
 ```

@@ -14,11 +14,15 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { CONFIG_FILE, OWN_DIR, parseConfig, defaultCriteria, type Check, type Config } from "./scan.ts";
 import { defaultRunners } from "./runners.ts";
-import { machineCommand, isThisSozGuard } from "./guard.ts";
+import { machineCommand, isThisSozGuard, hookBody } from "./guard.ts";
 import { gateDir, readConfig as readGateConfig } from "./gate.ts";
 
 export type HookState = "on" | "missing" | "elsewhere" | "off";
-export type AgentHook = { tool: "claude" | "codex" | "git"; where: string; start: HookState; stop: HookState; detail?: string };
+export type AgentHook = { tool: "claude" | "codex" | "git"; where: string; start: HookState; stop: HookState; detail?: string;
+  /** Codex only: whether Codex trusts the project (from ~/.codex/config.toml; null when that cannot be read),
+   * whether it has an approval recorded for each hook (for the hook as it is now, only Codex knows), and on
+   * Windows whether a hook is init's command not in the form PowerShell runs */
+  codex?: { projectTrusted: boolean | null; approved: { start: boolean; stop: boolean } | null; notPowershell: boolean } };
 export type SeenGate = { seen: true; where: string; installed: boolean; branches: string[]; requireTask: boolean; package: string; build: string };
 export type Gate = { seen: false; why: "no-remote" | "other-machine" | "unreadable"; remote?: string } | SeenGate;
 export type Diagnosis = {
@@ -69,7 +73,7 @@ function projectTests(root: string): { command: string; from: string; runs: (che
 // --- The agent tools' hooks -------------------------------------------------------------------------------------
 
 type HookList = { matcher?: string; hooks?: { command?: string }[] }[];
-const isOurs = (sub: string) => (c: string) => (/soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && c.trimEnd().endsWith(` ${sub}`);
+const isOurs = (sub: string) => (c: string) => (/soz-guard/.test(c) || /cli\.(ts|js)"/.test(c)) && hookBody(c).endsWith(` ${sub}`);
 
 /** The state of soz-guard's SUB hook in LISTS: there and runnable here, pointing at a soz-guard that is not on this
  * machine, or missing. */
@@ -111,6 +115,9 @@ function agentHooks(root: string): AgentHook[] {
     const codex: AgentHook = { tool: "codex", where: ".codex/hooks.json",
       start: hookState([j?.hooks?.SessionStart], "session-start"), stop: hookState([j?.hooks?.Stop], "hook") };
     if (/^\s*(codex_)?hooks\s*=\s*false/m.test(toml)) { codex.start = codex.stop = "off"; codex.detail = ".codex/config.toml"; }
+    const commands = [...(j?.hooks?.SessionStart ?? []), ...(j?.hooks?.Stop ?? [])].flatMap(m => (m.hooks ?? []).map(h => h.command ?? ""));
+    codex.codex = { ...codexTrust(root),
+      notPowershell: process.platform === "win32" && commands.some(c => machineCommand(c) && !/^\s*&/.test(c)) };
     out.push(codex);
   }
   const hooksDir = tryGit(root, ["rev-parse", "--git-path", "hooks"]);
@@ -123,6 +130,41 @@ function agentHooks(root: string): AgentHook[] {
     }
   }
   return out;
+}
+
+/** What Codex's own settings (~/.codex/config.toml, or $CODEX_HOME's) say about ROOT: whether the project is
+ * trusted, and whether its two hooks have an approval recorded. Read-only; null where it cannot be read. */
+function codexTrust(root: string): { projectTrusted: boolean | null; approved: { start: boolean; stop: boolean } | null } {
+  const text = readText(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "config.toml"));
+  if (text === null) return { projectTrusted: null, approved: null };
+  const win = process.platform === "win32";
+  const same = (a: string, b: string) => {
+    const n = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    return win ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
+  };
+  // the TOML tables, by header; a key is quoted with ' (literal) or " (escaped)
+  const tables: { name: string; body: string }[] = [];
+  const re = /^\[([^\r\n]+)\]\s*$/gm;
+  const heads = [...text.matchAll(re)];
+  heads.forEach((h, i) => tables.push({ name: h[1].trim(), body: text.slice(h.index! + h[0].length, heads[i + 1]?.index ?? text.length) }));
+  const key = (name: string, prefix: string) => {
+    if (!name.startsWith(prefix)) return null;
+    const rest = name.slice(prefix.length).trim();
+    const m = /^'([^']*)'$/.exec(rest) ?? /^"((?:[^"\\]|\\.)*)"$/.exec(rest);
+    return m ? (rest.startsWith('"') ? m[1].replace(/\\(.)/g, "$1") : m[1]) : null;
+  };
+  let projectTrusted = false;
+  for (const t of tables) {
+    const p = key(t.name, "projects.");
+    if (p !== null && same(p, root)) projectTrusted = /^\s*trust_level\s*=\s*["']trusted["']/m.test(t.body);
+  }
+  const hooksFile = join(root, ".codex", "hooks.json");
+  const approvedFor = (event: string) => tables.some(t => {
+    const k = key(t.name, "hooks.state.");
+    const m = k === null ? null : /^(.*):([a-z_]+):\d+:\d+$/.exec(k);
+    return !!m && m[2] === event && same(m[1], hooksFile) && /^\s*trusted_hash\s*=/m.test(t.body);
+  });
+  return { projectTrusted, approved: { start: approvedFor("session_start"), stop: approvedFor("stop") } };
 }
 
 /** When a hook of soz-guard's last ran in this project, from its log. */
@@ -323,14 +365,14 @@ export function doctorText(d: Diagnosis, lang = language()): string {
     out.push(`  ${name} (${k.where}): ${tr ? "oturum başı" : "session start"} ${W[k.start]}, ${tr ? "bitiş" : "finish"} ${W[k.stop]}`
       + (k.start === "off" ? ` (${k.detail})` : k.detail && (k.start === "elsewhere" || k.stop === "elsewhere") ? `: ${k.detail}. ${tr ? "Yeniden: soz-guard init --local" : "Again: soz-guard init --local"}` : "")
       + (k.detail && k.start === "on" && k.stop === "on" && k.tool === "claude" ? (tr ? ` (başka bir soz-guard kopyasıyla: ${k.detail})` : ` (with another copy of soz-guard: ${k.detail})`) : ""));
-    if (k.tool === "codex") out.push(tr ? "    Codex kancalara bir kez /hooks içinde güvenmenizi ister; güvenilip güvenilmediğini yalnızca Codex bilir."
-                                        : "    Codex asks you once, in /hooks, to trust them; whether you did, only Codex knows.");
+    if (k.tool === "codex") out.push(...codexSteps(k, tr));
   }
   if (!d.hooks.some(k => k.tool === "git")) out.push(`  git pre-commit: ${tr ? "kurulu değil" : "not set up"}`);
+  const sessions = d.hooks.filter(k => k.tool !== "git" && k.stop === "on").map(k => k.tool === "claude" ? "Claude Code" : "Codex");
   out.push(d.lastRun
     ? `  ${tr ? "Son çalışma" : "Last ran"}: ${d.lastRun.at.replace("T", " ").slice(0, 16)} UTC (${d.lastRun.what})`
     : `  ${tr ? "Bu projede henüz hiç çalışmamış (kayıt yok)." : "Never ran in this project yet (nothing in its log)."}`
-      + (d.hooks.some(k => k.stop === "on") ? (tr ? " Kurulumdan sonra Claude oturumunu yeniden açın." : " Open the Claude session again after setting it up.") : ""));
+      + (sessions.length ? (tr ? ` Kurulumdan sonra yeni bir ${sessions.join(" / ")} oturumu açın.` : ` Open a new ${sessions.join(" / ")} session after setting it up.`) : ""));
 
   h(tr ? "Sunucudaki soz-guard gate (push'u denetler)" : "soz-guard gate on the server (judges pushes)");
   out.push(`  ${gateWords(d.gate, tr, false)}`);
@@ -338,6 +380,31 @@ export function doctorText(d: Diagnosis, lang = language()): string {
   h(tr ? "Oturum başında görünen satır" : "The line a session starts with");
   out.push(`  ${sessionLine(d, lang)}`);
   return out.join("\n") + "\n";
+}
+
+/** For Codex: what it takes for Codex to run the hooks, each step with what can be seen of it from here. Codex
+ * runs none of a project's hooks until the person trusts the project, runs a hook only after it is approved in
+ * /hooks (again after it changes), reads hooks when a session starts, and goes on silently when one fails. */
+function codexSteps(k: AgentHook, tr: boolean): string[] {
+  const c = k.codex;
+  const seen = (v: boolean | null | undefined, yes: string, no: string) =>
+    v === null || v === undefined ? (tr ? "Codex ayarları okunamadı" : "Codex's settings could not be read") : v ? yes : no;
+  const approved = c?.approved ? c.approved.start && c.approved.stop : null;
+  const out = [
+    tr ? "    Codex'in kancaları çalıştırması için:" : "    For Codex to run them:",
+    tr ? `      1. Projeye güvenin (güvenilmeyen klasörde Codex hiçbir kancayı çalıştırmaz): ${seen(c?.projectTrusted, "güveniliyor", "güvenilmiyor")}`
+       : `      1. Trust the project (in a folder it does not trust, Codex runs no hooks): ${seen(c?.projectTrusted, "trusted", "not trusted")}`,
+    tr ? `      2. Kancaları Codex'te /hooks içinde onaylayın; init onları değiştirdiyse yeniden: ${seen(approved, "onay kaydı var (şimdiki hâlleri için mi, yalnızca Codex bilir)", "onay kaydı yok")}`
+       : `      2. Approve the hooks in Codex's /hooks, and again after init changes them: ${seen(approved, "an approval is recorded (whether for them as they are now, only Codex knows)", "no approval recorded")}`,
+    tr ? "      3. Yeni bir Codex oturumu açın (kancalar oturum başında okunur)."
+       : "      3. Open a new Codex session (hooks are read when a session starts).",
+    tr ? "    Bir kanca çalışamazsa Codex sessizce devam eder: oturum başında soz-guard satırı yoksa buraya ve Son çalışma'ya bakın."
+       : "    When a hook fails, Codex goes on silently: if a session starts without soz-guard's line, look here and at Last ran.",
+  ];
+  if (c?.notPowershell) out.splice(1, 0, tr
+    ? "    ! Windows'ta Codex kancaları PowerShell ile çalıştırır; bu komutlar o biçimde değil, çalışmazlar. Yeniden: soz-guard init --codex"
+    : "    ! On Windows Codex runs hooks with PowerShell; these commands are not in that form and do not run. Again: soz-guard init --codex");
+  return out;
 }
 
 /** soz-guard doctor in the server's repository: its gate. */
