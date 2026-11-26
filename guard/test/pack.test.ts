@@ -33,7 +33,7 @@ check("and not the TypeScript sources or the tests", !listing.some(f => f.starts
 const project = mkdtempSync(join(tmpdir(), "soz-guard-project-"));
 writeFileSync(join(project, "package.json"), JSON.stringify({ name: "someones-app", private: true }));
 npm(["install", "--no-audit", "--no-fund", "--offline", join(out, tgz)], project);
-const installed = join(project, "node_modules", "soz-guard", "dist", "cli.js");
+const installed = join(project, "node_modules", "@sezeren", "soz-guard", "dist", "cli.js");
 check("installs from the tarball, offline", existsSync(installed));
 
 const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: project, encoding: "utf8" });
@@ -43,7 +43,20 @@ const init = spawnSync(process.execPath, [installed, "init"], { cwd: project, en
 check("init runs from the installed package, with plain node", init.status === 0 && init.stdout.includes("Stop hook added"));
 const command: string = JSON.parse(readFileSync(join(project, ".claude", "settings.json"), "utf8")).hooks.Stop[0].hooks[0].command;
 check("the hook it installs runs the compiled code, with no experimental flag",
-      command.includes(join("node_modules", "soz-guard", "dist", "cli.js")) && !command.includes("strip-types"));
+      command.includes(join("node_modules", "@sezeren", "soz-guard", "dist", "cli.js")) && !command.includes("strip-types"));
+
+// The command npm links for the package (node_modules/.bin/soz-guard), through a shell, as a person types it.
+const bin = (...args: string[]) => spawnSync(`"${join(project, "node_modules", ".bin", "soz-guard")}" ${args.join(" ")}`,
+                                             { cwd: project, encoding: "utf8", shell: true, timeout: 60000 });
+const plain = bin();
+check("soz-guard runs from the command npm linked, and finds nothing unfinished in a clean change",
+      plain.status === 0 && plain.stdout.includes("Nothing unfinished"));
+const doctor = bin("doctor", "--json");
+let diagnosis: { configFile?: boolean; hooks?: { tool: string; start: string; stop: string }[] } = {};
+try { diagnosis = JSON.parse(doctor.stdout); } catch { diagnosis = {}; }
+check("soz-guard doctor sees the Claude Code hooks init installed",
+      doctor.status === 0 && diagnosis.configFile === true
+      && !!diagnosis.hooks?.some(h => h.tool === "claude" && h.start === "on" && h.stop === "on"));
 
 writeFileSync(join(project, "save.js"), "export const save = () => {};\nexport function handleSave() {}\n");  // soz-guard: ignore (test data)
 // Run the installed hook the way Claude Code does: the command line, through a shell, with JSON on stdin.

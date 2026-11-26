@@ -39,7 +39,7 @@ before it counts as done. It does not depend on soz.
 Requires Node 18 or newer and git. Install it once per machine, then set it up in the project:
 
 ```sh
-npm install -g soz-guard
+npm install -g @sezeren/soz-guard
 cd path/to/your/project
 soz-guard init
 ```
@@ -73,7 +73,7 @@ the machine that committed it, `init --local` says so; the owner removes it ther
 run `init --local`. A hook `settings.json` already runs on this machine is not added again: both
 would run.) If `settings.local.json` is already in git, `.gitignore` does not take it out; `init --local`
 says so and gives the one command that does. A hook written by hand that finds soz-guard itself, such as
-`npx soz-guard hook`, works on every machine, and `init` leaves it as it is. Where soz-guard lives is
+`soz-guard hook` (the command a global install puts on the PATH), works on every machine, and `init` leaves it as it is. Where soz-guard lives is
 not part of what counts as finished: its hook pointed at another Node or another copy of soz-guard is not a change a person has to accept, as long as it is
 this soz-guard, on this machine. Pointed at some other `cli.js`, it is.
 
@@ -215,8 +215,8 @@ with `actions/checkout`, set `fetch-depth: 0` (a shallow clone is said plainly, 
 
 **Run soz-guard in CI from a source the pull request cannot change**: a published version pinned by
 number, or a commit of soz-guard's own repository pinned by hash. Never from a copy inside the
-repository being checked, which the agent's branch could have edited. (`npx soz-guard@0.5.1 ci ...`, by
-exact version.)
+repository being checked, which the agent's branch could have edited. (`npx @sezeren/soz-guard@0.5.1 ci ...`, by
+exact version; the package is scoped, so `npx soz-guard@...` would ask npm for a different package.)
 
 ## On the server: the gate in front of what goes live
 
